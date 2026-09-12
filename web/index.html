@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>forgetmenot</title>
+    <script>
+      // The stored colour scheme, applied before the first paint. The key is the one
+      // src/theme.ts writes.
+      try {
+        var scheme = localStorage.getItem('fmn-colour-scheme');
+        if (scheme === 'light' || scheme === 'dark') {
+          document.documentElement.setAttribute('data-theme', scheme);
+        }
+      } catch (ignored) {
+        /* storage is unavailable, so the system setting decides */
+      }
+    </script>
+  </head>
+  <body>
+    <fmn-app></fmn-app>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

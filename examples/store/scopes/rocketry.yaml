@@ -1,0 +1,5 @@
+id: rocketry
+type: domain
+triggers:
+- on: user_message
+  pattern: '\brocket(s|ry)?\b'

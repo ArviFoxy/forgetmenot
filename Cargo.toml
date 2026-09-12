@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/forgetmenot-types",
+    "crates/forgetmenot-hook",
+    "crates/forgetmenot-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+forgetmenot-types = { path = "crates/forgetmenot-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+yaml_serde = "0.10"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
+tokio-util = "0.7"
+axum = "0.8"
+tower-http = { version = "0.7", features = ["fs"] }
+rmcp = { version = "3.3", features = ["server", "macros", "transport-streamable-http-server"] }
+regex = "1.13"
+git2 = { version = "0.21", default-features = false }
+rusqlite = { version = "0.40", features = ["bundled"] }
+clap = { version = "4.6", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+ureq = { version = "3.4", default-features = false }
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,79 @@
+name: another-contexts-write-surfaces
+reasoning: >
+  Detects a catalog that is not rebuilt when the store's head moves, and a
+  change that reaches one context but not another: an edit made from a session
+  on one machine would never reach the sessions on the others, which is the
+  whole point of one store on the LAN.
+
+  Steps 0 and 1, a session start on each of two machines: both are owed
+  bench-power in full and reading-list as an index line, because both are in
+  global. Only alpha/session-1 is owed the notes, whose single scope is
+  session:alpha/session-1, so the session on beta must not be given them.
+
+  Step 2 is the write the session on beta makes: a commit to the store, which
+  changes nothing in any context until each one's next event.
+
+  Step 3, the next event on alpha/session-1: the blob of bench-power differs
+  from the version it was delivered at, so bench-power is changed. It is
+  critical and this is a PreToolUse, so the call is stopped and carries the new
+  body. reading-list and the notes did not change, so they are not sent again.
+steps:
+  - hook:
+      machine: alpha
+      context_tokens: 40000
+      event:
+        hook_event_name: SessionStart
+        session_id: session-1
+        cwd: /home/dev/widgets
+        permission_mode: default
+        source: startup
+    expect:
+      decision: context
+      full: [bench-power]
+      index: [reading-list, sessions/alpha/session-1/notes]
+
+  - hook:
+      machine: beta
+      context_tokens: 40000
+      event:
+        hook_event_name: SessionStart
+        session_id: session-2
+        cwd: /home/dev/rocketry
+        permission_mode: default
+        source: startup
+    expect:
+      decision: context
+      full: [bench-power]
+      index: [reading-list]
+
+  - commit:
+      path: memories/bench-power.md
+      content: |
+        ---
+        name: bench-power
+        description: Cut bench power at the wall before rewiring and confirm with the meter
+        metadata:
+          kind: critical
+          scopes:
+          - global
+          source: user
+        ---
+        # Cut bench power before rewiring
+
+        The rule now also covers the charger bench, which feeds the same rail.
+
+  - hook:
+      machine: alpha
+      context_tokens: 40000
+      event:
+        hook_event_name: PreToolUse
+        session_id: session-1
+        cwd: /home/dev/notes
+        permission_mode: default
+        tool_name: Read
+        tool_use_id: toolu_01BBBBBBBBBBBBBBBBBBBBBB
+        tool_input:
+          file_path: /home/dev/notes/README.md
+    expect:
+      decision: deny
+      full: [bench-power]

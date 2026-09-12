@@ -1,0 +1,9 @@
+{
+  "session_id": "session-1",
+  "transcript_path": "TRANSCRIPT_PATH",
+  "cwd": "/home/dev/widgets",
+  "permission_mode": "default",
+  "hook_event_name": "PostCompact",
+  "trigger": "auto",
+  "tokens_removed": 150000
+}

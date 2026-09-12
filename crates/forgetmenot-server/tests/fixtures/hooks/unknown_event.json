@@ -1,0 +1,6 @@
+{
+  "session_id": "session-1",
+  "cwd": "/home/dev/widgets",
+  "hook_event_name": "SomeFutureEvent",
+  "detail": 42
+}

@@ -1,0 +1,9 @@
+id: widgets
+type: project
+implies:
+- rocketry
+triggers:
+- on: tool_input
+  pattern: '\bwidgets?\b'
+- on: user_message
+  pattern: '\bwidget\b'

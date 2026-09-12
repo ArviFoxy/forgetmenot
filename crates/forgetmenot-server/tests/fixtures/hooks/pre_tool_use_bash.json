@@ -1,0 +1,15 @@
+{
+  "session_id": "session-1",
+  "prompt_id": "6f1d2c3e-0000-4000-8000-000000000001",
+  "transcript_path": "TRANSCRIPT_PATH",
+  "cwd": "/home/dev/widgets",
+  "permission_mode": "default",
+  "effort": { "level": "high" },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo test -p widgets",
+    "description": "Run the widgets test suite"
+  },
+  "tool_use_id": "toolu_01AAAAAAAAAAAAAAAAAAAAAA"
+}

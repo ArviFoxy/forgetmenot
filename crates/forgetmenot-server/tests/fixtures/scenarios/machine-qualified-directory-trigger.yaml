@@ -1,0 +1,49 @@
+name: machine-qualified-directory-trigger
+reasoning: >
+  Detects a machine qualifier that is ignored: the same path means different
+  things on different machines, so a directory trigger written for one machine
+  must not fire anywhere else. An ignored qualifier turns a scope on for every
+  session that happens to sit in a path of that shape.
+
+  The workshop scope of the example store has one working_directory trigger
+  qualified for alpha.
+
+  Step 0, a session start on alpha in a matching directory: the trigger fires, so
+  workshop is one of the session's scopes and is no longer one it can turn on. The
+  scopes it can still turn on are widgets and rocketry. workshop has no memories,
+  so the deliveries are what any session on alpha/session-1 is owed: bench-power
+  in full, reading-list and the session's notes as index lines.
+
+  Step 1, a session start on beta in the same directory: the qualifier does not
+  match, so workshop stays off and is offered as one the session can turn on.
+  beta/session-2 is not in session:alpha/session-1, so it is not owed the notes.
+steps:
+  - hook:
+      machine: alpha
+      context_tokens: 40000
+      event:
+        hook_event_name: SessionStart
+        session_id: session-1
+        cwd: /workshop/bench
+        permission_mode: default
+        source: startup
+    expect:
+      decision: context
+      full: [bench-power]
+      index: [reading-list, sessions/alpha/session-1/notes]
+      available: [rocketry, widgets]
+
+  - hook:
+      machine: beta
+      context_tokens: 40000
+      event:
+        hook_event_name: SessionStart
+        session_id: session-2
+        cwd: /workshop/bench
+        permission_mode: default
+        source: startup
+    expect:
+      decision: context
+      full: [bench-power]
+      index: [reading-list]
+      available: [rocketry, widgets, workshop]

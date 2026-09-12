@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "PreToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "PostToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "Stop": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "CwdChanged": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "PostCompact": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }],
+    "SubagentStart": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE", "timeout": 10 }] }]
+  }
+}

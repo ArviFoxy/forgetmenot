@@ -1,0 +1,164 @@
+//! The project's runtime limits, which are requirements and not targets.
+//!
+//! Source of both numbers: the plan's build order, which records them in the
+//! README as well. A hook runs on every Claude Code event and a slow one is felt
+//! as a slow harness, so the limits are asserted here rather than watched.
+//!
+//! Both tests report the measured figure in their failure message, and print it
+//! under `cargo test -- --nocapture`, so a run on another machine says how much
+//! room is left rather than only whether it passed.
+
+mod common;
+
+use std::time::{Duration, Instant};
+
+use common::{
+    TestServer, example_store_files, hook_fixture_payload, run_hook_client_binary, write_transcript,
+};
+use serde_json::json;
+
+/// The limit on the 99th percentile of `/hook`, over loopback, measured by the
+/// caller and so including the HTTP round trip the real client pays.
+const HOOK_P99_LIMIT: Duration = Duration::from_millis(50);
+
+/// How many events the percentile is taken over. Source: the plan.
+const EVENTS: usize = 200;
+
+/// The limit on one whole run of the client, from spawning the process to its
+/// exit, with a transcript of the size a long session reaches.
+const CLIENT_LIMIT: Duration = Duration::from_millis(30);
+
+/// The transcript size the client limit is stated for. Source: the plan.
+const TRANSCRIPT_BYTES: u64 = 40 * 1024 * 1024;
+
+/// The context size the transcript reports; any value the stale rule can use.
+const CONTEXT_TOKENS: u64 = 40_000;
+
+/// A tool call that matches no trigger of the example store, so that every
+/// timed event does the same work: the whole pass over the catalog, the context's
+/// critical section and the statistics record, with nothing to deliver.
+fn steady_state_event(index: usize) -> serde_json::Value {
+    json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "session-1",
+        "transcript_path": "/nonexistent/transcript.jsonl",
+        "cwd": "/home/dev/notes",
+        "permission_mode": "default",
+        "tool_name": "Read",
+        "tool_use_id": format!("toolu_{index:08}"),
+        "tool_input": { "file_path": "/home/dev/notes/README.md" }
+    })
+}
+
+/// The value at the 99th percentile of `samples`, which must be sorted: the
+/// smallest sample that at least 99% of the samples are not above.
+fn percentile_99(samples: &[Duration]) -> Duration {
+    let rank = (samples.len() as f64 * 0.99).ceil() as usize;
+    samples[rank.max(1) - 1]
+}
+
+/// Detects a hook endpoint that is too slow to sit in front of every Claude Code
+/// event: work done per event that belongs in the catalog snapshot, a lock held
+/// across the store, or a statistics write that blocks the answer. Any of those
+/// shows up as a tail far past the limit rather than as a wrong answer.
+///
+/// Tolerance: the limit is the stated one, 50 ms, and the measured p99 on the
+/// development machine in the dev profile is about two orders of magnitude below
+/// it, so every implementation that keeps the store off the hot path passes and a
+/// per-event git or sqlite round trip does not.
+#[test]
+fn the_hook_endpoint_answers_200_events_within_the_p99_limit() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    // The warm-up event is also the one that has something to deliver: it opens
+    // the connection path, builds the catalog snapshot and fills the context's
+    // delivery record, which is the state a session spends its life in.
+    let (status, _) = server.hook(
+        "alpha",
+        Some(CONTEXT_TOKENS),
+        &json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "session-1",
+            "cwd": "/home/dev/notes",
+            "source": "startup"
+        }),
+    );
+    assert_eq!(status, 200, "the warm-up event must be answered");
+
+    let mut samples = Vec::with_capacity(EVENTS);
+    for index in 0..EVENTS {
+        let event = steady_state_event(index);
+        let started = Instant::now();
+        let (status, answer) = server.hook("alpha", Some(CONTEXT_TOKENS), &event);
+        samples.push(started.elapsed());
+        assert_eq!(status, 200, "event {index} must be answered, got {answer}");
+    }
+    samples.sort();
+
+    let p99 = percentile_99(&samples);
+    println!(
+        "hook over {EVENTS} events: p50 {:?}, p99 {p99:?}, max {:?}",
+        samples[samples.len() / 2],
+        samples[samples.len() - 1]
+    );
+    assert!(
+        p99 < HOOK_P99_LIMIT,
+        "the p99 of {EVENTS} hook events was {p99:?}, over the {HOOK_P99_LIMIT:?} limit"
+    );
+}
+
+/// Detects a client that reads the whole transcript instead of its tail, and any
+/// other cost that grows with the session: the hook is on Claude Code's critical
+/// path, so a client that takes a second on a long session stalls every tool
+/// call.
+///
+/// The transcript is the shape a long session has, 40 MB with its last assistant
+/// message at the end. The pathological shape, an assistant line only at the very
+/// start, is the hook crate's own window-doubling test.
+///
+/// Tolerance: the stated limit is 30 ms for one whole run, process spawn
+/// included. Measured on the development machine with the dev-profile binary
+/// against a real server: 2.5 to 3.6 ms, an order of magnitude under the limit,
+/// so the limit is asserted against the binary the test suite builds rather than
+/// against a release build only. `FORGETMENOT_RELEASE_BIN` runs the same check
+/// against another build of the client when one is wanted.
+#[test]
+fn one_client_run_with_a_40_megabyte_transcript_stays_under_the_limit() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript(&transcript, CONTEXT_TOKENS, TRANSCRIPT_BYTES);
+    let written = std::fs::metadata(&transcript)
+        .expect("the transcript was written")
+        .len();
+    assert!(
+        written >= TRANSCRIPT_BYTES,
+        "the transcript must be at least {TRANSCRIPT_BYTES} bytes, got {written}"
+    );
+    let payload = hook_fixture_payload("pre_tool_use_bash", &transcript);
+    let binary = match std::env::var_os("FORGETMENOT_RELEASE_BIN") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => common::hook_client_binary(),
+    };
+
+    let started = Instant::now();
+    let run = run_hook_client_binary(&binary, &server.url(), "alpha", &payload);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the timed run must have succeeded; stderr was {}",
+        run.stderr_text()
+    );
+    run.single_json_object()
+        .unwrap_or_else(|problem| panic!("the timed run must answer with one object: {problem}"));
+    println!(
+        "client end to end with a {written} byte transcript, {}: {elapsed:?}",
+        binary.display()
+    );
+    assert!(
+        elapsed < CLIENT_LIMIT,
+        "one client run with a {written} byte transcript took {elapsed:?}, \
+         over the {CLIENT_LIMIT:?} limit"
+    );
+}
