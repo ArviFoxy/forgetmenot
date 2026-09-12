@@ -2,14 +2,9 @@ import { expect, test, type Page } from '@playwright/test';
 
 // Detects the failures that exist only at this level: the built app cannot complete
 // an edit against the real API, an address loaded directly does not open the item it
-// names, and the editor's round trip damages the stored text. Runs against the
-// server at FORGETMENOT_URL.
-
-const base = process.env.FORGETMENOT_URL ?? '';
-
-test.beforeEach(() => {
-  test.skip(base === '', 'FORGETMENOT_URL is unset, so there is no server to run against');
-});
+// names, and the editor's round trip damages the stored text. The server and its
+// store come from the global setup, so these writes touch a copy of the example
+// store and nothing else.
 
 async function openMemory(page: Page, id: string): Promise<void> {
   await page.goto(`/memories/${id}`);
@@ -34,7 +29,7 @@ async function save(page: Page, message: string): Promise<void> {
 }
 
 async function storedBody(page: Page, id: string): Promise<string> {
-  const response = await page.request.get(`${base}/api/memories/${id}`);
+  const response = await page.request.get(`/api/memories/${id}`);
   const doc = (await response.json()) as { body: string };
   return doc.body;
 }
@@ -108,9 +103,9 @@ test('a write the server has already moved past is accepted, losing the other ve
   await page.locator('.page-header sl-input input').fill(`conflict check ${Date.now()}`);
 
   // Another writer changes the same memory while this page is open.
-  const current = await page.request.get(`${base}/api/memories/bench-power`);
+  const current = await page.request.get('/api/memories/bench-power');
   const doc = (await current.json()) as Record<string, unknown>;
-  const sideWrite = await page.request.put(`${base}/api/memories/bench-power`, {
+  const sideWrite = await page.request.put('/api/memories/bench-power', {
     data: {
       description: doc.description,
       kind: doc.kind,

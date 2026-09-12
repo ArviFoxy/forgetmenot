@@ -14,12 +14,6 @@ import {
 // human judgment: they were looked at once and accepted, so a later change that
 // alters the look fails here until it is looked at again.
 
-const base = process.env.FORGETMENOT_URL ?? '';
-
-test.beforeEach(() => {
-  test.skip(base === '', 'FORGETMENOT_URL is unset, so there is no server to run against');
-});
-
 interface Size {
   name: string;
   width: number;
@@ -72,8 +66,14 @@ async function checkContrast(page: Page, selectors: string[]): Promise<void> {
  * Counts and times the server changes between runs. Only the pages that show them
  * paint them over; the pages whose content is fixed are compared whole.
  */
-function countsAndTimes(page: Page) {
-  return [page.locator('table.data td.number'), page.locator('table.data td.nowrap')];
+/**
+ * The rows of the statistics and the contexts are counts and times the server
+ * measures; a count of a different width moves the columns next to it, so those
+ * tables are painted over and the image compares the page around them. What the
+ * columns themselves say is checked in the flow tests and in the appearance checks.
+ */
+function serverTables(page: Page) {
+  return [page.locator('.table-wrap')];
 }
 
 async function checkNoOverflow(page: Page): Promise<void> {
@@ -186,17 +186,19 @@ const laptop = { width: 1440, height: 900 };
 
 for (const scheme of ['light', 'dark'] as const) {
   test.describe(`look ${scheme}`, () => {
+    // The images were recorded against the store the global setup seeds, so an
+    // outside server named by FORGETMENOT_URL is not compared to them.
+    test.skip(
+      process.env.FORGETMENOT_URL !== undefined,
+      'the images belong to the fixture store',
+    );
     test.use({ viewport: laptop, colorScheme: scheme });
 
     test('the overview looks as reviewed', async ({ page }) => {
       await page.goto('/');
       await expect(page.locator('table.data').first()).toBeVisible();
       await settle(page);
-      // The memories table is store data that other tests change, and a table's
-      // column widths follow its text, so that one table is painted over.
-      await expect(page).toHaveScreenshot(`overview-laptop-${scheme}.png`, {
-        mask: [page.locator('.table-wrap').first()],
-      });
+      await expect(page).toHaveScreenshot(`overview-laptop-${scheme}.png`);
     });
 
     test('a memory page looks as reviewed', async ({ page }) => {
@@ -245,7 +247,7 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page.locator('table.stats').first()).toBeVisible();
       await settle(page);
       await expect(page).toHaveScreenshot(`stats-laptop-${scheme}.png`, {
-        mask: countsAndTimes(page),
+        mask: serverTables(page),
       });
     });
 
@@ -254,7 +256,7 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page.locator('table.data')).toBeVisible();
       await settle(page);
       await expect(page).toHaveScreenshot(`contexts-laptop-${scheme}.png`, {
-        mask: countsAndTimes(page),
+        mask: serverTables(page),
       });
     });
 
@@ -270,6 +272,12 @@ for (const scheme of ['light', 'dark'] as const) {
 for (const size of sizes) {
   for (const scheme of ['light', 'dark'] as const) {
     test.describe(`look ${size.name} ${scheme}`, () => {
+      // The images were recorded against the store the global setup seeds, so an
+      // outside server named by FORGETMENOT_URL is not compared to them.
+      test.skip(
+        process.env.FORGETMENOT_URL !== undefined,
+        'the images belong to the fixture store',
+      );
       test.use({ viewport: { width: size.width, height: size.height }, colorScheme: scheme });
 
       test('the layout at this size looks as reviewed', async ({ page }) => {
@@ -284,7 +292,7 @@ for (const size of sizes) {
         await expect(page.locator('table.stats').first()).toBeVisible();
         await settle(page);
         await expect(page).toHaveScreenshot(`stats-${size.name}-${scheme}.png`, {
-          mask: countsAndTimes(page),
+          mask: serverTables(page),
         });
       });
     });
@@ -292,6 +300,12 @@ for (const size of sizes) {
 }
 
 test.describe('look phone drawer', () => {
+  // The images were recorded against the store the global setup seeds, so an
+  // outside server named by FORGETMENOT_URL is not compared to them.
+  test.skip(
+    process.env.FORGETMENOT_URL !== undefined,
+    'the images belong to the fixture store',
+  );
   test.use({ viewport: { width: 390, height: 844 } });
 
   test('the hierarchy drawer looks as reviewed', async ({ page }) => {

@@ -37,6 +37,11 @@ export class FmnStatsView extends PageElement {
     void this.sessions.load(() => api.sessionStats());
   }
 
+  /** Rows in a fixed order: the server is free to answer in any. */
+  private static sorted<Row>(rows: Row[], key: (row: Row) => string): Row[] {
+    return [...rows].sort((left, right) => key(left).localeCompare(key(right)));
+  }
+
   private renderMemories(rows: MemoryStatsRow[]): TemplateResult {
     return html`<div class="table-wrap">
       <table class="data stats">
@@ -53,7 +58,7 @@ export class FmnStatsView extends PageElement {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(
+          ${FmnStatsView.sorted(rows, (row) => row.memory).map(
             (row) => html`<tr>
               <td><a href=${paths.memory(row.memory)}>${row.memory}</a></td>
               <td class="number">${row.shown_index}</td>
@@ -62,7 +67,7 @@ export class FmnStatsView extends PageElement {
               <td class="number">${row.shown_full_stale}</td>
               <td class="number">${row.fetched_full}</td>
               <td class="number">${row.retracted}</td>
-              <td>${row.last_shown ?? ''}</td>
+              <td class="nowrap">${row.last_shown ?? ''}</td>
             </tr>`,
           )}
         </tbody>
@@ -84,7 +89,7 @@ export class FmnStatsView extends PageElement {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(
+          ${FmnStatsView.sorted(rows, (row) => `${row.scope_id} ${row.field} ${row.pattern}`).map(
             (row) => html`<tr>
               <td><a href=${paths.scope(row.scope_id)}>${row.scope_id}</a></td>
               <td>${row.field}</td>
@@ -110,7 +115,7 @@ export class FmnStatsView extends PageElement {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(
+          ${FmnStatsView.sorted(rows, (row) => row.scope_id).map(
             (row) => html`<tr>
               <td><a href=${paths.scope(row.scope_id)}>${row.scope_id}</a></td>
               <td class="number">${row.activations}</td>
@@ -133,7 +138,7 @@ export class FmnStatsView extends PageElement {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(
+          ${FmnStatsView.sorted(rows, (row) => row.day).map(
             (row) => html`<tr>
               <td>${row.day}</td>
               <td class="number">${row.denies}</td>
@@ -147,7 +152,7 @@ export class FmnStatsView extends PageElement {
 
   private renderLatency(rows: LatencyRow[]): TemplateResult {
     return html`<div class="table-wrap">
-      <table class="data stats">
+      <table class="data stats latency">
         <thead>
           <tr>
             <th scope="col">Event</th>
@@ -159,7 +164,7 @@ export class FmnStatsView extends PageElement {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(
+          ${FmnStatsView.sorted(rows, (row) => row.event).map(
             (row) => html`<tr>
               <td>${row.event}</td>
               <td class="number">${row.count}</td>
@@ -185,7 +190,7 @@ export class FmnStatsView extends PageElement {
           </tr>
         </thead>
         <tbody>
-          ${rows.map(
+          ${FmnStatsView.sorted(rows, (row) => row.session_key).map(
             (row) => html`<tr>
               <td><code>${row.session_key}</code></td>
               <td class="number">${row.bytes_full}</td>

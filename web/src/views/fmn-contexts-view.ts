@@ -16,6 +16,11 @@ export class FmnContextsView extends PageElement {
     void this.rows.load(() => api.contexts());
   }
 
+  /** By key, so the same set of contexts is always listed in the same order. */
+  private static byKey(rows: ContextRow[]): ContextRow[] {
+    return [...rows].sort((left, right) => left.key.localeCompare(right.key));
+  }
+
   override render(): TemplateResult {
     return html`
       <header class="page-header">
@@ -29,7 +34,7 @@ export class FmnContextsView extends PageElement {
       </header>
       ${gate(
         this.rows.state,
-        (rows) => html`<div class="table-wrap">
+        (loaded) => html`<div class="table-wrap">
           <table class="data">
             <thead>
               <tr>
@@ -40,12 +45,12 @@ export class FmnContextsView extends PageElement {
               </tr>
             </thead>
             <tbody>
-              ${rows.map(
+              ${FmnContextsView.byKey(loaded).map(
                 (row) => html`<tr>
                   <td class="nowrap"><code>${row.key}</code></td>
                   <td>
                     <span class="chips"
-                      >${row.active_scopes.map(
+                      >${[...row.active_scopes].sort().map(
                         (scope) =>
                           html`<a href=${paths.scope(scope)}
                             ><sl-badge variant="neutral" pill>${scope}</sl-badge></a
