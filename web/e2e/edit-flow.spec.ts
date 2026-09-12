@@ -1,64 +1,146 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 // Detects the failures that exist only at this level: the built app cannot complete
-// an edit against the real API, and an address loaded directly does not open the
-// item it names. Runs against the server at FORGETMENOT_URL.
+// an edit against the real API, an address loaded directly does not open the item it
+// names, and the editor's round trip damages the stored text. Runs against the
+// server at FORGETMENOT_URL.
+
+const base = process.env.FORGETMENOT_URL ?? '';
 
 test.beforeEach(() => {
-  test.skip(
-    process.env.FORGETMENOT_URL === undefined,
-    'FORGETMENOT_URL is unset, so there is no server to run against',
-  );
+  test.skip(base === '', 'FORGETMENOT_URL is unset, so there is no server to run against');
 });
 
-test('the built app cannot open a memory from the hierarchy, edit it and show the edit in history', async ({
+async function openMemory(page: Page, id: string): Promise<void> {
+  await page.goto(`/memories/${id}`);
+  await expect(page.locator('.milkdown .ProseMirror')).toBeVisible();
+}
+
+/** Puts the caret at the end of the document and types there. */
+async function typeAtEnd(page: Page, text: string): Promise<void> {
+  const editor = page.locator('.milkdown .ProseMirror');
+  await editor.click();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.press('Enter');
+  await page.keyboard.insertText(text);
+}
+
+async function save(page: Page, message: string): Promise<void> {
+  const bar = page.locator('.commit-bar');
+  await expect(bar).toBeVisible();
+  await bar.locator('input').fill(message);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(bar).toBeHidden();
+}
+
+async function storedBody(page: Page, id: string): Promise<string> {
+  const response = await page.request.get(`${base}/api/memories/${id}`);
+  const doc = (await response.json()) as { body: string };
+  return doc.body;
+}
+
+test('the built app cannot open a memory from the tree, edit it and show the edit in history', async ({
   page,
 }) => {
   const marker = `flow marker ${Date.now()}`;
   const commitMessage = `add ${marker}`;
 
   await page.goto('/');
-
-  // The hierarchy: filter to the memory, then open it from the sidebar.
-  await page.getByLabel('Search scopes and memories').fill('widget-naming');
-  const sidebarLink = page.locator('a.memory-link', { hasText: 'widget-naming' }).first();
-  await expect(sidebarLink).toBeVisible();
-  await sidebarLink.click();
+  await page.getByRole('searchbox', { name: 'Search scopes and memories' }).fill('widget-naming');
+  const treeItem = page.locator('sl-tree-item[data-target="/memories/widget-naming"]');
+  await expect(treeItem).toBeVisible();
+  await treeItem.click();
   await expect(page).toHaveURL(/\/memories\/widget-naming$/);
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Edit' }).click();
-  const editorText = page.locator('.cm-content');
-  await expect(editorText).toBeVisible();
-  await editorText.click();
-  await page.keyboard.press('ControlOrMeta+End');
-  await page.keyboard.press('Enter');
-  // One insertion rather than one event per character: typing into a code editor
-  // through the browser protocol can reorder single keystrokes, and the subject of
-  // this test is the write, not the editor's key handling.
-  await page.keyboard.insertText(marker);
+  await expect(page.locator('.milkdown .ProseMirror')).toBeVisible();
+  await typeAtEnd(page, marker);
+  await save(page, commitMessage);
 
-  await page.getByLabel('Commit message').fill(commitMessage);
-  await page.getByRole('button', { name: 'Save' }).click();
+  // The document now carries the new text, and the memory is still open.
+  await expect(page.locator('.milkdown .ProseMirror')).toContainText(marker);
 
-  // A written edit returns to the document, which now carries the new text.
-  await expect(page).toHaveURL(/\/memories\/widget-naming$/);
-  await expect(page.locator('.markdown').getByText(marker)).toBeVisible();
-
-  await page.getByRole('link', { name: 'History' }).click();
+  await page.getByRole('tab', { name: 'History' }).click();
   const commitLink = page.getByRole('link', { name: commitMessage });
   await expect(commitLink).toBeVisible();
-
   await commitLink.click();
-  await expect(page.locator('pre.diff').getByText(`+${marker}`, { exact: false })).toBeVisible();
+  await expect(page.locator('pre.diff')).toContainText(`+${marker}`);
 });
 
-test('a memory id with slashes loses its path when the address is loaded directly', async ({ page }) => {
+test('a memory whose body nobody touched is written back with the body reformatted', async ({
+  page,
+}) => {
+  const before = await storedBody(page, 'reading-list');
+  await openMemory(page, 'reading-list');
+
+  // Only a field changes; the body must go back as the bytes that were loaded.
+  await page.getByRole('button', { name: 'Edit Description' }).click();
+  const description = page.locator('.page-header sl-input input');
+  await description.fill(`untouched body check ${Date.now()}`);
+  const sent = page.waitForRequest(
+    (request) => request.method() === 'PUT' && request.url().includes('/api/memories/reading-list'),
+  );
+  await save(page, 'change only the description');
+
+  const payload = JSON.parse((await sent).postData() ?? '{}') as { body: string };
+  expect(payload.body).toBe(before);
+  expect(await storedBody(page, 'reading-list')).toBe(before);
+});
+
+test('a wiki link is escaped when the document is edited somewhere else', async ({ page }) => {
+  const marker = `wiki check ${Date.now()}`;
+  await openMemory(page, 'reading-list');
+  await expect(page.locator('.milkdown .ProseMirror')).toContainText('[[rocket-stages]]');
+
+  await typeAtEnd(page, marker);
+  await save(page, `add ${marker}`);
+
+  const body = await storedBody(page, 'reading-list');
+  expect(body).toContain('[[rocket-stages]]');
+  expect(body).not.toContain('\\[\\[');
+  expect(body).toContain(marker);
+});
+
+test('a write the server has already moved past is accepted, losing the other version', async ({
+  page,
+}) => {
+  await openMemory(page, 'bench-power');
+  await page.getByRole('button', { name: 'Edit Description' }).click();
+  await page.locator('.page-header sl-input input').fill(`conflict check ${Date.now()}`);
+
+  // Another writer changes the same memory while this page is open.
+  const current = await page.request.get(`${base}/api/memories/bench-power`);
+  const doc = (await current.json()) as Record<string, unknown>;
+  const sideWrite = await page.request.put(`${base}/api/memories/bench-power`, {
+    data: {
+      description: doc.description,
+      kind: doc.kind,
+      scopes: doc.scopes,
+      source: doc.source,
+      body: `${String(doc.body)}\nthe other writer version of the line\n`,
+      base_version: doc.version,
+      author: 'other',
+      message: 'change from another writer',
+    },
+  });
+  expect(sideWrite.status()).toBe(200);
+
+  const bar = page.locator('.commit-bar');
+  await bar.locator('input').fill('the browser edit');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const conflict = page.locator('.conflict');
+  await expect(conflict).toBeVisible();
+  await expect(conflict).toContainText('the other writer version of the line');
+  await expect(conflict).toContainText('Loaded version');
+});
+
+test('a memory id with slashes loses its path when the address is loaded directly', async ({
+  page,
+}) => {
   await page.goto('/memories/sessions/alpha/session-1/notes');
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('bracket rework');
-  await expect(page.locator('.infobox')).toContainText('sessions/alpha/session-1/notes');
-  // The hierarchy marks the open memory.
-  await expect(page.locator('a.memory-link.selected')).toHaveCount(1);
+  await expect(page.locator('.page-name')).toContainText('sessions/alpha/session-1/notes');
+  await expect(page.locator('.milkdown .ProseMirror')).toContainText('bracket rework');
+  await expect(page.locator('sl-tree-item[selected]')).toHaveCount(1);
 });
 
 test('a scope address with a colon and a slash does not open the scope', async ({ page }) => {
@@ -71,7 +153,7 @@ test('a deep link to one commit of a memory opens the memory instead of the comm
   page,
 }) => {
   await page.goto('/memories/widget-naming/history');
-  const firstCommit = page.locator('table tbody tr td:first-child a').first();
+  const firstCommit = page.locator('table.data tbody tr td:first-child a').first();
   await expect(firstCommit).toBeVisible();
   const href = await firstCommit.getAttribute('href');
   expect(href).toMatch(/\/memories\/widget-naming\/history\/[0-9a-f]{40}/);
@@ -81,12 +163,31 @@ test('a deep link to one commit of a memory opens the memory instead of the comm
   await expect(page.locator('pre.content')).toBeVisible();
 });
 
+test('a scope trigger is not editable on the scope page itself', async ({ page }) => {
+  await page.goto('/scopes/rocketry');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('rocketry');
+  await page.getByRole('button', { name: 'Edit Triggers' }).click();
+  const pattern = page.locator('fmn-trigger-rows sl-input.pattern input').first();
+  await expect(pattern).toBeVisible();
+  // A pattern that is new on every run, so the page has something to save.
+  const added = `thrust${Date.now()}`;
+  await pattern.fill(`\\brocket(s|ry)?\\b|\\b${added}\\b`);
+
+  const bar = page.locator('.commit-bar');
+  await expect(bar).toBeVisible();
+  await bar.locator('input').fill('widen the rocketry trigger');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(bar).toBeHidden();
+  await expect(page.locator('table.data')).toContainText(added);
+});
+
 test('the statistics page reports one figure per memory instead of one per delivery form', async ({
   page,
 }) => {
   await page.goto('/stats');
-  const header = page.getByRole('columnheader', { name: 'Shown as index line', exact: true });
-  await expect(header).toBeVisible();
+  await expect(
+    page.getByRole('columnheader', { name: 'Shown as index line', exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole('columnheader', { name: 'Shown in full, new', exact: true }),
   ).toBeVisible();

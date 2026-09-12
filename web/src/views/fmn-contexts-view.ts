@@ -19,41 +19,47 @@ export class FmnContextsView extends PageElement {
   override render(): TemplateResult {
     return html`
       <header class="page-header">
+        <div class="page-name"><sl-icon name="activity"></sl-icon><span>contexts</span></div>
         <h1>Contexts</h1>
-        <p class="actions">
-          <button type="button" class="outline" @click=${() => void this.rows.load(() => api.contexts())}>
-            Reload
-          </button>
-        </p>
+        <div class="actions">
+          <sl-button size="small" @click=${() => void this.rows.load(() => api.contexts())}>
+            <sl-icon slot="prefix" name="refresh-cw"></sl-icon>Reload
+          </sl-button>
+        </div>
       </header>
       ${gate(
         this.rows.state,
-        (rows) => html`<figure>
-          <table>
+        (rows) => html`<div class="table-wrap">
+          <table class="data">
             <thead>
               <tr>
                 <th scope="col">Key</th>
                 <th scope="col">Active scopes</th>
-                <th scope="col">Delivered</th>
+                <th scope="col" class="number">Delivered</th>
                 <th scope="col">Last seen</th>
               </tr>
             </thead>
             <tbody>
               ${rows.map(
                 (row) => html`<tr>
-                  <td><code>${row.key}</code></td>
+                  <td class="nowrap"><code>${row.key}</code></td>
                   <td>
-                    ${row.active_scopes.map(
-                      (scope) => html`<a class="chip" href=${paths.scope(scope)}>${scope}</a>`,
-                    )}
+                    <span class="chips"
+                      >${row.active_scopes.map(
+                        (scope) =>
+                          html`<a href=${paths.scope(scope)}
+                            ><sl-badge variant="neutral" pill>${scope}</sl-badge></a
+                          >`,
+                      )}</span
+                    >
                   </td>
-                  <td>${row.delivered_count}</td>
-                  <td>${row.last_seen}</td>
+                  <td class="number">${row.delivered_count}</td>
+                  <td class="nowrap">${row.last_seen}</td>
                 </tr>`,
               )}
             </tbody>
           </table>
-        </figure>`,
+        </div>`,
       )}
     `;
   }

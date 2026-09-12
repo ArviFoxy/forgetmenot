@@ -39,13 +39,15 @@ export class FmnOverviewView extends PageElement {
   override render(): TemplateResult {
     return html`
       <header class="page-header">
+        <div class="page-name"><sl-icon name="file-text"></sl-icon><span>overview</span></div>
         <h1>Memories and scopes</h1>
       </header>
+
       <h2>Memories</h2>
       ${gate(
         this.memories.state,
-        (rows) => html`<figure>
-          <table>
+        (rows) => html`<div class="table-wrap">
+          <table class="data">
             <thead>
               <tr>
                 <th scope="col">Memory</th>
@@ -58,51 +60,65 @@ export class FmnOverviewView extends PageElement {
             <tbody>
               ${rows.map(
                 (row) => html`<tr>
-                  <td><a href=${paths.memory(row.id)}>${row.name}</a></td>
+                  <td class="nowrap"><a href=${paths.memory(row.id)}>${row.name}</a></td>
                   <td>${row.description}</td>
-                  <td><fmn-kind-icon kind=${row.kind}></fmn-kind-icon> ${row.kind}</td>
-                  <td>
-                    ${row.scopes.map(
-                      (scope) => html`<a class="chip" href=${paths.scope(scope)}>${scope}</a>`,
-                    )}
+                  <td class="nowrap">
+                    <span class="row-icon"
+                      ><fmn-kind-icon kind=${row.kind}></fmn-kind-icon>${row.kind}</span
+                    >
                   </td>
-                  <td>${row.modified ?? ''}</td>
+                  <td>
+                    <span class="chips"
+                      >${row.scopes.map(
+                        (scope) =>
+                          html`<a href=${paths.scope(scope)}
+                            ><sl-badge variant="neutral" pill>${scope}</sl-badge></a
+                          >`,
+                      )}</span
+                    >
+                  </td>
+                  <td class="nowrap">${row.modified ?? '—'}</td>
                 </tr>`,
               )}
             </tbody>
           </table>
-        </figure>`,
+        </div>`,
       )}
 
       <h2>Scopes</h2>
       ${gate(
         this.scopes.state,
-        (rows) => html`<figure>
-          <table>
+        (rows) => html`<div class="table-wrap">
+          <table class="data">
             <thead>
               <tr>
                 <th scope="col">Scope</th>
                 <th scope="col">Type</th>
                 <th scope="col">Implies</th>
-                <th scope="col">Triggers</th>
+                <th scope="col" class="number">Triggers</th>
               </tr>
             </thead>
             <tbody>
               ${rows.map(
                 (row) => html`<tr>
-                  <td><a href=${paths.scope(row.id)}>${row.id}</a></td>
-                  <td>${row.type}</td>
+                  <td class="nowrap"><a href=${paths.scope(row.id)}>${row.id}</a></td>
+                  <td class="nowrap">${row.type}</td>
                   <td>
-                    ${row.implies.map(
-                      (other) => html`<a class="chip" href=${paths.scope(other)}>${other}</a>`,
-                    )}
+                    <span class="chips"
+                      >${row.implies.map(
+                        (other) =>
+                          html`<a href=${paths.scope(other)}
+                            ><sl-badge variant="neutral" pill>${other}</sl-badge></a
+                          >`,
+                      )}</span
+                    >
                   </td>
                   <td class="number">${row.triggers.length}</td>
                 </tr>`,
               )}
             </tbody>
           </table>
-        </figure>`,
+        </div>`,
       )}
     `;
   }

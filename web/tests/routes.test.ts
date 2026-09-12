@@ -13,16 +13,12 @@ const commitOid = 'a'.repeat(40);
 const links: Record<keyof typeof paths, string> = {
   home: paths.home(),
   memory: paths.memory(memoryWithSlashes),
-  memoryEdit: paths.memoryEdit(memoryWithSlashes),
   memoryHistory: paths.memoryHistory(memoryWithSlashes),
   memoryCommit: paths.memoryCommit(memoryWithSlashes, commitOid),
   memoryNew: paths.memoryNew(),
   scope: paths.scope(sessionScope),
-  scopeEdit: paths.scopeEdit(sessionScope),
   contexts: paths.contexts(),
-  review: paths.review(),
   stats: paths.stats(),
-  triggerTest: paths.triggerTest(),
 };
 
 test('a link the app shows opens no view when its address is loaded directly', () => {
@@ -51,13 +47,16 @@ test('a memory id loses its slashes between the link and the view', () => {
 test('a scope id loses its colon or its slash between the link and the view', () => {
   const view = resolve(paths.scope(sessionScope));
   expect(view.properties.scopeId).toBe(sessionScope);
-  expect(view.properties.mode).toBe('view');
+  expect(view.name).toBe('scope');
 });
 
-test('the edit address of a memory opens the document instead of the editor', () => {
-  const view = resolve(paths.memoryEdit(memoryWithSlashes));
-  expect(view.properties.memoryId).toBe(memoryWithSlashes);
-  expect(view.properties.mode).toBe('edit');
+test('a separate edit address still exists, so an item has two pages', () => {
+  // There is one page per item: /memories/<id>/edit is not a route, so it reads as a
+  // memory whose id ends in "edit".
+  const view = resolve('/memories/widget-naming/edit');
+  expect(view.properties.mode).toBe('document');
+  expect(view.properties.memoryId).toBe('widget-naming/edit');
+  expect(resolve('/scopes/widgets/edit').properties.scopeId).toBe('widgets/edit');
 });
 
 test('the address of one commit loses the commit it names', () => {

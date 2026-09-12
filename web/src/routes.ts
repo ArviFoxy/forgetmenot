@@ -8,16 +8,12 @@ import type { RouteParams } from 'universal-router';
 export type RouteName =
   | 'home'
   | 'memory'
-  | 'memoryEdit'
   | 'memoryHistory'
   | 'memoryCommit'
   | 'memoryNew'
   | 'scope'
-  | 'scopeEdit'
   | 'contexts'
-  | 'review'
   | 'stats'
-  | 'triggerTest'
   | 'unknown';
 
 /** The element that shows an address, and the properties it is given. */
@@ -43,17 +39,13 @@ function encodeId(id: string): string {
 export const paths = {
   home: (): string => '/',
   memory: (id: string): string => `/memories/${encodeId(id)}`,
-  memoryEdit: (id: string): string => `/memories/${encodeId(id)}/edit`,
   memoryHistory: (id: string): string => `/memories/${encodeId(id)}/history`,
   memoryCommit: (id: string, oid: string): string =>
     `/memories/${encodeId(id)}/history/${encodeURIComponent(oid)}`,
   memoryNew: (): string => '/memories/new',
   scope: (id: string): string => `/scopes/${encodeId(id)}`,
-  scopeEdit: (id: string): string => `/scopes/${encodeId(id)}/edit`,
   contexts: (): string => '/contexts',
-  review: (): string => '/review',
   stats: (): string => '/stats',
-  triggerTest: (): string => '/triggers/test',
 };
 
 /** The id a wildcard matched, with its slashes back in place. */
@@ -68,7 +60,8 @@ function view(name: RouteName, tag: string, properties: Record<string, string> =
 }
 
 // The suffix routes come before the bare id, so /memories/<id>/history is the
-// history of <id> rather than a memory whose last segment is "history".
+// history of <id> rather than a memory whose last segment is "history". There is no
+// edit route: an item's own page is where it is edited.
 const router = new UniversalRouterSync<RouteView>([
   { path: '/', action: () => view('home', 'fmn-overview-view') },
   { path: '/memories/new', action: () => view('memoryNew', 'fmn-memory-new') },
@@ -87,29 +80,16 @@ const router = new UniversalRouterSync<RouteView>([
       view('memoryHistory', 'fmn-memory-page', { memoryId: joined(params, 'id'), mode: 'history' }),
   },
   {
-    path: '/memories/*id/edit',
-    action: ({ params }) =>
-      view('memoryEdit', 'fmn-memory-page', { memoryId: joined(params, 'id'), mode: 'edit' }),
-  },
-  {
     path: '/memories/*id',
     action: ({ params }) =>
       view('memory', 'fmn-memory-page', { memoryId: joined(params, 'id'), mode: 'document' }),
   },
   {
-    path: '/scopes/*id/edit',
-    action: ({ params }) =>
-      view('scopeEdit', 'fmn-scope-page', { scopeId: joined(params, 'id'), mode: 'edit' }),
-  },
-  {
     path: '/scopes/*id',
-    action: ({ params }) =>
-      view('scope', 'fmn-scope-page', { scopeId: joined(params, 'id'), mode: 'view' }),
+    action: ({ params }) => view('scope', 'fmn-scope-page', { scopeId: joined(params, 'id') }),
   },
   { path: '/contexts', action: () => view('contexts', 'fmn-contexts-view') },
-  { path: '/review', action: () => view('review', 'fmn-review-view') },
   { path: '/stats', action: () => view('stats', 'fmn-stats-view') },
-  { path: '/triggers/test', action: () => view('triggerTest', 'fmn-trigger-test-view') },
   { path: '/*rest', action: () => view('unknown', 'fmn-unknown-view') },
 ]);
 

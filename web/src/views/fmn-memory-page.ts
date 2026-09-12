@@ -1,73 +1,41 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { RequestFailed, api } from '../api/client';
-import type {
-  Commit,
-  HistoryEntry,
-  MemoryDoc,
-  MemoryKind,
-  MemorySource,
-  ValidationError,
-} from '../api/types';
+import type { Commit, HistoryEntry, MemoryDoc, MemoryKind, MemorySource } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
-import { bodyBelowTitle, frontendAuthor } from '../model/memoryBody';
+import { frontendAuthor } from '../model/author';
+import {
+  bodyToSave,
+  draftOf,
+  isDirty,
+  memoryText,
+  type MemoryDraft,
+} from '../model/memoryDraft';
 import { memoryKinds, memorySources, parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate, onStoreChange } from '../navigation';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-diff';
 import '../components/fmn-kind-icon';
-import '../components/fmn-markdown';
+import '../components/fmn-markdown-editor';
 import '../components/fmn-side-by-side';
-import '../components/fmn-source-editor';
 import '../components/fmn-validation-errors';
+import type { BodyChange, FmnMarkdownEditor } from '../components/fmn-markdown-editor';
 
-export type MemoryMode = 'document' | 'edit' | 'history' | 'commit';
-
-/** The edit in progress, against the version it was started from. */
-interface Draft {
-  baseVersion: string;
-  description: string;
-  kind: MemoryKind;
-  scopesText: string;
-  source: MemorySource;
-  body: string;
-  message: string;
-  preview: boolean;
-  saving: boolean;
-  errors: ValidationError[];
-  conflict: MemoryDoc | null;
-  failure: string | null;
-}
-
-function draftOf(doc: MemoryDoc): Draft {
-  return {
-    baseVersion: doc.version,
-    description: doc.description,
-    kind: doc.kind,
-    scopesText: doc.scopes.join(', '),
-    source: doc.source,
-    body: doc.body,
-    message: '',
-    preview: true,
-    saving: false,
-    errors: [],
-    conflict: null,
-    failure: null,
-  };
-}
+export type MemoryMode = 'document' | 'history' | 'commit';
 
 function missingStatus(error: Error): 'failed' | 'missing' {
   return error instanceof RequestFailed && error.status === 404 ? 'missing' : 'failed';
 }
 
-/** One memory: its document, its fields, its history and one commit of it. */
+/** One memory: its document and fields, edited in place, with its history. */
 export class FmnMemoryPage extends PageElement {
   static override properties: PropertyDeclarations = {
     memoryId: { type: String },
     mode: { type: String },
     oid: { type: String },
     draft: { state: true },
+    editing: { state: true },
     archiveMessage: { state: true },
     archiving: { state: true },
     archiveFailure: { state: true },
@@ -77,11 +45,15 @@ export class FmnMemoryPage extends PageElement {
   mode: MemoryMode = 'document';
   oid = '';
 
-  private readonly doc = new Resource<MemoryDoc>(() => this.requestUpdate(), { classify: missingStatus });
+  private readonly doc = new Resource<MemoryDoc>(() => this.requestUpdate(), {
+    classify: missingStatus,
+  });
   private readonly commits = new Resource<Commit[]>(() => this.requestUpdate());
   private readonly entry = new Resource<HistoryEntry>(() => this.requestUpdate());
 
-  private draft: Draft | null = null;
+  private draft: MemoryDraft | null = null;
+  /** The field whose control is open, if any. */
+  private editing: string | null = null;
   private archiveMessage = '';
   private archiving = false;
   private archiveFailure: string | null = null;
@@ -107,16 +79,10 @@ export class FmnMemoryPage extends PageElement {
     this.stopListening = null;
   }
 
-  // Loads and the edit draft are set up after a render, never during one, so an
-  // update never changes the state the same update is rendering.
   override updated(): void {
-    this.syncLoads();
-    this.syncDraft();
-  }
-
-  private syncLoads(): void {
     if (this.memoryId !== '' && this.loadedId !== this.memoryId) {
       this.loadedId = this.memoryId;
+      this.draft = null;
       void this.doc.load(() => api.memory(this.memoryId));
     }
     const wantsHistory = this.mode === 'history' || this.mode === 'commit';
@@ -129,21 +95,22 @@ export class FmnMemoryPage extends PageElement {
       this.loadedEntry = entryKey;
       void this.entry.load(() => api.memoryHistoryEntry(this.memoryId, this.oid));
     }
-  }
-
-  /** The draft is for one loaded version; a new version or leaving edit mode drops it. */
-  private syncDraft(): void {
     const doc = this.doc.value;
-    if (this.mode === 'edit' && doc !== null) {
-      if (this.draft === null || this.draft.baseVersion !== doc.version) this.draft = draftOf(doc);
-      return;
+    if (doc !== null && (this.draft === null || this.draft.baseVersion !== doc.version)) {
+      this.draft = draftOf(doc);
     }
-    if (this.mode !== 'edit' && this.draft !== null) this.draft = null;
   }
 
-  private change(change: Partial<Draft>): void {
+  private change(change: Partial<MemoryDraft>): void {
     if (this.draft === null) return;
     this.draft = { ...this.draft, ...change };
+  }
+
+  private discard(): void {
+    const doc = this.doc.value;
+    if (doc === null) return;
+    this.draft = draftOf(doc);
+    this.editing = null;
   }
 
   private async save(): Promise<void> {
@@ -156,15 +123,16 @@ export class FmnMemoryPage extends PageElement {
         kind: draft.kind,
         scopes: parseIdList(draft.scopesText),
         source: draft.source,
-        body: draft.body,
+        body: bodyToSave(draft),
         base_version: draft.baseVersion,
         author: frontendAuthor,
         message: draft.message,
       });
       if (outcome.kind === 'written') {
         this.draft = null;
+        this.editing = null;
+        this.loadedId = '';
         announceStoreChange();
-        navigate(paths.memory(this.memoryId));
         return;
       }
       if (outcome.kind === 'conflict') this.change({ conflict: outcome.conflict.current });
@@ -177,10 +145,10 @@ export class FmnMemoryPage extends PageElement {
     }
   }
 
-  /** A refused write is reported below the editor, which may be off screen. */
+  /** A refused write is reported below the document, which may be off screen. */
   private async showWriteOutcome(): Promise<void> {
     await this.updateComplete;
-    const reported = this.querySelector('.conflict, fmn-validation-errors table, p.failure');
+    const reported = this.querySelector('.conflict, fmn-validation-errors sl-alert, p.failure');
     reported?.scrollIntoView?.({ block: 'center' });
   }
 
@@ -195,6 +163,7 @@ export class FmnMemoryPage extends PageElement {
       });
       if (outcome.kind === 'written') {
         this.archiveMessage = '';
+        this.loadedId = '';
         announceStoreChange();
         return;
       }
@@ -210,209 +179,263 @@ export class FmnMemoryPage extends PageElement {
   }
 
   private renderTabs(): TemplateResult {
-    const tabs: { href: string; label: string; active: boolean }[] = [
-      { href: paths.memory(this.memoryId), label: 'Document', active: this.mode === 'document' },
-      { href: paths.memoryEdit(this.memoryId), label: 'Edit', active: this.mode === 'edit' },
-      {
-        href: paths.memoryHistory(this.memoryId),
-        label: 'History',
-        active: this.mode === 'history' || this.mode === 'commit',
-      },
-    ];
-    return html`<nav class="tabs" aria-label="Memory views">
-      <ul>
-        ${tabs.map(
-          (tab) => html`<li>
-            <a href=${tab.href} aria-current=${tab.active ? 'page' : 'false'}>${tab.label}</a>
-          </li>`,
-        )}
-      </ul>
-    </nav>`;
+    const active = this.mode === 'document' ? 'document' : 'history';
+    return html`<sl-tab-group
+      class="page-tabs"
+      @sl-tab-show=${(event: CustomEvent<{ name: string }>) => {
+        const wanted = event.detail.name === 'document'
+          ? paths.memory(this.memoryId)
+          : paths.memoryHistory(this.memoryId);
+        navigate(wanted);
+      }}
+    >
+      <sl-tab slot="nav" panel="document" ?active=${active === 'document'}>
+        <sl-icon name="file-text"></sl-icon>Document
+      </sl-tab>
+      <sl-tab slot="nav" panel="history" ?active=${active === 'history'}>
+        <sl-icon name="clock"></sl-icon>History
+      </sl-tab>
+    </sl-tab-group>`;
   }
 
-  private renderInfobox(doc: MemoryDoc): TemplateResult {
+  /** A field that shows its value and opens a control when asked. */
+  private renderField(
+    name: string,
+    label: string,
+    value: TemplateResult,
+    control: () => TemplateResult,
+  ): TemplateResult {
+    return html`<div class="field">
+      <span class="field-label">${label}</span>
+      ${this.editing === name
+        ? html`<div class="inline-edit">
+            ${control()}
+            <sl-icon-button
+              name="x"
+              label="Close ${label}"
+              @click=${() => {
+                this.editing = null;
+              }}
+            ></sl-icon-button>
+          </div>`
+        : html`<div class="field-value">
+            ${value}
+            <sl-icon-button
+              name="pencil"
+              label="Edit ${label}"
+              @click=${() => {
+                this.editing = name;
+              }}
+            ></sl-icon-button>
+          </div>`}
+    </div>`;
+  }
+
+  private renderStatic(label: string, value: TemplateResult): TemplateResult {
+    return html`<div class="field">
+      <span class="field-label">${label}</span>
+      <div class="field-value">${value}</div>
+    </div>`;
+  }
+
+  private renderInfobox(doc: MemoryDoc, draft: MemoryDraft): TemplateResult {
     return html`<aside class="infobox">
-      <dl>
-        <dt>Name</dt>
-        <dd>${doc.name}</dd>
-        <dt>Id</dt>
-        <dd><code>${doc.id}</code></dd>
-        <dt>Kind</dt>
-        <dd><fmn-kind-icon kind=${doc.kind}></fmn-kind-icon> ${doc.kind}</dd>
-        <dt>Scopes</dt>
-        <dd>
-          ${doc.scopes.map((scope) => html`<a class="chip" href=${paths.scope(scope)}>${scope}</a>`)}
-        </dd>
-        <dt>Source</dt>
-        <dd>${doc.source}</dd>
-        <dt>Modified</dt>
-        <dd>${doc.modified ?? ''}</dd>
-        <dt>Archived</dt>
-        <dd>${doc.archived ? 'yes' : 'no'}</dd>
-        <dt>Version</dt>
-        <dd><code>${doc.version}</code></dd>
-        <dt>Backlinks</dt>
-        <dd>
-          ${doc.backlinks.length === 0
-            ? html`<span class="empty">none</span>`
-            : doc.backlinks.map((name) => html`<a class="chip" href=${paths.memory(name)}>${name}</a>`)}
-        </dd>
-      </dl>
+      ${this.renderStatic('Name', html`<span class="value-text">${doc.name}</span>`)}
+      ${this.renderStatic('Id', html`<code>${doc.id}</code>`)}
+      ${this.renderField(
+        'kind',
+        'Kind',
+        html`<fmn-kind-icon kind=${draft.kind}></fmn-kind-icon
+        ><span class="value-text">${draft.kind}</span>`,
+        () => html`<sl-select
+          size="small"
+          value=${draft.kind}
+          hoist
+          @sl-change=${(event: Event) =>
+            this.change({ kind: (event.target as HTMLInputElement).value as MemoryKind })}
+        >
+          ${memoryKinds.map((kind) => html`<sl-option value=${kind}>${kind}</sl-option>`)}
+        </sl-select>`,
+      )}
+      ${this.renderField(
+        'scopes',
+        'Scopes',
+        html`<span class="chips"
+          >${parseIdList(draft.scopesText).map(
+            (scope) =>
+              html`<a href=${paths.scope(scope)}
+                ><sl-badge variant="neutral" pill>${scope}</sl-badge></a
+              >`,
+          )}</span
+        >`,
+        () => html`<sl-input
+          size="small"
+          value=${draft.scopesText}
+          help-text="Comma separated"
+          @sl-input=${(event: Event) =>
+            this.change({ scopesText: (event.target as HTMLInputElement).value })}
+        ></sl-input>`,
+      )}
+      ${this.renderField(
+        'source',
+        'Source',
+        html`<span class="value-text">${draft.source}</span>`,
+        () => html`<sl-select
+          size="small"
+          value=${draft.source}
+          hoist
+          @sl-change=${(event: Event) =>
+            this.change({ source: (event.target as HTMLInputElement).value as MemorySource })}
+        >
+          ${memorySources.map((source) => html`<sl-option value=${source}>${source}</sl-option>`)}
+        </sl-select>`,
+      )}
+      ${this.renderStatic('Modified', html`<span class="value-mono">${doc.modified ?? '—'}</span>`)}
+      ${this.renderStatic(
+        'Archived',
+        html`<span class="value-text">${doc.archived ? 'yes' : 'no'}</span>`,
+      )}
+      ${this.renderStatic('Version', html`<code>${doc.version}</code>`)}
+      ${this.renderStatic(
+        'Links',
+        doc.links.length === 0
+          ? html`<span class="empty">none</span>`
+          : html`<span class="chips"
+              >${doc.links.map(
+                (name) =>
+                  html`<a href=${paths.memory(name)}
+                    ><sl-badge variant="neutral" pill>${name}</sl-badge></a
+                  >`,
+              )}</span
+            >`,
+      )}
+      ${this.renderStatic(
+        'Backlinks',
+        doc.backlinks.length === 0
+          ? html`<span class="empty">none</span>`
+          : html`<span class="chips"
+              >${doc.backlinks.map(
+                (name) =>
+                  html`<a href=${paths.memory(name)}
+                    ><sl-badge variant="neutral" pill>${name}</sl-badge></a
+                  >`,
+              )}</span
+            >`,
+      )}
+      <div class="field">
+        <sl-details summary="Archive">
+          <sl-input
+            size="small"
+            label="Commit message"
+            maxlength="72"
+            value=${this.archiveMessage}
+            @sl-input=${(event: Event) => {
+              this.archiveMessage = (event.target as HTMLInputElement).value;
+            }}
+          ></sl-input>
+          <sl-button
+            size="small"
+            variant="default"
+            ?disabled=${this.archiving || this.archiveMessage.trim() === ''}
+            ?loading=${this.archiving}
+            @click=${() => void this.archive(doc)}
+            >Archive memory</sl-button
+          >
+          ${this.archiveFailure === null
+            ? nothing
+            : html`<p class="failure" role="alert">${this.archiveFailure}</p>`}
+        </sl-details>
+      </div>
     </aside>`;
   }
 
-  private renderDocument(doc: MemoryDoc): TemplateResult {
+  private renderDocument(doc: MemoryDoc, draft: MemoryDraft): TemplateResult {
     return html`
       <div class="memory-layout">
         <div class="document">
-          <fmn-markdown .text=${bodyBelowTitle(doc.body, doc.title)}></fmn-markdown>
-          <details class="archive-panel">
-            <summary role="button" class="secondary outline">Archive</summary>
-            <fmn-commit-bar
-              fieldId="archive-message"
-              saveLabel="Archive memory"
-              .message=${this.archiveMessage}
-              .saving=${this.archiving}
-              @fmn-message-change=${(event: CustomEvent<{ message: string }>) => {
-                this.archiveMessage = event.detail.message;
-              }}
-              @fmn-save=${() => void this.archive(doc)}
-            ></fmn-commit-bar>
-            ${this.archiveFailure === null
-              ? nothing
-              : html`<p class="failure" role="alert">${this.archiveFailure}</p>`}
-          </details>
+          <fmn-markdown-editor
+            resetKey=${draft.baseVersion}
+            .value=${draft.originalBody}
+            @fmn-body-change=${(event: CustomEvent<BodyChange>) =>
+              this.change({ editedBody: event.detail.value })}
+          ></fmn-markdown-editor>
         </div>
-        ${this.renderInfobox(doc)}
+        ${this.renderInfobox(doc, draft)}
       </div>
+      ${this.renderCommitBar(doc, draft)} ${this.renderOutcome(draft)}
     `;
   }
 
-  private renderEdit(doc: MemoryDoc): TemplateResult {
-    const draft = this.draft;
-    if (draft === null) return html`<p aria-busy="true">Loading</p>`;
+  private renderCommitBar(doc: MemoryDoc, draft: MemoryDraft): TemplateResult | typeof nothing {
+    if (!isDirty(draft, doc)) return nothing;
+    return html`<fmn-commit-bar
+      .message=${draft.message}
+      .saving=${draft.saving}
+      saveLabel="Save"
+      @fmn-message-change=${(event: CustomEvent<{ message: string }>) =>
+        this.change({ message: event.detail.message })}
+      @fmn-save=${() => void this.save()}
+      @fmn-discard=${() => this.discard()}
+    ></fmn-commit-bar>`;
+  }
+
+  private renderOutcome(draft: MemoryDraft): TemplateResult {
     return html`
-      <div class="field-grid">
-        <label for="memory-description">Description</label>
-        <input
-          id="memory-description"
-          type="text"
-          required
-          .value=${draft.description}
-          @input=${(event: Event) =>
-            this.change({ description: (event.target as HTMLInputElement).value })}
-        />
-
-        <label for="memory-kind">Kind</label>
-        <select
-          id="memory-kind"
-          @change=${(event: Event) =>
-            this.change({ kind: (event.target as HTMLSelectElement).value as MemoryKind })}
-        >
-          ${memoryKinds.map(
-            (kind) => html`<option value=${kind} ?selected=${kind === draft.kind}>${kind}</option>`,
-          )}
-        </select>
-
-        <label for="memory-scopes">Scopes</label>
-        <input
-          id="memory-scopes"
-          type="text"
-          .value=${draft.scopesText}
-          @input=${(event: Event) =>
-            this.change({ scopesText: (event.target as HTMLInputElement).value })}
-        />
-
-        <label for="memory-source">Source</label>
-        <select
-          id="memory-source"
-          @change=${(event: Event) =>
-            this.change({ source: (event.target as HTMLSelectElement).value as MemorySource })}
-        >
-          ${memorySources.map(
-            (source) =>
-              html`<option value=${source} ?selected=${source === draft.source}>${source}</option>`,
-          )}
-        </select>
-      </div>
-
-      <label class="preview-toggle">
-        <input
-          type="checkbox"
-          ?checked=${draft.preview}
-          @change=${(event: Event) =>
-            this.change({ preview: (event.target as HTMLInputElement).checked })}
-        />
-        Preview
-      </label>
-
-      <div class="edit-split" ?data-preview=${draft.preview}>
-        <fmn-source-editor
-          label="Body"
-          resetKey=${draft.baseVersion}
-          .value=${draft.body}
-          @fmn-source-change=${(event: CustomEvent<{ value: string }>) =>
-            this.change({ body: event.detail.value })}
-        ></fmn-source-editor>
-        ${draft.preview
-          ? html`<div class="document preview">
-              <p class="field-label">Rendered</p>
-              <h1>${doc.title}</h1>
-              <fmn-markdown .text=${bodyBelowTitle(draft.body, doc.title)}></fmn-markdown>
-            </div>`
-          : nothing}
-      </div>
-
-      <fmn-commit-bar
-        fieldId="commit-message"
-        saveLabel="Save"
-        .message=${draft.message}
-        .saving=${draft.saving}
-        cancelHref=${paths.memory(this.memoryId)}
-        @fmn-message-change=${(event: CustomEvent<{ message: string }>) =>
-          this.change({ message: event.detail.message })}
-        @fmn-save=${() => void this.save()}
-      ></fmn-commit-bar>
-
       <fmn-validation-errors .errors=${draft.errors}></fmn-validation-errors>
       ${draft.failure === null ? nothing : html`<p class="failure" role="alert">${draft.failure}</p>`}
       ${draft.conflict === null ? nothing : this.renderConflict(draft, draft.conflict)}
     `;
   }
 
-  private renderConflict(draft: Draft, current: MemoryDoc): TemplateResult {
-    return html`<section class="conflict" role="alert">
-      <h2>Conflict</h2>
-      <dl class="inline-fields">
-        <dt>Loaded version</dt>
-        <dd><code>${draft.baseVersion}</code></dd>
-        <dt>Current version</dt>
-        <dd><code>${current.version}</code></dd>
-      </dl>
+  private renderConflict(draft: MemoryDraft, current: MemoryDoc): TemplateResult {
+    const mine = memoryText({
+      description: draft.description,
+      kind: draft.kind,
+      scopes: parseIdList(draft.scopesText),
+      source: draft.source,
+      body: bodyToSave(draft),
+    });
+    const theirs = memoryText({
+      description: current.description,
+      kind: current.kind,
+      scopes: current.scopes,
+      source: current.source,
+      body: current.body,
+    });
+    // The alert is wrapped, because a Shoelace alert host is display: contents and
+    // so has no box of its own to place or scroll to.
+    return html`<section class="conflict">
+      <sl-alert variant="warning" open>
+      <sl-icon slot="icon" name="circle-alert"></sl-icon>
+      <strong>Conflict</strong>
+      <div class="conflict-versions">
+        <span>Loaded version <code>${draft.baseVersion}</code></span>
+        <span>Current version <code>${current.version}</code></span>
+      </div>
       <fmn-side-by-side
         leftLabel="Your text"
-        .leftText=${draft.body}
+        .leftText=${mine}
         rightLabel="Current on server"
-        .rightText=${current.body}
+        .rightText=${theirs}
       ></fmn-side-by-side>
-      <button
-        type="button"
-        @click=${() => {
-          this.draft = null;
-          this.loadedId = '';
-          this.requestUpdate();
-        }}
-      >
-        Reload current version
-      </button>
+        <sl-button
+          size="small"
+          @click=${() => {
+            this.draft = null;
+            this.loadedId = '';
+            this.requestUpdate();
+          }}
+          >Reload current version</sl-button
+        >
+      </sl-alert>
     </section>`;
   }
 
   private renderHistory(): TemplateResult {
     return gate(
       this.commits.state,
-      (commits) => html`<figure>
-        <table>
+      (commits) => html`<div class="table-wrap">
+        <table class="data">
           <thead>
             <tr>
               <th scope="col">Title</th>
@@ -425,68 +448,90 @@ export class FmnMemoryPage extends PageElement {
             ${commits.map(
               (commit) => html`<tr>
                 <td><a href=${paths.memoryCommit(this.memoryId, commit.oid)}>${commit.title}</a></td>
-                <td>${commit.time}</td>
+                <td class="nowrap">${commit.time}</td>
                 <td>${commit.author}</td>
                 <td><code>${commit.oid.slice(0, 10)}</code></td>
               </tr>`,
             )}
           </tbody>
         </table>
-      </figure>`,
+      </div>`,
     );
   }
 
   private renderCommit(): TemplateResult {
-    return html`
-      ${gate(
-        this.entry.state,
-        (entry) => html`
-          <dl class="inline-fields">
-            <dt>Title</dt>
-            <dd>${entry.commit.title}</dd>
-            <dt>Time</dt>
-            <dd>${entry.commit.time}</dd>
-            <dt>Author</dt>
-            <dd>${entry.commit.author}</dd>
-            <dt>Commit</dt>
-            <dd><code>${entry.commit.oid}</code></dd>
-          </dl>
-          <h2>Diff</h2>
-          <fmn-diff .diff=${entry.diff}></fmn-diff>
-          <h2>Content</h2>
-          <pre class="content">${entry.content}</pre>
-        `,
-      )}
-    `;
-  }
-
-  private renderMode(doc: MemoryDoc): TemplateResult {
-    switch (this.mode) {
-      case 'edit':
-        return this.renderEdit(doc);
-      case 'history':
-        return this.renderHistory();
-      case 'commit':
-        return this.renderCommit();
-      default:
-        return this.renderDocument(doc);
-    }
+    return gate(
+      this.entry.state,
+      (entry) => html`
+        <div class="infobox">
+          ${this.renderStatic('Title', html`<span class="value-text">${entry.commit.title}</span>`)}
+          ${this.renderStatic('Time', html`<span class="value-mono">${entry.commit.time}</span>`)}
+          ${this.renderStatic('Author', html`<span class="value-text">${entry.commit.author}</span>`)}
+          ${this.renderStatic('Commit', html`<code>${entry.commit.oid}</code>`)}
+        </div>
+        <h2>Diff</h2>
+        <fmn-diff .diff=${entry.diff}></fmn-diff>
+        <h2>Content</h2>
+        <pre class="content">${entry.content}</pre>
+      `,
+    );
   }
 
   override render(): TemplateResult {
     return gate(
       this.doc.state,
-      (doc) => html`
-        <header class="page-header">
-          <h1>${doc.title}</h1>
-          <p class="description">${doc.description}</p>
-          ${doc.archived ? html`<p class="badge-archived">archived</p>` : nothing}
+      (doc) => {
+        const draft = this.draft ?? draftOf(doc);
+        return html`
+          <header class="page-header">
+            <div class="page-name">
+              <fmn-kind-icon kind=${draft.kind}></fmn-kind-icon>
+              <span>${doc.id}</span>
+              ${doc.archived ? html`<sl-badge variant="neutral">archived</sl-badge>` : nothing}
+            </div>
+            ${this.editing === 'description'
+              ? html`<div class="inline-edit">
+                  <sl-input
+                    size="small"
+                    label="Description"
+                    value=${draft.description}
+                    @sl-input=${(event: Event) =>
+                      this.change({ description: (event.target as HTMLInputElement).value })}
+                  ></sl-input>
+                  <sl-icon-button
+                    name="x"
+                    label="Close Description"
+                    @click=${() => {
+                      this.editing = null;
+                    }}
+                  ></sl-icon-button>
+                </div>`
+              : html`<p class="description">
+                  ${draft.description}
+                  <sl-icon-button
+                    name="pencil"
+                    label="Edit Description"
+                    @click=${() => {
+                      this.editing = 'description';
+                    }}
+                  ></sl-icon-button>
+                </p>`}
+          </header>
           ${this.renderTabs()}
-        </header>
-        ${this.renderMode(doc)}
-      `,
+          ${this.mode === 'history'
+            ? this.renderHistory()
+            : this.mode === 'commit'
+              ? this.renderCommit()
+              : this.renderDocument(doc, draft)}
+        `;
+      },
       () => html`<p class="failure" role="alert">No memory with the id ${this.memoryId}</p>`,
     );
+  }
+
+  /** The editor element, for tests and for reading the markdown on demand. */
+  get editor(): FmnMarkdownEditor | null {
+    return this.querySelector('fmn-markdown-editor');
   }
 }
 

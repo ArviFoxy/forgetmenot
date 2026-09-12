@@ -13,22 +13,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@codemirror/commands": "^6.11.0",
-    "@codemirror/lang-markdown": "^6.5.2",
-    "@codemirror/language": "^6.12.4",
-    "@codemirror/state": "^6.7.4",
-    "@codemirror/view": "^6.43.11",
-    "@lezer/highlight": "^1.2.3",
-    "@picocss/pico": "^2.1.1",
-    "bootstrap-icons": "^1.13.1",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@milkdown/crepe": "^7.22.1",
+    "@shoelace-style/shoelace": "^2.20.1",
     "diff": "^9.0.0",
     "lit": "^3.3.3",
-    "rehype-stringify": "^10.0.1",
-    "remark-gfm": "^4.0.1",
-    "remark-parse": "^11.0.0",
-    "remark-rehype": "^11.1.2",
-    "remark-wiki-link": "^2.0.1",
-    "unified": "^11.0.5",
+    "lucide-static": "^1.45.0",
+    "modern-normalize": "^3.0.1",
     "universal-router": "^10.0.3"
   },
   "devDependencies": {

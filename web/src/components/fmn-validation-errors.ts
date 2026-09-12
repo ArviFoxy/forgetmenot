@@ -12,24 +12,13 @@ export class FmnValidationErrors extends PageElement {
 
   override render(): TemplateResult | typeof nothing {
     if (this.errors.length === 0) return nothing;
-    return html`
-      <table class="failure" role="alert">
-        <thead>
-          <tr>
-            <th scope="col">Path</th>
-            <th scope="col">Message</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${this.errors.map(
-            (error) => html`<tr>
-              <td><code>${error.path}</code></td>
-              <td>${error.message}</td>
-            </tr>`,
-          )}
-        </tbody>
-      </table>
-    `;
+    return html`<sl-alert variant="danger" open>
+      <sl-icon slot="icon" name="circle-alert"></sl-icon>
+      <strong>The write was refused</strong>
+      <ul>
+        ${this.errors.map((error) => html`<li><code>${error.path}</code> ${error.message}</li>`)}
+      </ul>
+    </sl-alert>`;
   }
 }
 

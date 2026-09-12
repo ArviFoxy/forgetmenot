@@ -2,13 +2,14 @@ import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'l
 import { api } from '../api/client';
 import type { MemoryKind, MemorySource, ValidationError } from '../api/types';
 import { PageElement } from '../lib/element';
-import { frontendAuthor } from '../model/memoryBody';
+import { frontendAuthor } from '../model/author';
 import { memoryKinds, memorySources, parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate } from '../navigation';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
-import '../components/fmn-source-editor';
+import '../components/fmn-markdown-editor';
 import '../components/fmn-validation-errors';
+import type { BodyChange } from '../components/fmn-markdown-editor';
 
 /** Creates a memory: its id is its path under memories/. */
 export class FmnMemoryNew extends PageElement {
@@ -68,85 +69,77 @@ export class FmnMemoryNew extends PageElement {
   override render(): TemplateResult {
     return html`
       <header class="page-header">
+        <div class="page-name"><sl-icon name="plus"></sl-icon><span>new memory</span></div>
         <h1>New memory</h1>
       </header>
       <div class="field-grid">
-        <label for="memory-id">Id</label>
-        <input
-          id="memory-id"
-          type="text"
-          required
-          .value=${this.newId}
-          @input=${(event: Event) => {
+        <sl-input
+          size="small"
+          label="Id"
+          help-text="The path under memories/, without .md"
+          value=${this.newId}
+          @sl-input=${(event: Event) => {
             this.newId = (event.target as HTMLInputElement).value;
           }}
-        />
-
-        <label for="memory-description">Description</label>
-        <input
-          id="memory-description"
-          type="text"
-          required
-          .value=${this.description}
-          @input=${(event: Event) => {
+        ></sl-input>
+        <sl-input
+          size="small"
+          label="Description"
+          help-text="The line the agent sees in an index"
+          value=${this.description}
+          @sl-input=${(event: Event) => {
             this.description = (event.target as HTMLInputElement).value;
           }}
-        />
-
-        <label for="memory-kind">Kind</label>
-        <select
-          id="memory-kind"
-          @change=${(event: Event) => {
-            this.kind = (event.target as HTMLSelectElement).value as MemoryKind;
+        ></sl-input>
+        <sl-select
+          size="small"
+          label="Kind"
+          value=${this.kind}
+          @sl-change=${(event: Event) => {
+            this.kind = (event.target as HTMLInputElement).value as MemoryKind;
           }}
         >
-          ${memoryKinds.map(
-            (kind) => html`<option value=${kind} ?selected=${kind === this.kind}>${kind}</option>`,
-          )}
-        </select>
-
-        <label for="memory-scopes">Scopes</label>
-        <input
-          id="memory-scopes"
-          type="text"
-          .value=${this.scopesText}
-          @input=${(event: Event) => {
+          ${memoryKinds.map((kind) => html`<sl-option value=${kind}>${kind}</sl-option>`)}
+        </sl-select>
+        <sl-input
+          size="small"
+          label="Scopes"
+          help-text="Comma separated"
+          value=${this.scopesText}
+          @sl-input=${(event: Event) => {
             this.scopesText = (event.target as HTMLInputElement).value;
           }}
-        />
-
-        <label for="memory-source">Source</label>
-        <select
-          id="memory-source"
-          @change=${(event: Event) => {
-            this.source = (event.target as HTMLSelectElement).value as MemorySource;
+        ></sl-input>
+        <sl-select
+          size="small"
+          label="Source"
+          value=${this.source}
+          @sl-change=${(event: Event) => {
+            this.source = (event.target as HTMLInputElement).value as MemorySource;
           }}
         >
-          ${memorySources.map(
-            (source) =>
-              html`<option value=${source} ?selected=${source === this.source}>${source}</option>`,
-          )}
-        </select>
+          ${memorySources.map((source) => html`<sl-option value=${source}>${source}</sl-option>`)}
+        </sl-select>
       </div>
 
-      <fmn-source-editor
-        label="Body"
-        .value=${this.body}
-        @fmn-source-change=${(event: CustomEvent<{ value: string }>) => {
+      <h2>Body</h2>
+      <fmn-markdown-editor
+        placeholder="Write the memory. Type / for blocks."
+        @fmn-body-change=${(event: CustomEvent<BodyChange>) => {
           this.body = event.detail.value;
         }}
-      ></fmn-source-editor>
+      ></fmn-markdown-editor>
 
       <fmn-commit-bar
-        fieldId="commit-message"
+        label="New memory"
         saveLabel="Create"
         .message=${this.message}
         .saving=${this.saving}
-        cancelHref=${paths.home()}
         @fmn-message-change=${(event: CustomEvent<{ message: string }>) => {
           this.message = event.detail.message;
         }}
         @fmn-save=${() => void this.create()}
+        @fmn-discard=${() => navigate(paths.home())}
       ></fmn-commit-bar>
 
       <fmn-validation-errors .errors=${this.errors}></fmn-validation-errors>

@@ -38,8 +38,8 @@ export class FmnStatsView extends PageElement {
   }
 
   private renderMemories(rows: MemoryStatsRow[]): TemplateResult {
-    return html`<figure>
-      <table class="stats">
+    return html`<div class="table-wrap">
+      <table class="data stats">
         <thead>
           <tr>
             <th scope="col">Memory</th>
@@ -67,12 +67,12 @@ export class FmnStatsView extends PageElement {
           )}
         </tbody>
       </table>
-    </figure>`;
+    </div>`;
   }
 
   private renderTriggers(rows: TriggerStatsRow[]): TemplateResult {
-    return html`<figure>
-      <table class="stats">
+    return html`<div class="table-wrap">
+      <table class="data stats">
         <thead>
           <tr>
             <th scope="col">Scope</th>
@@ -96,12 +96,12 @@ export class FmnStatsView extends PageElement {
           )}
         </tbody>
       </table>
-    </figure>`;
+    </div>`;
   }
 
   private renderScopes(rows: ScopeStatsRow[]): TemplateResult {
-    return html`<figure>
-      <table class="stats">
+    return html`<div class="table-wrap">
+      <table class="data stats">
         <thead>
           <tr>
             <th scope="col">Scope</th>
@@ -119,12 +119,12 @@ export class FmnStatsView extends PageElement {
           )}
         </tbody>
       </table>
-    </figure>`;
+    </div>`;
   }
 
   private renderDenies(rows: DenyDayRow[]): TemplateResult {
-    return html`<figure>
-      <table class="stats">
+    return html`<div class="table-wrap">
+      <table class="data stats">
         <thead>
           <tr>
             <th scope="col">Day (UTC)</th>
@@ -142,12 +142,12 @@ export class FmnStatsView extends PageElement {
           )}
         </tbody>
       </table>
-    </figure>`;
+    </div>`;
   }
 
   private renderLatency(rows: LatencyRow[]): TemplateResult {
-    return html`<figure>
-      <table class="stats">
+    return html`<div class="table-wrap">
+      <table class="data stats">
         <thead>
           <tr>
             <th scope="col">Event</th>
@@ -171,12 +171,12 @@ export class FmnStatsView extends PageElement {
           )}
         </tbody>
       </table>
-    </figure>`;
+    </div>`;
   }
 
   private renderSessions(rows: SessionBytesRow[]): TemplateResult {
-    return html`<figure>
-      <table class="stats">
+    return html`<div class="table-wrap">
+      <table class="data stats">
         <thead>
           <tr>
             <th scope="col">Session</th>
@@ -194,12 +194,13 @@ export class FmnStatsView extends PageElement {
           )}
         </tbody>
       </table>
-    </figure>`;
+    </div>`;
   }
 
   override render(): TemplateResult {
     return html`
       <header class="page-header">
+        <div class="page-name"><sl-icon name="chart-column"></sl-icon><span>statistics</span></div>
         <h1>Statistics</h1>
       </header>
       <h2>Per memory</h2>

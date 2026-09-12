@@ -37,72 +37,68 @@ export class FmnTriggerTest extends PageElement {
   }
 
   override render(): TemplateResult {
-    const fieldId = `${this.idPrefix}-field`;
-    const machineId = `${this.idPrefix}-machine`;
-    const textId = `${this.idPrefix}-text`;
     return html`
       <section class="trigger-test">
         <h2>${this.heading}</h2>
         <div class="field-grid">
-          <label for=${fieldId}>Field</label>
-          <select
-            id=${fieldId}
-            @change=${(event: Event) => {
-              this.field = (event.target as HTMLSelectElement).value as TriggerField;
+          <sl-select
+            size="small"
+            label="Field"
+            value=${this.field}
+            hoist
+            @sl-change=${(event: Event) => {
+              this.field = (event.target as HTMLInputElement).value as TriggerField;
             }}
           >
-            ${triggerFields.map(
-              (name) => html`<option value=${name} ?selected=${name === this.field}>${name}</option>`,
-            )}
-          </select>
-
-          <label for=${machineId}>Machine</label>
-          <input
-            id=${machineId}
-            type="text"
-            .value=${this.machine}
-            @input=${(event: Event) => {
+            ${triggerFields.map((name) => html`<sl-option value=${name}>${name}</sl-option>`)}
+          </sl-select>
+          <sl-input
+            size="small"
+            label="Machine"
+            value=${this.machine}
+            @sl-input=${(event: Event) => {
               this.machine = (event.target as HTMLInputElement).value;
             }}
-          />
-
-          <label for=${textId}>Text</label>
-          <textarea
-            id=${textId}
-            rows="4"
-            .value=${this.text}
-            @input=${(event: Event) => {
-              this.text = (event.target as HTMLTextAreaElement).value;
+          ></sl-input>
+          <sl-textarea
+            size="small"
+            label="Text"
+            rows="3"
+            value=${this.text}
+            @sl-input=${(event: Event) => {
+              this.text = (event.target as HTMLInputElement).value;
             }}
-          ></textarea>
+          ></sl-textarea>
+          <div class="actions">
+            <sl-button size="small" variant="primary" @click=${() => void this.run()}>Test</sl-button>
+          </div>
         </div>
-        <button type="button" @click=${() => void this.run()}>Test</button>
 
-        ${this.failure === null
-          ? nothing
-          : html`<p class="failure" role="alert">${this.failure}</p>`}
+        ${this.failure === null ? nothing : html`<p class="failure" role="alert">${this.failure}</p>`}
         ${this.result === null
           ? nothing
-          : html`<figure>
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Scope</th>
-                    <th scope="col">Field</th>
-                    <th scope="col">Pattern</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${this.result.fired.map(
-                    (match) => html`<tr>
-                      <td><a href=${paths.scope(match.scope_id)}>${match.scope_id}</a></td>
-                      <td>${match.field}</td>
-                      <td><code>${match.pattern}</code></td>
-                    </tr>`,
-                  )}
-                </tbody>
-              </table>
-            </figure>`}
+          : this.result.fired.length === 0
+            ? html`<p class="empty">Nothing fired</p>`
+            : html`<div class="table-wrap">
+                <table class="data">
+                  <thead>
+                    <tr>
+                      <th scope="col">Scope</th>
+                      <th scope="col">Field</th>
+                      <th scope="col">Pattern</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${this.result.fired.map(
+                      (match) => html`<tr>
+                        <td class="nowrap"><a href=${paths.scope(match.scope_id)}>${match.scope_id}</a></td>
+                        <td class="nowrap">${match.field}</td>
+                        <td><code>${match.pattern}</code></td>
+                      </tr>`,
+                    )}
+                  </tbody>
+                </table>
+              </div>`}
       </section>
     `;
   }

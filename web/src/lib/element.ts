@@ -20,7 +20,7 @@ export function gate<Value>(
   switch (state.status) {
     case 'idle':
     case 'loading':
-      return html`<p aria-busy="true">Loading</p>`;
+      return html`<p class="loading"><sl-spinner></sl-spinner> Loading</p>`;
     case 'missing':
       return missing?.(state.error) ?? html`<p class="failure" role="alert">${state.error.message}</p>`;
     case 'failed':

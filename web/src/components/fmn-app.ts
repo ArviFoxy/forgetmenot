@@ -1,6 +1,6 @@
-import { html, type TemplateResult, type PropertyDeclarations } from 'lit';
+import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { PageElement } from '../lib/element';
-import { currentPath, onLocationChange } from '../navigation';
+import { currentPath, navigate, onLocationChange } from '../navigation';
 import { paths, resolve, type RouteName, type RouteView } from '../routes';
 import './fmn-sidebar';
 import './fmn-theme-toggle';
@@ -9,55 +9,64 @@ import '../views/fmn-memory-page';
 import '../views/fmn-memory-new';
 import '../views/fmn-scope-page';
 import '../views/fmn-contexts-view';
-import '../views/fmn-review-view';
 import '../views/fmn-stats-view';
-import '../views/fmn-trigger-test-view';
 import '../views/fmn-unknown-view';
 
 interface Section {
   name: RouteName;
   href: string;
   label: string;
+  icon: string;
 }
 
 const sections: Section[] = [
-  { name: 'memoryNew', href: paths.memoryNew(), label: 'New memory' },
-  { name: 'contexts', href: paths.contexts(), label: 'Contexts' },
-  { name: 'review', href: paths.review(), label: 'Review' },
-  { name: 'stats', href: paths.stats(), label: 'Statistics' },
-  { name: 'triggerTest', href: paths.triggerTest(), label: 'Trigger test' },
+  { name: 'home', href: paths.home(), label: 'Overview', icon: 'file-text' },
+  { name: 'memoryNew', href: paths.memoryNew(), label: 'New memory', icon: 'plus' },
+  { name: 'contexts', href: paths.contexts(), label: 'Contexts', icon: 'activity' },
+  { name: 'stats', href: paths.stats(), label: 'Statistics', icon: 'chart-column' },
 ];
 
 /** Every property any view takes, so a reused element never keeps a stale one. */
 const viewProperties = ['memoryId', 'scopeId', 'mode', 'oid'];
+
+const narrowQuery = '(max-width: 900px)';
 
 /** The shell: the bar, the hierarchy, and the view for the current address. */
 export class FmnApp extends PageElement {
   static override properties: PropertyDeclarations = {
     view: { state: true },
     navOpen: { state: true },
+    narrow: { state: true },
   };
 
   private view: RouteView = resolve(currentPath());
   private navOpen = false;
+  private narrow = window.matchMedia(narrowQuery).matches;
 
   private element: HTMLElement | null = null;
-  private stopListening: (() => void) | null = null;
+  private stopListening: (() => void)[] = [];
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this.stopListening = onLocationChange(() => {
-      this.view = resolve(currentPath());
-      this.navOpen = false;
-      this.querySelector('details.app-menu-compact')?.removeAttribute('open');
-      window.scrollTo({ top: 0 });
-    });
+    const media = window.matchMedia(narrowQuery);
+    const onResize = (): void => {
+      this.narrow = media.matches;
+    };
+    media.addEventListener('change', onResize);
+    this.stopListening = [
+      onLocationChange(() => {
+        this.view = resolve(currentPath());
+        this.navOpen = false;
+        window.scrollTo({ top: 0 });
+      }),
+      () => media.removeEventListener('change', onResize),
+    ];
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    this.stopListening?.();
-    this.stopListening = null;
+    for (const stop of this.stopListening) stop();
+    this.stopListening = [];
   }
 
   /** The element that shows the address, reused while the address keeps the same view. */
@@ -70,54 +79,64 @@ export class FmnApp extends PageElement {
     return this.element;
   }
 
-  private menuLinks(): TemplateResult[] {
-    return sections.map(
-      (section) => html`<li>
-        <a href=${section.href} aria-current=${this.view.name === section.name ? 'page' : 'false'}>
-          ${section.label}
-        </a>
-      </li>`,
-    );
-  }
-
   override render(): TemplateResult {
     return html`
       <header class="app-bar">
-        <button
-          type="button"
-          class="icon-button nav-toggle"
-          aria-label="Navigation"
-          aria-expanded=${this.navOpen ? 'true' : 'false'}
-          @click=${() => {
-            this.navOpen = !this.navOpen;
-          }}
-        >
-          <i class="bi bi-list"></i>
-        </button>
+        ${this.narrow
+          ? html`<sl-icon-button
+              class="nav-toggle"
+              name="menu"
+              label="Navigation"
+              @click=${() => {
+                this.navOpen = true;
+              }}
+            ></sl-icon-button>`
+          : nothing}
         <a class="brand" href=${paths.home()}>forgetmenot</a>
         <nav class="app-menu" aria-label="Sections">
-          <ul>
-            ${this.menuLinks()}
-          </ul>
+          ${sections.map(
+            (section) => html`<a
+              href=${section.href}
+              aria-current=${this.view.name === section.name ? 'page' : 'false'}
+            >
+              <sl-icon name=${section.icon}></sl-icon>${section.label}
+            </a>`,
+          )}
         </nav>
-        <details class="dropdown app-menu-compact">
-          <summary>Menu</summary>
-          <ul>
-            ${this.menuLinks()}
-          </ul>
-        </details>
+        <sl-dropdown class="app-menu-compact" placement="bottom-end" hoist>
+          <sl-button slot="trigger" size="small" caret>Menu</sl-button>
+          <sl-menu
+            @sl-select=${(event: CustomEvent<{ item: { value: string } }>) => {
+              const href = event.detail.item.value;
+              if (href !== '') navigate(href);
+            }}
+          >
+            ${sections.map(
+              (section) => html`<sl-menu-item value=${section.href}>
+                <sl-icon slot="prefix" name=${section.icon}></sl-icon>${section.label}
+              </sl-menu-item>`,
+            )}
+          </sl-menu>
+        </sl-dropdown>
         <fmn-theme-toggle></fmn-theme-toggle>
       </header>
       <div class="app-body">
-        <fmn-sidebar ?open=${this.navOpen}></fmn-sidebar>
-        <div
-          class="backdrop"
-          ?data-open=${this.navOpen}
-          @click=${() => {
-            this.navOpen = false;
-          }}
-        ></div>
-        <main class="content">${this.viewElement()}</main>
+        ${this.narrow
+          ? html`<sl-drawer
+              class="nav-drawer"
+              label="Scopes and memories"
+              placement="start"
+              ?open=${this.navOpen}
+              @sl-after-hide=${() => {
+                this.navOpen = false;
+              }}
+            >
+              <fmn-sidebar></fmn-sidebar>
+            </sl-drawer>`
+          : html`<fmn-sidebar></fmn-sidebar>`}
+        <main class="content">
+          <div class="surface">${this.viewElement()}</div>
+        </main>
       </div>
     `;
   }

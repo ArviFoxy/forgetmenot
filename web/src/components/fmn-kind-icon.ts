@@ -2,11 +2,12 @@ import { html, type TemplateResult, type PropertyDeclarations } from 'lit';
 import type { MemoryKind } from '../api/types';
 import { PageElement } from '../lib/element';
 
-// A critical memory is delivered in full and must not be missed, so it carries an
-// exclamation mark; a knowledge memory is looked up, so it carries a book.
-const iconClass: Record<MemoryKind, string> = {
-  critical: 'bi-exclamation-circle-fill',
-  knowledge: 'bi-book',
+// A critical memory is delivered in full, a knowledge memory is looked up. Both are
+// ordinary kinds of memory, so both icons are drawn in the same muted colour at the
+// same size: the kind is a fact about the memory, not a warning.
+const iconName: Record<MemoryKind, string> = {
+  critical: 'circle-alert',
+  knowledge: 'book',
 };
 
 export class FmnKindIcon extends PageElement {
@@ -17,12 +18,7 @@ export class FmnKindIcon extends PageElement {
   kind: MemoryKind = 'knowledge';
 
   override render(): TemplateResult {
-    return html`<i
-      class="bi ${iconClass[this.kind]} kind-${this.kind}"
-      role="img"
-      aria-label=${this.kind}
-      title=${this.kind}
-    ></i>`;
+    return html`<sl-icon name=${iconName[this.kind]} label=${this.kind}></sl-icon>`;
   }
 }
 

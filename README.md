@@ -10,7 +10,7 @@ forgetmenot is a memory server for LLM coding agents. It works with Claude Code 
 - **A command that surfaces a critical memory is intercepted.** The call is held, the memory is delivered, and the agent reissues the call after reading it. The rule arrives before the action, not after.
 - **Periodic reminders.** Critical memories are delivered again after a configurable number of context tokens, because attention to early context fades in long sessions.
 - **Stored in git.** Memories are markdown files; every change is a commit with a title line, so history, review and rollback come for free.
-- **A web frontend.** Browse, edit and review memories and scopes by hand, test triggers against sample text, and watch live sessions.
+- **A web frontend.** Browse and edit memories and scopes in place, test a scope's triggers against sample text, and watch live sessions.
 - **Statistics.** Every trigger fire, delivery and fetch is recorded, so you can see which memories are used and which never are.
 
 One server serves every machine on a network, and subagents get the same memories as the session that spawned them.
@@ -21,7 +21,7 @@ One server serves every machine on a network, and subagents get the same memorie
 |---|---|
 | `forgetmenot` | The server: hook endpoint, MCP server, JSON API, static frontend |
 | `forgetmenot-hook` | A small client that Claude Code runs on each hook event; it forwards the event to the server and prints the answer |
-| `web/` | The frontend: browse, edit and review memories and scopes, watch live contexts and statistics |
+| `web/` | The frontend: browse and edit memories and scopes, watch live contexts and statistics |
 | store | A git repository of scope and memory files, the source of truth |
 
 ## Concepts

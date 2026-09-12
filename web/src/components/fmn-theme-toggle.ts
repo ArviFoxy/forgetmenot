@@ -5,9 +5,9 @@ import { setScheme, storedScheme, type ColourScheme } from '../theme';
 const order: ColourScheme[] = ['system', 'light', 'dark'];
 
 const icons: Record<ColourScheme, string> = {
-  system: 'bi-circle-half',
-  light: 'bi-sun',
-  dark: 'bi-moon-stars',
+  system: 'monitor-cog',
+  light: 'sun',
+  dark: 'moon',
 };
 
 /** Light, dark, or the system setting. */
@@ -27,15 +27,13 @@ export class FmnThemeToggle extends PageElement {
 
   override render(): TemplateResult {
     const label = `Colour scheme: ${this.scheme}`;
-    return html`<button
-      type="button"
-      class="icon-button"
-      aria-label=${label}
-      title=${label}
-      @click=${() => this.next()}
-    >
-      <i class="bi ${icons[this.scheme]}"></i>
-    </button>`;
+    return html`<sl-tooltip content=${label} hoist>
+      <sl-icon-button
+        name=${icons[this.scheme]}
+        label=${label}
+        @click=${() => this.next()}
+      ></sl-icon-button>
+    </sl-tooltip>`;
   }
 }
 

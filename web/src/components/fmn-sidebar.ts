@@ -1,38 +1,52 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { api } from '../api/client';
-import type { MemorySummary, ScopeType } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
-import { buildHierarchy, filterHierarchy, type ScopeNode } from '../model/hierarchy';
-import { currentPath, onLocationChange, onStoreChange } from '../navigation';
+import { buildTree, filterTree, keysToReveal, type TreeNode } from '../model/tree';
+import { currentPath, navigate, onLocationChange, onStoreChange } from '../navigation';
 import { paths, resolve } from '../routes';
 import './fmn-kind-icon';
 
-const scopeIcons: Record<ScopeType | 'unknown', string> = {
-  global: 'bi-globe',
-  machine: 'bi-pc-display',
-  session: 'bi-terminal',
-  project: 'bi-folder',
-  domain: 'bi-diagram-3',
-  directory: 'bi-folder2-open',
-  unknown: 'bi-question-circle',
+const openKeysStorage = 'fmn-tree-open';
+
+const categoryIcons: Record<string, string> = {
+  'category:projects': 'folder',
+  'category:domains': 'network',
+  'category:directories': 'folder-open',
+  'category:machines': 'monitor',
+  'category:sessions': 'terminal',
+  'category:other': 'circle-help',
 };
 
-/** The hierarchy: every scope, the memories under it, and a filter over both. */
+function nodeIcon(node: TreeNode): string {
+  if (node.kind === 'category') return categoryIcons[node.key] ?? 'folder';
+  if (node.scopeId === 'global') return 'globe';
+  if (node.key.startsWith('scope:machine:')) return 'monitor';
+  if (node.key.startsWith('scope:session:')) return 'terminal';
+  return 'folder';
+}
+
+function readOpenKeys(): Set<string> {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(openKeysStorage) ?? '[]');
+    return new Set(Array.isArray(stored) ? stored.filter((key): key is string => typeof key === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** The hierarchy: categories, the scopes in them, and the memories in each scope. */
 export class FmnSidebar extends PageElement {
   static override properties: PropertyDeclarations = {
-    open: { type: Boolean, reflect: true },
     search: { state: true },
     withArchived: { state: true },
   };
 
-  open = false;
-
   private search = '';
   private withArchived = false;
 
-  private readonly tree = new Resource<ScopeNode[]>(() => this.requestUpdate());
-  private readonly toggled = new Map<string, boolean>();
+  private readonly tree = new Resource<TreeNode[]>(() => this.requestUpdate());
+  private openKeys = readOpenKeys();
   private stopListening: (() => void)[] = [];
 
   override connectedCallback(): void {
@@ -57,103 +71,113 @@ export class FmnSidebar extends PageElement {
         api.memoryIndex(this.withArchived ? { archived: true } : undefined),
         api.contexts(),
       ]);
-      const active = contexts.flatMap((context) => context.active_scopes);
-      return buildHierarchy(scopes, memories, active);
+      return buildTree(scopes, memories, contexts.flatMap((context) => context.active_scopes));
     });
   }
 
   private selection(): { memoryId: string; scopeId: string } {
     const view = resolve(currentPath());
-    return {
-      memoryId: view.properties.memoryId ?? '',
-      scopeId: view.properties.scopeId ?? '',
-    };
+    return { memoryId: view.properties.memoryId ?? '', scopeId: view.properties.scopeId ?? '' };
   }
 
-  private isOpen(node: ScopeNode, searching: boolean, selected: { memoryId: string; scopeId: string }): boolean {
-    const explicit = this.toggled.get(node.id);
-    if (explicit !== undefined) return explicit;
-    if (searching) return true;
-    if (node.id === selected.scopeId) return true;
-    return node.memories.some((memory) => memory.id === selected.memoryId);
+  private rememberOpen(key: string, open: boolean): void {
+    if (open) this.openKeys.add(key);
+    else this.openKeys.delete(key);
+    window.localStorage.setItem(openKeysStorage, JSON.stringify([...this.openKeys]));
   }
 
-  private renderMemory(memory: MemorySummary, selectedId: string): TemplateResult {
-    const current = memory.id === selectedId;
-    return html`<li>
-      <a
-        class="memory-link ${current ? 'selected' : ''}"
-        href=${paths.memory(memory.id)}
-        aria-current=${current ? 'page' : 'false'}
-        title=${memory.description}
-      >
-        <fmn-kind-icon kind=${memory.kind}></fmn-kind-icon>
-        <span class="memory-name">${memory.name}</span>
-        ${memory.archived
-          ? html`<i class="bi bi-archive archived-mark" role="img" aria-label="archived" title="archived"></i>`
+  private renderNode(node: TreeNode, revealed: Set<string>, searching: boolean, selected: { memoryId: string; scopeId: string }): TemplateResult {
+    const isSelected =
+      (node.memory !== undefined && node.memory.id === selected.memoryId) ||
+      (node.memory === undefined && node.scopeId !== undefined && node.scopeId === selected.scopeId);
+    const expanded = searching || revealed.has(node.key) || this.openKeys.has(node.key);
+    const target =
+      node.memory !== undefined
+        ? paths.memory(node.memory.id)
+        : node.scopeId !== undefined
+          ? paths.scope(node.scopeId)
+          : '';
+
+    return html`<sl-tree-item
+      ?expanded=${expanded}
+      ?selected=${isSelected}
+      data-key=${node.key}
+      data-target=${target}
+      @sl-after-expand=${(event: Event) => {
+        if (event.target !== event.currentTarget) return;
+        this.rememberOpen(node.key, true);
+      }}
+      @sl-after-collapse=${(event: Event) => {
+        if (event.target !== event.currentTarget) return;
+        this.rememberOpen(node.key, false);
+      }}
+    >
+      <span class="tree-row ${node.kind}">
+        ${node.memory === undefined
+          ? html`<sl-icon name=${nodeIcon(node)}></sl-icon>`
+          : html`<fmn-kind-icon kind=${node.memory.kind}></fmn-kind-icon>`}
+        <span class="tree-label" title=${node.memory?.description ?? node.label}>${node.label}</span>
+        ${node.memory?.archived === true
+          ? html`<sl-icon name="archive" label="archived"></sl-icon>`
           : nothing}
-      </a>
-    </li>`;
+        ${node.kind === 'memory' ? nothing : html`<span class="tree-count">${node.count}</span>`}
+      </span>
+      ${node.children.map((child) => this.renderNode(child, revealed, searching, selected))}
+    </sl-tree-item>`;
   }
 
-  private renderTree(nodes: ScopeNode[]): TemplateResult {
+  private renderTree(nodes: TreeNode[]): TemplateResult {
     const selected = this.selection();
-    const shown = filterHierarchy(nodes, this.search);
+    const shown = filterTree(nodes, this.search);
     const searching = this.search.trim() !== '';
-    if (shown.length === 0) return html`<p class="empty">No match</p>`;
-    return html`<ul class="scope-list">
-      ${shown.map(
-        (node) => html`<li>
-          <details
-            ?open=${this.isOpen(node, searching, selected)}
-            @toggle=${(event: Event) =>
-              this.toggled.set(node.id, (event.target as HTMLDetailsElement).open)}
-          >
-            <summary class=${node.id === selected.scopeId ? 'selected' : ''}>
-              <i class="bi ${scopeIcons[node.type]} scope-icon" role="img" aria-label=${node.type}></i>
-              <a class="scope-name" href=${paths.scope(node.id)}>${node.id}</a>
-              <span class="scope-count">${node.memories.length}</span>
-            </summary>
-            <ul class="memory-list">
-              ${node.memories.map((memory) => this.renderMemory(memory, selected.memoryId))}
-              ${node.memories.length === 0 ? html`<li class="empty">No memories</li>` : nothing}
-            </ul>
-          </details>
-        </li>`,
-      )}
-    </ul>`;
+    if (shown.length === 0) return html`<p class="tree-empty">No match</p>`;
+    const revealed = new Set(keysToReveal(shown, selected.memoryId, selected.scopeId));
+    return html`<sl-tree
+      class="tree"
+      selection="single"
+      @sl-selection-change=${(event: CustomEvent<{ selection: HTMLElement[] }>) => {
+        const target = event.detail.selection[0]?.dataset.target ?? '';
+        if (target !== '' && target !== currentPath()) navigate(target);
+      }}
+    >
+      ${shown.map((node) => this.renderNode(node, revealed, searching, selected))}
+    </sl-tree>`;
   }
 
   override render(): TemplateResult {
     return html`
-      <aside class="sidebar" ?data-open=${this.open}>
-        <div class="sidebar-tools">
-          <input
+      <div class="sidebar">
+        <div class="sidebar-header">
+          <sl-input
+            size="small"
             type="search"
-            id="sidebar-search"
+            clearable
             placeholder="Search"
-            aria-label="Search scopes and memories"
+            label="Search scopes and memories"
             .value=${this.search}
-            @input=${(event: Event) => {
+            @sl-input=${(event: Event) => {
               this.search = (event.target as HTMLInputElement).value;
             }}
-          />
-          <label class="archived-toggle">
-            <input
-              type="checkbox"
+          >
+            <sl-icon slot="prefix" name="search"></sl-icon>
+          </sl-input>
+          <div class="sidebar-title">
+            <span>Scopes</span>
+            <sl-checkbox
+              size="small"
               ?checked=${this.withArchived}
-              @change=${(event: Event) => {
+              @sl-change=${(event: Event) => {
                 this.withArchived = (event.target as HTMLInputElement).checked;
                 void this.load();
               }}
-            />
-            Archived
-          </label>
+              >Archived</sl-checkbox
+            >
+          </div>
         </div>
-        <nav class="tree" aria-label="Scopes and memories">
+        <div class="sidebar-tree">
           ${gate(this.tree.state, (nodes) => this.renderTree(nodes))}
-        </nav>
-      </aside>
+        </div>
+      </div>
     `;
   }
 }

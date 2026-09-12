@@ -1,27 +1,88 @@
 /*
- * Layout only. Colours, the type scale, form controls, tables and the document
- * typography come from Pico; everything here places those on the page and is
- * written in Pico's variables so both colour schemes are covered at once.
+ * Layout, density and document typography on top of Shoelace. Colours, radii and
+ * fonts are Shoelace tokens (with the radius and font tokens set once here), so both
+ * of its themes carry through; the controls themselves are Shoelace components.
+ *
+ * The look follows the reference: near-monochrome, thin borders instead of tinted
+ * panels, one accent for links, a document set in comfortable type.
  */
 
+html {
+  font-size: 15px;
+  background-color: var(--fmn-bg);
+}
+
 :root {
-  --fmn-bar-height: 3.5rem;
+  --sl-border-radius-small: 4px;
+  --sl-border-radius-medium: 6px;
+  --sl-border-radius-large: 8px;
+  --sl-font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --fmn-bar-height: 3rem;
   --fmn-sidebar-width: 17rem;
   --fmn-measure: 70ch;
+  --fmn-row-height: 1.9rem;
+
+  /* One surface for the whole app; thin borders do the separating. */
+  --fmn-bg: var(--sl-color-neutral-0);
+  --fmn-raised: var(--sl-color-neutral-50);
+  --fmn-hover: var(--sl-color-neutral-100);
+  --fmn-selected: var(--sl-color-neutral-200);
+  --fmn-border: var(--sl-color-neutral-200);
+  --fmn-fg: var(--sl-color-neutral-950);
+  --fmn-fg-muted: var(--sl-color-neutral-600);
+  --fmn-fg-icon: var(--sl-color-neutral-500);
+  --fmn-link: var(--sl-color-primary-700);
 }
 
-@media (min-width: 1600px) {
-  :root {
-    --fmn-sidebar-width: 20rem;
-    --fmn-measure: 74ch;
-  }
+.sl-theme-dark {
+  --fmn-bg: var(--sl-color-neutral-0);
+  --fmn-raised: var(--sl-color-neutral-50);
+  --fmn-hover: var(--sl-color-neutral-100);
+  --fmn-selected: var(--sl-color-neutral-200);
+  --fmn-border: var(--sl-color-neutral-200);
+  --fmn-fg: var(--sl-color-neutral-800);
+  --fmn-fg-muted: var(--sl-color-neutral-600);
+  --fmn-fg-icon: var(--sl-color-neutral-600);
+  --fmn-link: var(--sl-color-primary-600);
 }
 
-/* Custom elements have no default display. */
+body {
+  margin: 0;
+  background-color: var(--fmn-bg);
+  color: var(--fmn-fg);
+  font-family: var(--sl-font-sans);
+  font-size: 0.93rem;
+  line-height: var(--sl-line-height-normal);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--fmn-link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--sl-font-mono);
+}
+
+sl-icon {
+  color: var(--fmn-fg-icon);
+}
+
 fmn-app,
 fmn-sidebar,
 fmn-markdown,
-fmn-source-editor,
+fmn-markdown-editor,
 fmn-commit-bar,
 fmn-trigger-rows,
 fmn-trigger-test,
@@ -33,111 +94,82 @@ fmn-memory-page,
 fmn-memory-new,
 fmn-scope-page,
 fmn-contexts-view,
-fmn-review-view,
 fmn-stats-view,
-fmn-trigger-test-view,
 fmn-unknown-view {
   display: block;
   min-width: 0;
 }
 
-fmn-kind-icon,
-fmn-theme-toggle {
+fmn-kind-icon {
   display: inline-flex;
   align-items: center;
 }
 
-/* The bar */
+/* ---------- The bar ---------- */
 
 .app-bar {
   position: sticky;
   top: 0;
-  z-index: 30;
+  z-index: 20;
   display: flex;
-  gap: 0.5rem;
+  gap: var(--sl-spacing-x-small);
   align-items: center;
-  min-height: var(--fmn-bar-height);
-  padding-inline: clamp(0.5rem, 2vw, 1.25rem);
-  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
-  background-color: var(--pico-background-color);
+  height: var(--fmn-bar-height);
+  padding-inline: var(--sl-spacing-small);
+  border-bottom: 1px solid var(--fmn-border);
+  background-color: var(--fmn-bg);
 }
 
 .app-bar .brand {
+  display: flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
   margin-inline-end: auto;
-  color: var(--pico-color);
-  font-weight: 700;
-  font-size: 1.05rem;
+  color: var(--fmn-fg);
+  font-weight: var(--sl-font-weight-semibold);
+  font-size: 0.97rem;
+  letter-spacing: -0.01em;
+}
+
+.app-bar .brand:hover {
   text-decoration: none;
 }
 
 .app-menu {
   display: flex;
-  margin: 0;
-}
-
-.app-menu ul {
-  display: flex;
-  gap: 0.3rem;
+  gap: var(--sl-spacing-3x-small);
   align-items: center;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
-.app-menu li {
-  margin: 0;
-  padding: 0;
-}
-
-.app-menu a,
-.app-menu-compact a {
-  display: inline-block;
-  padding: 0.35rem 0.7rem;
-  border-radius: var(--pico-border-radius);
-  color: var(--pico-secondary);
-  text-decoration: none;
+.app-menu a {
+  display: flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+  height: 1.85rem;
+  padding-inline: var(--sl-spacing-x-small);
+  border-radius: var(--sl-border-radius-small);
+  color: var(--fmn-fg-muted);
+  font-size: 0.9rem;
   white-space: nowrap;
 }
 
-.app-menu a:hover,
-.app-menu-compact a:hover {
-  background-color: var(--pico-card-sectioning-background-color);
-  color: var(--pico-primary);
+.app-menu a:hover {
+  background-color: var(--fmn-hover);
+  color: var(--fmn-fg);
+  text-decoration: none;
 }
 
 .app-menu a[aria-current='page'] {
-  background-color: var(--pico-card-sectioning-background-color);
-  color: var(--pico-primary);
+  background-color: var(--fmn-hover);
+  color: var(--fmn-fg);
 }
 
-.app-menu-compact {
-  display: none;
-  margin: 0;
-}
-
-/* Pico gives a button its own --pico-color, the inverse of the accent, so the
-   icon's colour is taken from the theme's text colour instead. */
-.icon-button {
-  width: auto;
-  margin: 0;
-  padding: 0.3rem 0.5rem;
-  border: none;
-  background: none;
-  color: var(--pico-contrast);
-  font-size: 1.15rem;
-  line-height: 1;
-}
-
-.icon-button:is(:hover, :active, :focus) {
-  background-color: var(--pico-card-sectioning-background-color);
-  color: var(--pico-primary);
-}
-
+.app-menu-compact,
 .nav-toggle {
   display: none;
 }
 
-/* The two columns */
+/* ---------- The two panes ---------- */
 
 .app-body {
   display: grid;
@@ -149,254 +181,269 @@ fmn-sidebar {
   position: sticky;
   top: var(--fmn-bar-height);
   height: calc(100dvh - var(--fmn-bar-height));
-  border-inline-end: var(--pico-border-width) solid var(--pico-muted-border-color);
-  background-color: var(--pico-background-color);
+  border-inline-end: 1px solid var(--fmn-border);
+  background-color: var(--fmn-bg);
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden auto;
-  padding: 0.75rem 0.5rem 2rem;
+  min-height: 0;
 }
 
-.backdrop {
-  display: none;
+/* The search box keeps its label for screen readers, but the header shows only the
+   field itself. */
+.sidebar-header sl-input::part(form-control-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.sidebar-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-spacing-x-small);
+  padding: var(--sl-spacing-x-small);
+}
+
+.sidebar-title {
+  display: flex;
+  white-space: nowrap;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+  padding-inline: var(--sl-spacing-3x-small);
+  color: var(--fmn-fg-muted);
+  font-size: 0.73rem;
+  font-weight: var(--sl-font-weight-semibold);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.sidebar-title sl-checkbox {
+  margin-inline-start: auto;
+  font-size: 0.8rem;
+  font-weight: var(--sl-font-weight-normal);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.sidebar-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden auto;
+  padding: 0 var(--sl-spacing-x-small) var(--sl-spacing-large);
 }
 
 .content {
   width: 100%;
-  max-width: 100rem;
   min-width: 0;
-  margin-inline: auto;
-  padding: clamp(1rem, 2.5vw, 2rem) clamp(1rem, 4vw, 3rem) 4rem;
+  padding: var(--sl-spacing-large) var(--sl-spacing-x-large) 4rem;
 }
 
-/* The hierarchy */
-
-.sidebar-tools {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.75rem;
+/* The content starts where the sidebar ends, as in the reference: the document keeps
+   its measure and the space left over stays on the outside edge. */
+.surface {
+  max-width: 76rem;
 }
 
-.sidebar-tools input[type='search'] {
-  margin-bottom: 0;
+/* ---------- The tree ---------- */
+
+.tree {
+  --indent-size: var(--sl-spacing-medium);
+  --indent-guide-width: 0;
+  font-size: 0.9rem;
 }
 
-.archived-toggle {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  margin: 0;
-  color: var(--pico-muted-color);
-  font-size: 0.85rem;
+.tree sl-tree-item::part(item) {
+  border-inline-start: none;
+  border-radius: var(--sl-border-radius-small);
+  padding: 0 var(--sl-spacing-2x-small);
+  min-height: var(--fmn-row-height);
 }
 
-.archived-toggle input {
-  margin: 0;
+.tree sl-tree-item::part(item):hover {
+  background-color: var(--fmn-hover);
 }
 
-.tree ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.tree sl-tree-item::part(item--selected) {
+  background-color: var(--fmn-selected);
 }
 
-.tree li {
-  margin: 0;
-  padding: 0;
-}
-
-.tree details {
-  margin: 0;
-}
-
-.tree summary {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  padding: 0.3rem 0.4rem;
-  border-radius: var(--pico-border-radius);
-  line-height: 1.3;
-}
-
-.tree summary:hover {
-  background-color: var(--pico-card-sectioning-background-color);
-}
-
-.tree summary.selected {
-  background-color: var(--pico-primary-focus);
-}
-
-.tree summary::after {
-  flex: 0 0 auto;
-  margin-inline-start: 0.25rem;
-}
-
-.scope-icon {
-  flex: 0 0 auto;
-  color: var(--pico-muted-color);
-}
-
-.scope-name {
+.tree sl-tree-item::part(label) {
   flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tree sl-tree-item::part(expand-button) {
+  padding: var(--sl-spacing-3x-small);
+  color: var(--fmn-fg-icon);
+  rotate: none;
+}
+
+.tree-row {
+  display: flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+}
+
+.tree-row .tree-label {
   overflow: hidden;
-  color: var(--pico-color);
-  font-size: 0.92rem;
-  font-weight: 600;
   white-space: nowrap;
   text-overflow: ellipsis;
-  text-decoration: none;
 }
 
-.scope-name:hover {
-  color: var(--pico-primary);
+.tree-row.category .tree-label {
+  color: var(--fmn-fg-muted);
+  font-size: 0.78rem;
+  font-weight: var(--sl-font-weight-semibold);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
-.scope-count {
-  flex: 0 0 auto;
-  color: var(--pico-muted-color);
-  font-size: 0.75rem;
+.tree-row .tree-count {
+  margin-inline-start: auto;
+  padding-inline-start: var(--sl-spacing-2x-small);
+  color: var(--fmn-fg-muted);
+  font-size: 0.73rem;
   font-variant-numeric: tabular-nums;
 }
 
-.tree .memory-list {
-  margin-inline-start: 0.75rem;
-  padding-inline-start: 0.6rem;
-  border-inline-start: var(--pico-border-width) solid var(--pico-muted-border-color);
+.tree-row sl-icon,
+.tree-row fmn-kind-icon {
+  flex: none;
+  font-size: 1rem;
 }
 
-.memory-link {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  padding: 0.25rem 0.4rem;
-  border-radius: var(--pico-border-radius);
-  color: var(--pico-color);
+.tree-empty {
+  padding: var(--sl-spacing-small) var(--sl-spacing-2x-small);
+  color: var(--fmn-fg-muted);
   font-size: 0.9rem;
-  text-decoration: none;
 }
 
-.memory-link:hover {
-  background-color: var(--pico-card-sectioning-background-color);
+/* Shoelace's tabs, with room between the icon and the label. */
+sl-tab::part(base) {
+  gap: var(--sl-spacing-2x-small);
+  padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+  font-size: 0.93rem;
 }
 
-.memory-link.selected {
-  background-color: var(--pico-primary-background);
-  color: var(--pico-primary-inverse);
+sl-tab-group::part(nav) {
+  border-bottom: 1px solid var(--fmn-border);
 }
 
-.memory-link.selected fmn-kind-icon i,
-.memory-link.selected .archived-mark {
-  color: inherit;
+/* Buttons and inputs keep the app's font. */
+sl-button::part(base),
+sl-input::part(base),
+sl-select::part(display-input),
+sl-checkbox::part(label),
+sl-menu-item::part(base),
+sl-badge::part(base),
+sl-alert::part(base) {
+  font-family: var(--sl-font-sans);
 }
 
-.memory-name {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+sl-details::part(base) {
+  border: none;
+  background: none;
 }
 
-.kind-critical {
-  color: var(--pico-del-color);
+sl-details::part(header) {
+  padding: var(--sl-spacing-2x-small) 0;
+  font-size: 0.9rem;
 }
 
-.kind-knowledge {
-  color: var(--pico-muted-color);
+sl-details::part(content) {
+  padding: var(--sl-spacing-2x-small) 0 var(--sl-spacing-x-small);
 }
 
-.archived-mark {
-  color: var(--pico-muted-color);
-  font-size: 0.8em;
-}
-
-/* Page head and the view tabs */
+/* ---------- Page furniture ---------- */
 
 .page-header {
-  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-spacing-2x-small);
+  margin-bottom: var(--sl-spacing-medium);
 }
 
 .page-header h1 {
-  margin-bottom: 0.25rem;
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: var(--sl-font-weight-bold);
+  line-height: 1.25;
+  letter-spacing: -0.015em;
   overflow-wrap: anywhere;
+}
+
+.page-name {
+  display: flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+  color: var(--fmn-fg-muted);
+  font-family: var(--sl-font-mono);
+  font-size: 0.8rem;
 }
 
 .page-header .description {
   max-width: var(--fmn-measure);
-  margin-bottom: 0.75rem;
-  color: var(--pico-muted-color);
-}
-
-.badge-archived {
-  display: inline-block;
-  margin-bottom: 0.75rem;
-  padding: 0.1rem 0.55rem;
-  border-radius: 1rem;
-  background-color: var(--pico-mark-background-color);
-  color: var(--pico-mark-color);
-  font-size: 0.8rem;
-}
-
-.tabs {
-  display: block;
-}
-
-.tabs ul {
-  display: flex;
-  gap: 0.1rem;
   margin: 0;
-  padding: 0;
-  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
-  list-style: none;
-  overflow-x: auto;
+  color: var(--fmn-fg-muted);
+  font-size: 0.93rem;
 }
 
-.tabs li {
-  margin: 0;
-  padding: 0;
+.page-tabs {
+  margin-bottom: var(--sl-spacing-medium);
 }
 
-.tabs a {
-  display: inline-block;
-  padding: 0.45rem 0.85rem;
-  border-bottom: 0.125rem solid transparent;
-  color: var(--pico-secondary);
-  text-decoration: none;
-  white-space: nowrap;
+h2 {
+  margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
+  font-size: 1.07rem;
+  font-weight: var(--sl-font-weight-semibold);
 }
 
-.tabs a:hover {
-  color: var(--pico-primary);
-}
-
-.tabs a[aria-current='page'] {
-  border-bottom-color: var(--pico-primary);
-  color: var(--pico-primary);
-  font-weight: 600;
+h3 {
+  margin: var(--sl-spacing-medium) 0 var(--sl-spacing-2x-small);
+  font-size: 0.93rem;
+  font-weight: var(--sl-font-weight-semibold);
 }
 
 .actions {
   display: flex;
-  gap: 0.75rem;
+  gap: var(--sl-spacing-x-small);
   align-items: center;
   flex-wrap: wrap;
 }
 
-.actions button {
-  width: auto;
-  margin-bottom: 0;
+.muted,
+.empty {
+  color: var(--fmn-fg-muted);
+  font-size: 0.9rem;
 }
 
-/* The document and its facts */
+.loading {
+  display: flex;
+  gap: var(--sl-spacing-x-small);
+  align-items: center;
+  color: var(--fmn-fg-muted);
+  font-size: 0.9rem;
+}
 
-/* Narrow: the document comes first and its facts follow. Wide: the facts sit
-   beside it. */
+.failure {
+  color: var(--sl-color-danger-700);
+  font-size: 0.9rem;
+}
+
+/* ---------- The document ---------- */
+
 .memory-layout {
   display: grid;
-  gap: 1.5rem;
+  gap: var(--sl-spacing-large);
   grid-template-areas: 'doc' 'info';
 }
 
@@ -409,126 +456,506 @@ fmn-sidebar {
   grid-area: info;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1100px) {
   .memory-layout {
-    grid-template-columns: minmax(0, 1fr) 19rem;
+    grid-template-columns: minmax(0, 1fr) 15rem;
     grid-template-areas: 'doc info';
-    gap: 2.5rem;
+    gap: var(--sl-spacing-2x-large);
   }
 }
 
-/* On a wide screen the facts follow the document rather than being pushed to the
-   far edge, because the document keeps its measure. */
-@media (min-width: 1900px) {
+@media (min-width: 1800px) {
   .memory-layout {
-    grid-template-columns: minmax(0, var(--fmn-measure)) 20rem;
+    grid-template-columns: minmax(0, var(--fmn-measure)) 16rem;
     justify-content: start;
   }
 }
 
-.markdown {
+/* Shared by the rendered document and the editor, so editing looks like reading. */
+.markdown,
+.milkdown .ProseMirror {
   max-width: var(--fmn-measure);
+  color: var(--fmn-fg);
+  font-family: var(--sl-font-sans);
+  font-size: 1.07rem;
   line-height: 1.65;
 }
 
-.markdown > :first-child {
+.markdown > :first-child,
+.milkdown .ProseMirror > :first-child {
   margin-top: 0;
+}
+
+.markdown h1,
+.milkdown .ProseMirror h1 {
+  margin: 0 0 var(--sl-spacing-small);
+  font-family: var(--sl-font-sans);
+  font-size: 1.87rem;
+  font-weight: var(--sl-font-weight-bold);
+  line-height: 1.2;
+  letter-spacing: -0.015em;
 }
 
 .markdown h2,
-.markdown h3 {
-  margin-top: 2rem;
+.milkdown .ProseMirror h2 {
+  margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
+  font-family: var(--sl-font-sans);
+  font-size: 1.33rem;
+  font-weight: var(--sl-font-weight-semibold);
+  letter-spacing: -0.01em;
+}
+
+.markdown h3,
+.milkdown .ProseMirror h3 {
+  margin: var(--sl-spacing-medium) 0 var(--sl-spacing-2x-small);
+  font-family: var(--sl-font-sans);
+  font-size: 1.13rem;
+  font-weight: var(--sl-font-weight-semibold);
+}
+
+.markdown p,
+.milkdown .ProseMirror p {
+  margin: 0 0 var(--sl-spacing-small);
+}
+
+.markdown ul,
+.markdown ol,
+.milkdown .ProseMirror ul,
+.milkdown .ProseMirror ol {
+  margin: 0 0 var(--sl-spacing-small);
+  padding-inline-start: 1.4em;
+}
+
+.markdown li,
+.milkdown .ProseMirror li {
+  margin-block: 0.2em;
+}
+
+.markdown blockquote,
+.milkdown .ProseMirror blockquote {
+  margin: 0 0 var(--sl-spacing-small);
+  padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
+  border-inline-start: 2px solid var(--fmn-border);
+  color: var(--fmn-fg-muted);
+}
+
+.markdown code,
+.milkdown .ProseMirror code {
+  padding: 0.12em 0.35em;
+  border-radius: var(--sl-border-radius-small);
+  background-color: var(--fmn-hover);
+  color: var(--fmn-fg);
+  font-size: 0.87em;
+}
+
+.markdown pre,
+.milkdown .ProseMirror pre {
+  margin: 0 0 var(--sl-spacing-small);
+  padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+  overflow-x: auto;
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+  background-color: var(--fmn-raised);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.markdown pre code,
+.milkdown .ProseMirror pre code {
+  padding: 0;
+  background: none;
+  font-size: 1em;
 }
 
 .markdown a.wiki-link {
-  text-decoration-style: dotted;
+  text-decoration: underline dotted;
 }
 
-.markdown pre {
-  max-width: 100%;
+.markdown table,
+.milkdown .ProseMirror table {
+  border-collapse: collapse;
+  margin-bottom: var(--sl-spacing-small);
+  font-size: 0.92em;
 }
 
-.markdown table {
-  margin-bottom: var(--pico-spacing);
+.markdown th,
+.milkdown .ProseMirror th {
+  background-color: var(--fmn-raised);
 }
+
+.markdown th,
+.markdown td,
+.milkdown .ProseMirror th,
+.milkdown .ProseMirror td {
+  padding: var(--sl-spacing-3x-small) var(--sl-spacing-x-small);
+  border: 1px solid var(--fmn-border);
+  text-align: start;
+}
+
+/* The editor is Crepe's own UI, with its palette mapped onto the Shoelace theme. */
+.milkdown {
+  --crepe-color-background: var(--fmn-bg);
+  --crepe-color-on-background: var(--fmn-fg);
+  --crepe-color-surface: var(--fmn-bg);
+  --crepe-color-surface-low: var(--fmn-raised);
+  --crepe-color-on-surface: var(--fmn-fg);
+  --crepe-color-on-surface-variant: var(--fmn-fg-muted);
+  --crepe-color-outline: var(--sl-color-neutral-300);
+  --crepe-color-primary: var(--sl-color-primary-600);
+  --crepe-color-secondary: var(--sl-color-neutral-100);
+  --crepe-color-on-secondary: var(--fmn-fg);
+  /* The selection toolbar is a raised panel in the theme's own colours rather than
+     an inverted one, so it does not flash light in the dark theme. */
+  --crepe-color-inverse: var(--fmn-raised);
+  --crepe-color-on-inverse: var(--fmn-fg);
+  --crepe-color-inline-code: var(--fmn-fg);
+  --crepe-color-error: var(--sl-color-danger-600);
+  --crepe-color-hover: var(--fmn-hover);
+  --crepe-color-selected: var(--fmn-selected);
+  --crepe-color-inline-area: var(--fmn-hover);
+  --crepe-font-title: var(--sl-font-sans);
+  --crepe-font-default: var(--sl-font-sans);
+  --crepe-font-code: var(--sl-font-mono);
+  --crepe-base-font-size: 1.07rem;
+  --crepe-shadow-1: var(--sl-shadow-small);
+  --crepe-shadow-2: var(--sl-shadow-medium);
+}
+
+.milkdown .ProseMirror {
+  padding: 0;
+  min-height: 10rem;
+}
+
+/* The selection toolbar reads as a panel over the document, with icons in the same
+   muted colour as the rest of the app. */
+.milkdown .milkdown-toolbar {
+  border: 1px solid var(--fmn-border);
+  background: var(--fmn-raised);
+}
+
+.milkdown .milkdown-toolbar .toolbar-item svg {
+  color: var(--fmn-fg-icon);
+  fill: var(--fmn-fg-icon);
+}
+
+.milkdown .ProseMirror:focus-visible {
+  outline: none;
+}
+
+/* ---------- Facts, chips and fields ---------- */
 
 .infobox {
-  margin: 0;
-  padding: 0.9rem 1rem;
-  border: var(--pico-border-width) solid var(--pico-card-border-color);
-  border-radius: var(--pico-border-radius);
-  background-color: var(--pico-card-background-color);
-  font-size: 0.875rem;
+  max-width: 46rem;
+  padding: var(--sl-spacing-small);
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+  font-size: 0.9rem;
 }
 
-.infobox dl {
-  margin: 0;
+.infobox .field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-block: var(--sl-spacing-2x-small);
 }
 
-.infobox dt {
-  margin-top: 0.7rem;
-  color: var(--pico-muted-color);
-  font-weight: 600;
+.infobox .field + .field {
+  border-top: 1px solid var(--fmn-border);
 }
 
-.infobox dt:first-child {
-  margin-top: 0;
+.field-label {
+  color: var(--fmn-fg-muted);
+  font-size: 0.73rem;
+  font-weight: var(--sl-font-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-.infobox dd {
-  margin: 0.1rem 0 0;
+.field-value {
+  display: flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: 1.5rem;
   overflow-wrap: anywhere;
 }
 
-.chip {
-  display: inline-block;
-  margin: 0 0.25rem 0.25rem 0;
-  padding: 0.05rem 0.5rem;
-  border-radius: 1rem;
-  background-color: var(--pico-secondary-background);
-  color: var(--pico-secondary-inverse);
-  font-size: 0.75rem;
+.field-value .value-text {
+  color: var(--fmn-fg);
+}
+
+.field-value sl-icon-button {
+  margin-inline-start: auto;
+  font-size: 0.9rem;
+}
+
+.field-value code,
+.value-mono {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.chips {
+  display: flex;
+  gap: var(--sl-spacing-3x-small);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chips a:hover {
   text-decoration: none;
 }
 
-.chip:hover {
-  background-color: var(--pico-secondary-hover-background);
-  color: var(--pico-secondary-inverse);
+.inline-edit {
+  display: flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+  width: 100%;
 }
 
-.inline-fields {
+.inline-edit sl-input,
+.inline-edit sl-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.page-header .inline-edit {
+  max-width: 46rem;
+}
+
+.field-grid {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.35rem 1.25rem;
-  margin-bottom: 1.5rem;
+  gap: var(--sl-spacing-small);
+  max-width: 34rem;
+  margin-bottom: var(--sl-spacing-medium);
 }
 
-.inline-fields dt {
-  color: var(--pico-muted-color);
+/* ---------- Trigger rows ---------- */
+
+.trigger-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-spacing-x-small);
+  margin-bottom: var(--sl-spacing-x-small);
 }
 
-.inline-fields dd {
-  margin: 0;
-  overflow-wrap: anywhere;
+.trigger-row {
+  display: grid;
+  gap: var(--sl-spacing-x-small);
+  align-items: end;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr) auto;
+  max-width: 52rem;
+  padding: var(--sl-spacing-x-small);
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
 }
+
+.trigger-row sl-icon-button {
+  margin-bottom: 2px;
+  font-size: 1rem;
+}
+
+@media (max-width: 700px) {
+  .trigger-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/* ---------- Tables ---------- */
+
+.table-wrap {
+  overflow-x: auto;
+  margin-bottom: var(--sl-spacing-medium);
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+table.data th {
+  padding: var(--sl-spacing-2x-small) var(--sl-spacing-x-small);
+  border-bottom: 1px solid var(--fmn-border);
+  background-color: var(--fmn-raised);
+  color: var(--fmn-fg-muted);
+  font-size: 0.78rem;
+  font-weight: var(--sl-font-weight-semibold);
+  text-align: start;
+  white-space: nowrap;
+}
+
+table.data td {
+  padding: var(--sl-spacing-2x-small) var(--sl-spacing-x-small);
+  border-bottom: 1px solid var(--fmn-border);
+  vertical-align: top;
+}
+
+table.data tbody tr:last-child td {
+  border-bottom: none;
+}
+
+table.data tbody tr:hover td {
+  background-color: var(--fmn-raised);
+}
+
+table.data td.number,
+table.data th.number {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+table.data td.nowrap {
+  white-space: nowrap;
+}
+
+table.stats td,
+table.stats th {
+  white-space: nowrap;
+}
+
+table.stats td:first-child {
+  white-space: normal;
+}
+
+.row-icon {
+  display: inline-flex;
+  gap: var(--sl-spacing-2x-small);
+  align-items: center;
+}
+
+/* ---------- Commit bar ---------- */
+
+/* The bar is fixed over the content column, so it is on screen as soon as anything
+   changes, however short the document is. */
+.commit-bar {
+  position: fixed;
+  inset-inline: calc(var(--fmn-sidebar-width) + var(--sl-spacing-medium)) var(--sl-spacing-medium);
+  bottom: var(--sl-spacing-medium);
+  z-index: 15;
+  display: flex;
+  gap: var(--sl-spacing-x-small);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: var(--sl-spacing-large);
+  padding: var(--sl-spacing-x-small);
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+  background-color: var(--fmn-raised);
+  box-shadow: var(--sl-shadow-medium);
+}
+
+.commit-bar sl-input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+/* The field is labelled for screen readers; the bar shows the placeholder. */
+.commit-bar sl-input::part(form-control-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.commit-bar .commit-label {
+  color: var(--fmn-fg-muted);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+/* ---------- Diffs and conflicts ---------- */
+
+pre.diff,
+pre.content {
+  max-height: 60vh;
+  margin: 0 0 var(--sl-spacing-medium);
+  padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+  overflow: auto;
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+  background-color: var(--fmn-raised);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+pre.diff code {
+  display: block;
+  white-space: pre;
+}
+
+.diff-add {
+  color: var(--sl-color-success-700);
+}
+
+.diff-del {
+  color: var(--sl-color-danger-700);
+}
+
+.diff-file,
+.diff-hunk {
+  color: var(--fmn-fg-muted);
+}
+
+pre.diff code.diff-changed {
+  background-color: var(--sl-color-warning-100);
+  color: var(--sl-color-warning-900);
+}
+
+.side-by-side {
+  display: grid;
+  gap: var(--sl-spacing-small);
+}
+
+@media (min-width: 1000px) {
+  .side-by-side {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.side-by-side h3 {
+  margin-top: 0;
+}
+
+.conflict {
+  margin-top: var(--sl-spacing-medium);
+}
+
+.conflict-versions {
+  display: flex;
+  gap: var(--sl-spacing-medium);
+  flex-wrap: wrap;
+  margin-bottom: var(--sl-spacing-small);
+  font-size: 0.8rem;
+}
+
+/* ---------- Lists ---------- */
 
 .memory-index {
-  margin: 0 0 1.5rem;
+  margin: 0 0 var(--sl-spacing-medium);
   padding: 0;
   list-style: none;
+  font-size: 0.9rem;
 }
 
 .memory-index li {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--sl-spacing-x-small);
   align-items: baseline;
-  padding: 0.2rem 0;
   flex-wrap: wrap;
+  padding-block: 3px;
 }
 
-.muted,
-.empty {
-  color: var(--pico-muted-color);
+.trigger-test {
+  margin-top: var(--sl-spacing-large);
+  padding-top: var(--sl-spacing-medium);
+  border-top: 1px solid var(--fmn-border);
 }
 
 .sr-only {
@@ -542,215 +969,7 @@ fmn-sidebar {
   white-space: nowrap;
 }
 
-/* Forms */
-
-.field-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0 1.25rem;
-  margin-bottom: 0.5rem;
-}
-
-@media (min-width: 768px) {
-  .field-grid {
-    grid-template-columns: 9rem minmax(0, 34rem);
-  }
-
-  .field-grid label {
-    padding-top: 0.55rem;
-  }
-}
-
-.preview-toggle {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  margin-bottom: 0.75rem;
-  color: var(--pico-muted-color);
-}
-
-.preview-toggle input {
-  margin: 0;
-}
-
-.edit-split {
-  display: grid;
-  gap: 1.5rem;
-  align-items: start;
-}
-
-@media (min-width: 1200px) {
-  .edit-split[data-preview] {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-}
-
-.edit-split .preview h1 {
-  font-size: 1.75rem;
-}
-
-.field-label {
-  margin-bottom: calc(var(--pico-spacing) * 0.375);
-  color: var(--pico-color);
-}
-
-.source-editor .cm-editor {
-  height: clamp(16rem, 42vh, 30rem);
-}
-
-.commit-bar {
-  max-width: 46rem;
-  margin-block: 1.5rem;
-}
-
-.commit-bar-row {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.commit-bar-row input {
-  flex: 1 1 16rem;
-  margin-bottom: 0;
-}
-
-.commit-bar-row button,
-.commit-bar-row a[role='button'] {
-  width: auto;
-  margin-bottom: 0;
-  white-space: nowrap;
-}
-
-.archive-panel {
-  margin-top: 2.5rem;
-  padding-top: 1rem;
-  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
-}
-
-.archive-panel summary[role='button'] {
-  width: auto;
-  display: inline-block;
-}
-
-.trigger-test {
-  margin-top: 2.5rem;
-  padding-top: 1rem;
-  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
-}
-
-.trigger-test button {
-  width: auto;
-}
-
-/* Tables */
-
-figure {
-  margin-bottom: var(--pico-spacing);
-  overflow-x: auto;
-}
-
-/* On a narrow screen a table scrolls sideways rather than squeezing its columns
-   into two words per line. */
-@media (max-width: 700px) {
-  .content figure table {
-    min-width: 32rem;
-  }
-}
-
-table.stats {
-  font-size: 0.875rem;
-}
-
-table.stats td,
-table.stats th {
-  white-space: nowrap;
-}
-
-table.stats td:first-child,
-table.stats th:first-child {
-  white-space: normal;
-}
-
-td.number,
-th.number {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Diffs, conflicts and raw content */
-
-pre.diff,
-pre.content {
-  max-height: 70vh;
-  padding: 0.6rem 0.8rem;
-  overflow: auto;
-  border-radius: var(--pico-border-radius);
-  font-size: 0.8rem;
-  line-height: 1.5;
-}
-
-pre.diff code {
-  display: block;
-  padding: 0;
-  background: none;
-  white-space: pre;
-}
-
-.diff-add {
-  color: var(--pico-ins-color);
-}
-
-.diff-del {
-  color: var(--pico-del-color);
-}
-
-.diff-file,
-.diff-hunk {
-  color: var(--pico-muted-color);
-}
-
-pre.diff code.diff-changed {
-  background-color: var(--pico-mark-background-color);
-  color: var(--pico-mark-color);
-}
-
-.side-by-side {
-  display: grid;
-  gap: 1rem;
-}
-
-@media (min-width: 1000px) {
-  .side-by-side {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-}
-
-.side-by-side h3 {
-  margin-bottom: 0.5rem;
-  font-size: 1rem;
-}
-
-.conflict {
-  margin-top: 2rem;
-  padding: 1rem 1.25rem;
-  border: var(--pico-border-width) solid var(--pico-del-color);
-  border-radius: var(--pico-border-radius);
-}
-
-.conflict button {
-  width: auto;
-}
-
-p.failure {
-  color: var(--pico-del-color);
-}
-
-table.failure {
-  color: var(--pico-del-color);
-}
-
-/* Phone and tablet: the hierarchy becomes a drawer */
+/* ---------- Phone and tablet ---------- */
 
 @media (max-width: 900px) {
   .app-body {
@@ -758,7 +977,7 @@ table.failure {
   }
 
   .nav-toggle {
-    display: inline-block;
+    display: inline-flex;
   }
 
   .app-menu {
@@ -766,29 +985,34 @@ table.failure {
   }
 
   .app-menu-compact {
-    display: inline-block;
+    display: inline-flex;
+  }
+
+  .content {
+    padding: var(--sl-spacing-medium) var(--sl-spacing-medium) 4rem;
   }
 
   fmn-sidebar {
-    position: fixed;
-    inset-block-start: var(--fmn-bar-height);
-    inset-inline-start: 0;
-    z-index: 28;
-    width: min(20rem, 85vw);
-    border-inline-end: var(--pico-border-width) solid var(--pico-muted-border-color);
-    transform: translateX(-100%);
-    transition: transform 0.18s ease-out;
+    position: static;
+    height: auto;
+    border: none;
+    background: none;
   }
 
-  fmn-sidebar[open] {
-    transform: translateX(0);
+  .sidebar {
+    height: auto;
   }
 
-  .backdrop[data-open] {
-    display: block;
-    position: fixed;
-    inset: var(--fmn-bar-height) 0 0 0;
-    z-index: 27;
-    background-color: var(--pico-modal-overlay-background-color);
+  .sidebar-tree {
+    overflow: visible;
+  }
+
+  .memory-layout {
+    gap: var(--sl-spacing-medium);
+  }
+
+  .commit-bar {
+    inset-inline: var(--sl-spacing-x-small);
+    bottom: var(--sl-spacing-x-small);
   }
 }

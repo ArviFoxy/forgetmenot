@@ -36,8 +36,6 @@ const memoryRow: MemoryStatsRow = {
   last_shown: '2026-01-02T03:04:05+00:00',
 };
 
-const putMemory = vi.fn();
-
 vi.mock('../src/api/client', () => ({
   RequestFailed: class RequestFailed extends Error {
     constructor(
@@ -53,7 +51,7 @@ vi.mock('../src/api/client', () => ({
   api: {
     memoryIndex: () => Promise.resolve([]),
     memory: () => Promise.resolve(serverDoc),
-    putMemory: (...args: unknown[]) => putMemory(...args) as unknown,
+    putMemory: () => Promise.resolve({ kind: 'written' }),
     createMemory: () => Promise.resolve({ kind: 'written' }),
     archiveMemory: () => Promise.resolve({ kind: 'written' }),
     memoryHistory: () => Promise.resolve([]),
@@ -89,23 +87,18 @@ async function settle(element: HTMLElement & { updateComplete?: Promise<unknown>
 
 beforeEach(() => {
   document.body.innerHTML = '';
-  putMemory.mockReset();
 });
 
 test('an address the app links to has no element registered to show it', () => {
   const addresses = [
     paths.home(),
     paths.memory('sessions/alpha/session-1/notes'),
-    paths.memoryEdit('sessions/alpha/session-1/notes'),
     paths.memoryHistory('sessions/alpha/session-1/notes'),
     paths.memoryCommit('sessions/alpha/session-1/notes', 'a'.repeat(40)),
     paths.memoryNew(),
     paths.scope('session:alpha/session-1'),
-    paths.scopeEdit('widgets'),
     paths.contexts(),
-    paths.review(),
     paths.stats(),
-    paths.triggerTest(),
     '/no/such/address',
   ];
   for (const address of addresses) {
@@ -126,33 +119,4 @@ test('the statistics add the delivery counts together instead of showing each', 
     expect(cells).toContain(count);
   }
   expect(cells).toContain('2026-01-02T03:04:05+00:00');
-});
-
-test('a write the server rejects as stale loses one of the two versions', async () => {
-  const editorText = '# Widget part numbers are immutable\n\nthe text the editor holds\n';
-  putMemory.mockResolvedValue({ kind: 'conflict', conflict: { current: serverDoc } });
-
-  const element = document.createElement('fmn-memory-page');
-  Object.assign(element, { memoryId: 'widget-naming', mode: 'edit', oid: '' });
-  document.body.append(element);
-  await settle(element);
-
-  const editor = element.querySelector('fmn-source-editor') as HTMLElement & { value: string };
-  editor.dispatchEvent(
-    new CustomEvent('fmn-source-change', { detail: { value: editorText }, bubbles: true }),
-  );
-  const message = element.querySelector('#commit-message') as HTMLInputElement;
-  message.value = 'widen the rule';
-  message.dispatchEvent(new Event('input', { bubbles: true }));
-  await settle(element);
-
-  const save = [...element.querySelectorAll('button')].find((button) =>
-    button.textContent?.includes('Save'),
-  );
-  save?.click();
-  await settle(element);
-
-  const shown = element.textContent ?? '';
-  expect(shown).toContain('the text the editor holds');
-  expect(shown).toContain('the text that is on the server');
 });

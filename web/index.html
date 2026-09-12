@@ -6,15 +6,16 @@
     <meta name="color-scheme" content="light dark" />
     <title>forgetmenot</title>
     <script>
-      // The stored colour scheme, applied before the first paint. The key is the one
-      // src/theme.ts writes.
+      // The colour scheme, applied before the first paint. The key is the one
+      // src/theme.ts writes and the class is Shoelace's dark theme.
       try {
-        var scheme = localStorage.getItem('fmn-colour-scheme');
-        if (scheme === 'light' || scheme === 'dark') {
-          document.documentElement.setAttribute('data-theme', scheme);
-        }
+        var stored = localStorage.getItem('fmn-colour-scheme');
+        var dark =
+          stored === 'dark' ||
+          (stored !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.classList.add('sl-theme-dark');
       } catch (ignored) {
-        /* storage is unavailable, so the system setting decides */
+        /* storage is unavailable, so the light theme is used */
       }
     </script>
   </head>
