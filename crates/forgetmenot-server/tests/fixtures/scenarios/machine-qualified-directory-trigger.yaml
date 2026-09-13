@@ -5,7 +5,7 @@ reasoning: >
   must not fire anywhere else. An ignored qualifier turns a scope on for every
   session that happens to sit in a path of that shape.
 
-  The workshop scope of the example store has one working_directory trigger
+  The workshop scope of the example store has one shell_directory trigger
   qualified for alpha.
 
   Step 0, a session start on alpha in a matching directory: the trigger fires, so

@@ -49,6 +49,19 @@ pub struct EventPlan {
     /// Whether the answer also tells the model which scopes it can turn on and
     /// which session key to pass to the MCP tools.
     pub session_start: bool,
+    /// The directory this event reports: the event's own `cwd`, except for
+    /// `CwdChanged`, where it is the directory the event puts in force. A
+    /// context that has not remembered a session directory yet takes this one
+    /// as its own.
+    pub cwd: Option<String>,
+    /// Whether this event matches the two directory fields. True for the
+    /// events that carry a directory worth matching: the session start, every
+    /// tool call, and a change of the shell's directory.
+    pub matches_directories: bool,
+    /// The task a subagent was given, for `SubagentStart` alone. It is also
+    /// matched against the user-message triggers, because it is what the
+    /// subagent was told to do; this field is what names the context.
+    pub task: Option<String>,
 }
 
 /// What to do about `event`, or `None` for an event name this server does not
@@ -68,15 +81,19 @@ pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<Eve
         may_deny: false,
         tool_name: None,
         session_start: false,
+        cwd: common.cwd.clone(),
+        matches_directories: false,
+        task: None,
     };
 
     match event {
         HookEvent::SessionStart { source, .. } => {
             plan.session_start = true;
             plan.reset = reset_for_source(source);
+            plan.matches_directories = true;
             push_text(
                 &mut plan,
-                TriggerField::WorkingDirectory,
+                TriggerField::ShellDirectory,
                 common.cwd.as_deref(),
             );
         }
@@ -89,13 +106,14 @@ pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<Eve
             ..
         } => {
             plan.may_deny = true;
+            plan.matches_directories = true;
             plan.tool_name = Some(tool_name.clone());
             push_text(&mut plan, TriggerField::ToolName, Some(tool_name));
             let input = string_leaves(tool_input, usize::MAX);
             push_text(&mut plan, TriggerField::ToolInput, Some(&input));
             push_text(
                 &mut plan,
-                TriggerField::WorkingDirectory,
+                TriggerField::ShellDirectory,
                 common.cwd.as_deref(),
             );
         }
@@ -116,7 +134,9 @@ pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<Eve
         HookEvent::CwdChanged { cwd, .. } => {
             // The directory now in force is the variant's own field; the
             // flattened `cwd` of a CwdChanged event is not read.
-            push_text(&mut plan, TriggerField::WorkingDirectory, Some(cwd));
+            plan.matches_directories = true;
+            plan.cwd = Some(cwd.clone());
+            push_text(&mut plan, TriggerField::ShellDirectory, Some(cwd));
         }
         HookEvent::PostCompact { .. } => {
             plan.reset = Reset::ClearDelivered;
@@ -130,6 +150,7 @@ pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<Eve
             // The event arrives on the parent session but acts on the child,
             // whose id is the variant's own field.
             plan.key = ContextKey::subagent(machine, &common.session_id, agent_id);
+            plan.task = task_description.clone();
             push_text(
                 &mut plan,
                 TriggerField::UserMessage,
@@ -294,7 +315,7 @@ mod tests {
         .expect("CwdChanged is a known event");
         assert_eq!(
             plan.texts,
-            vec![(TriggerField::WorkingDirectory, "/work/after".to_string())]
+            vec![(TriggerField::ShellDirectory, "/work/after".to_string())]
         );
     }
 

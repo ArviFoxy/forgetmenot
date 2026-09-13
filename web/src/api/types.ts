@@ -19,7 +19,8 @@ export type TriggerField =
   | 'tool_name'
   | 'tool_input'
   | 'tool_result'
-  | 'working_directory';
+  | 'shell_directory'
+  | 'session_directory';
 export type DeliveryReason = 'new' | 'changed' | 'stale' | 'retracted';
 
 export interface MemorySummary {
@@ -128,6 +129,15 @@ export interface HistoryEntry {
 
 export interface ContextRow {
   key: string;
+  /** What to call the context: its task, its title, or its first prompt. */
+  name: string;
+  /** The name the user gave the session with `/rename`. */
+  title: string | null;
+  first_prompt: string | null;
+  /** The key of the session a subagent runs in; null for a session itself. */
+  parent: string | null;
+  /** The task a subagent was given; null for a session itself. */
+  task: string | null;
   active_scopes: string[];
   delivered_count: number;
   last_seen: string;

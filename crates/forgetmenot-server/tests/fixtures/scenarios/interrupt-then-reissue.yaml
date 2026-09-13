@@ -8,7 +8,7 @@ reasoning: >
   critical, in full), reading-list (global, knowledge, index line) and the
   session's own notes (knowledge, index line). Nothing was delivered before, so
   all three are new; a session start cannot stop a call, so the decision is
-  context. No trigger fires: the only working_directory trigger is the workshop
+  context. No trigger fires: the only shell_directory trigger is the workshop
   one and /home/dev/widgets does not match it, so all three scopes of the store
   are offered as ones the session can turn on.
 

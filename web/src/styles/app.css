@@ -1085,6 +1085,10 @@ table.data td.nowrap {
   white-space: nowrap;
 }
 
+table.data td.nested {
+  padding-inline-start: var(--sl-spacing-large);
+}
+
 table.stats td,
 table.stats th {
   white-space: nowrap;

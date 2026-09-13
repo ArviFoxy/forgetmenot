@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, test, vi } from 'vitest';
-import type { MemoryDoc, MemoryStatsRow } from '../src/api/types';
+import type { ContextRow, MemoryDoc, MemoryStatsRow } from '../src/api/types';
 
 // The source of these expectations is what the pages promise: every address the app
 // links to has an element to show it, the statistics keep index-line and full
@@ -36,6 +36,12 @@ const memoryRow: MemoryStatsRow = {
   last_shown: '2026-01-02T03:04:05+00:00',
 };
 
+/**
+ * What the mocked API answers with, which a test sets before it renders. Hoisted
+ * because the mock factory below runs before anything else in this file.
+ */
+const answers = vi.hoisted(() => ({ contexts: [] as unknown[] }));
+
 vi.mock('../src/api/client', () => ({
   RequestFailed: class RequestFailed extends Error {
     constructor(
@@ -68,7 +74,7 @@ vi.mock('../src/api/client', () => ({
     settings: () => Promise.resolve({ settings: {}, version: null, schema: [] }),
     putSetting: () => Promise.resolve({ kind: 'written' }),
     machineIndex: () => Promise.resolve(['alpha', 'beta']),
-    contexts: () => Promise.resolve([]),
+    contexts: () => Promise.resolve(answers.contexts),
     review: () => Promise.resolve({ errors: [], global_only_critical: [] }),
     memoryStats: () => Promise.resolve([memoryRow]),
     triggerStats: () => Promise.resolve([]),
@@ -92,7 +98,50 @@ async function settle(element: HTMLElement & { updateComplete?: Promise<unknown>
 
 beforeEach(() => {
   document.body.innerHTML = '';
+  answers.contexts = [];
 });
+
+/** One live context, with everything the contexts page reads. */
+function context(over: Partial<ContextRow> & { key: string }): ContextRow {
+  return {
+    name: '',
+    title: null,
+    first_prompt: null,
+    parent: null,
+    task: null,
+    active_scopes: ['global'],
+    delivered_count: 1,
+    last_seen: '2026-01-02T03:04:05+00:00',
+    ...over,
+  };
+}
+
+const session = context({
+  key: 'alpha/session-1',
+  name: 'Rebuild the thermocouple rig',
+  title: 'Rebuild the thermocouple rig',
+  delivered_count: 3,
+});
+
+const subagent = context({
+  key: 'alpha/session-1/agent-7f3a',
+  name: 'Survey the rocketry crate',
+  parent: 'alpha/session-1',
+  task: 'Survey the rocketry crate',
+  last_seen: '2026-01-02T03:05:05+00:00',
+});
+
+/** The contexts page, rendered over `rows`. */
+async function renderContexts(rows: ContextRow[]): Promise<void> {
+  answers.contexts = rows;
+  const element = document.createElement('fmn-contexts-view');
+  document.body.append(element);
+  await settle(element);
+}
+
+function cellsOf(row: Element | undefined): string[] {
+  return [...(row?.querySelectorAll('td') ?? [])].map((cell) => cell.textContent?.trim() ?? '');
+}
 
 test('an address the app links to has no element registered to show it', () => {
   const addresses = [
@@ -127,4 +176,33 @@ test('the statistics add the delivery counts together instead of showing each', 
     expect(cells).toContain(count);
   }
   expect(cells).toContain('2026-01-02T03:04:05+00:00');
+});
+
+// The source of these two expectations is the decision about what the contexts
+// table shows: the columns Name, Scopes, Id, Machine, Delivered, Last seen, in
+// that order, with each subagent directly under the session it runs in and its
+// name indented.
+
+test('the contexts table names its columns in another order, or lists a context without its name', async () => {
+  await renderContexts([session]);
+
+  const headers = [...document.querySelectorAll('table.data thead th')].map((cell) =>
+    cell.textContent?.trim(),
+  );
+  expect(headers).toEqual(['Name', 'Scopes', 'Id', 'Machine', 'Delivered', 'Last seen']);
+  const [row] = [...document.querySelectorAll('table.data tbody tr')];
+  expect(cellsOf(row)[0]).toBe(session.name);
+  // The key is split over the two columns that carry its parts.
+  expect(cellsOf(row)).toContain('session-1');
+  expect(cellsOf(row)).toContain('alpha');
+});
+
+test('a subagent is listed in the order it arrived, or level with the session it runs in', async () => {
+  // In the other order, so that a page that lists them as they arrive fails.
+  await renderContexts([subagent, session]);
+
+  const rows = [...document.querySelectorAll('table.data tbody tr')];
+  expect(rows.map((row) => cellsOf(row)[0])).toEqual([session.name, subagent.name]);
+  expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
+  expect(rows[0]?.querySelector('td')?.classList.contains('nested')).toBe(false);
 });

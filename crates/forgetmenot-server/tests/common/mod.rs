@@ -208,9 +208,30 @@ impl TestServer {
         self.store.commit(title, files);
     }
 
-    /// Send one hook event and read the answer.
+    /// Send one hook event and read the answer, as a client that read nothing
+    /// from the transcript but the context size.
     pub fn hook(&self, machine: &str, context_tokens: Option<u64>, event: &Value) -> (u16, Value) {
         post_hook(&self.url(), machine, context_tokens, event)
+    }
+
+    /// Send one hook event with what the client read from the transcript about
+    /// what the session is, which the client sends on every event.
+    pub fn hook_named(
+        &self,
+        machine: &str,
+        context_tokens: Option<u64>,
+        session_title: Option<&str>,
+        first_prompt: Option<&str>,
+        event: &Value,
+    ) -> (u16, Value) {
+        post_hook_named(
+            &self.url(),
+            machine,
+            context_tokens,
+            session_title,
+            first_prompt,
+            event,
+        )
     }
 
     /// Send one API request and read the status and the answer.
@@ -350,7 +371,9 @@ pub fn api_request(base_url: &str, method: &str, path: &str, body: Option<&Value
     (status, answer)
 }
 
-/// POST one hook event to a running server, as the hook client does.
+/// POST one hook event to a running server, as a client that read nothing from
+/// the transcript but the context size does. The body carries neither name
+/// field, which is also the body an older client sends.
 pub fn post_hook(
     base_url: &str,
     machine: &str,
@@ -362,13 +385,38 @@ pub fn post_hook(
         "context_tokens": context_tokens,
         "hook": event,
     });
+    post_hook_body(base_url, &body)
+}
+
+/// POST one hook event with the session's name and first prompt, which is the
+/// whole body the current client sends.
+pub fn post_hook_named(
+    base_url: &str,
+    machine: &str,
+    context_tokens: Option<u64>,
+    session_title: Option<&str>,
+    first_prompt: Option<&str>,
+    event: &Value,
+) -> (u16, Value) {
+    let body = json!({
+        "machine": machine,
+        "context_tokens": context_tokens,
+        "session_title": session_title,
+        "first_prompt": first_prompt,
+        "hook": event,
+    });
+    post_hook_body(base_url, &body)
+}
+
+/// POST one `/hook` body verbatim and read the status and the answer.
+fn post_hook_body(base_url: &str, body: &Value) -> (u16, Value) {
     let agent = test_agent();
     let mut response = agent
         .post(format!("{base_url}/hook"))
         .header("content-type", "application/json")
         // serialised here rather than with a json feature: the client crate
         // pins ureq without default features, and the tests use the same build.
-        .send(serde_json::to_string(&body).expect("the body serialises"))
+        .send(serde_json::to_string(body).expect("the body serialises"))
         .expect("the request reaches the server");
     let status = response.status().as_u16();
     let text = response
@@ -638,6 +686,64 @@ pub fn write_transcript(path: &Path, context_tokens: u64, minimum_bytes: u64) {
     let last = format!(
         "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"usage\":{{\"input_tokens\":{},\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1,\"output_tokens\":7}},\"content\":\"the last reply\"}}}}\n\
          {{\"type\":\"system\",\"subtype\":\"post_tool\",\"text\":\"after the last assistant line\"}}\n",
+        context_tokens - 2
+    );
+    file.write_all(last.as_bytes())
+        .expect("the transcript writes");
+    file.flush().expect("the transcript flushes");
+}
+
+/// Write a transcript that names its session `title`, padded to at least
+/// `minimum_bytes`, whose last assistant message reports `context_tokens`.
+///
+/// The `custom-title` line is the second line of the file, so only a reader
+/// that covers the whole transcript finds it: a reader that takes the tail of a
+/// 40 MB file, which is what every event but `SessionStart` gets, sees nothing
+/// but padding. The line is built by hand rather than through a serialiser
+/// because the reader recognises a title line by its opening bytes, and a
+/// serialiser is free to order the keys as it likes.
+///
+/// This generator is checked against reality by the test that uses it: that
+/// test reads the name back out of the server, so a title line this writes in a
+/// shape Claude Code does not write, or writes somewhere the client can reach
+/// by accident, fails there rather than passing silently.
+pub fn write_transcript_with_custom_title(
+    path: &Path,
+    title: &str,
+    context_tokens: u64,
+    minimum_bytes: u64,
+) {
+    assert!(
+        context_tokens >= 2,
+        "the last line splits the sum over three counters, so it needs at least 2 tokens"
+    );
+    let padding = "x".repeat(400);
+    let mut file = std::io::BufWriter::new(
+        std::fs::File::create(path)
+            .unwrap_or_else(|error| panic!("creating {} failed: {error}", path.display())),
+    );
+    let quoted_title = Value::String(title.to_string());
+    let opening = format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"the first prompt\"}}}}\n\
+         {{\"type\":\"custom-title\",\"customTitle\":{quoted_title},\"sessionId\":\"session-1\"}}\n"
+    );
+    file.write_all(opening.as_bytes())
+        .expect("the transcript writes");
+    let mut written = opening.len() as u64;
+    let mut turn = 0u64;
+    while written < minimum_bytes {
+        let line = format!(
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"turn {turn} {padding}\"}}}}\n\
+             {{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"usage\":{{\"input_tokens\":{},\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1,\"output_tokens\":7}},\"content\":\"reply {turn} {padding}\"}}}}\n",
+            turn + 1
+        );
+        file.write_all(line.as_bytes())
+            .expect("the transcript writes");
+        written += line.len() as u64;
+        turn += 1;
+    }
+    let last = format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"usage\":{{\"input_tokens\":{},\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1,\"output_tokens\":7}},\"content\":\"the last reply\"}}}}\n",
         context_tokens - 2
     );
     file.write_all(last.as_bytes())

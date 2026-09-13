@@ -26,7 +26,7 @@ use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::context::registry::{ContextRegistry, Inheritance};
+use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance};
 use crate::context::{ContextKey, Form, Shown};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
 use crate::stats::ToolCallRecord;
@@ -291,6 +291,19 @@ pub struct HistoryEntry {
 pub struct ContextRow {
     /// The session key, the same form the MCP tools take.
     pub key: String,
+    /// What to call this context in a list, derived by [`context_name`]. Empty
+    /// when nothing is known about the context but its key.
+    pub name: String,
+    /// The name the user gave the session with `/rename`, absent when the
+    /// session was never named.
+    pub title: Option<String>,
+    /// The user's first prompt in the session, as the client cut it.
+    pub first_prompt: Option<String>,
+    /// The key of the context this one runs inside, for a subagent, in the
+    /// same form as `key`. Absent for a session's own context.
+    pub parent: Option<String>,
+    /// The task a subagent was given, absent for a session's own context.
+    pub task: Option<String>,
     pub active_scopes: Vec<ScopeId>,
     pub delivered_count: usize,
     /// ISO 8601.
@@ -1551,11 +1564,73 @@ pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<Con
         .into_iter()
         .map(|record| ContextRow {
             key: record.key.to_string(),
+            name: context_name(&record),
+            title: record.state.session_title,
+            first_prompt: record.state.first_prompt,
+            parent: record.state.parent.map(|parent| parent.to_string()),
+            task: record.state.task,
             active_scopes: record.state.active.into_iter().collect(),
             delivered_count: record.state.delivered.len(),
             last_seen: iso8601(record.state.last_seen),
         })
         .collect()
+}
+
+/// How much of a task or a first prompt a name keeps. It is one cell of a
+/// table beside five others, so it is about the width of a sentence rather
+/// than of the paragraph either text can run to.
+const NAME_CHARACTERS: usize = 80;
+
+/// What to call one context in a list.
+///
+/// The source text is, in order: for a subagent, the task it was given; else
+/// the name the user gave the session with `/rename`; else the user's first
+/// prompt; else nothing at all, which gives the empty string. Whitespace,
+/// newlines included, collapses to single spaces and the text is trimmed,
+/// because the result is one cell of a table and a prompt is written over
+/// several lines.
+///
+/// A title is used whole: it is a name the user deliberately typed, and the
+/// part that tells two sessions apart may be anywhere in it. A task and a first
+/// prompt are the model's and the user's running prose, so they are cut to
+/// [`NAME_CHARACTERS`] characters at the last word boundary among them, with a
+/// single `…` in place of what was dropped. The cut counts characters and never
+/// bytes, so no multi-byte character is split in half.
+fn context_name(record: &ContextRecord) -> String {
+    if record.key.is_subagent()
+        && let Some(task) = &record.state.task
+    {
+        return cut_at_word_boundary(&collapse_whitespace(task), NAME_CHARACTERS);
+    }
+    if let Some(title) = &record.state.session_title {
+        return collapse_whitespace(title);
+    }
+    match &record.state.first_prompt {
+        Some(prompt) => cut_at_word_boundary(&collapse_whitespace(prompt), NAME_CHARACTERS),
+        None => String::new(),
+    }
+}
+
+/// `text` with every run of whitespace, newlines included, replaced by one
+/// space, and no whitespace at either end.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` cut to `limit` characters at a word boundary, with `…` marking what
+/// was dropped. Text of `limit` characters or fewer is returned unchanged and
+/// unmarked; a first `limit` characters holding no space is kept whole, because
+/// there is no word boundary to cut back to.
+fn cut_at_word_boundary(text: &str, limit: usize) -> String {
+    let Some((end_of_the_kept_part, _)) = text.char_indices().nth(limit) else {
+        return text.to_string();
+    };
+    let kept = &text[..end_of_the_kept_part];
+    let kept = match kept.rfind(' ') {
+        Some(last_space) => &kept[..last_space],
+        None => kept,
+    };
+    format!("{}…", kept.trim_end())
 }
 
 /// Whether a pattern is a regex that compiles, and what is wrong with it when

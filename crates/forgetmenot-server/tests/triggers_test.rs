@@ -200,14 +200,14 @@ fn a_machine_qualified_any_trigger_fires_only_for_its_machine() {
 fn a_machine_qualified_trigger_fires_only_for_its_machine() {
     let index = index_with(&[(
         "workshop",
-        TriggerField::WorkingDirectory,
+        TriggerField::ShellDirectory,
         "/workshop(/|$)",
         Some("alpha"),
     )]);
     assert_eq!(
         fired_scopes(
             &index,
-            TriggerField::WorkingDirectory,
+            TriggerField::ShellDirectory,
             "/home/user/workshop",
             "alpha"
         ),
@@ -216,11 +216,7 @@ fn a_machine_qualified_trigger_fires_only_for_its_machine() {
     );
     assert!(
         index
-            .fire(
-                TriggerField::WorkingDirectory,
-                "/home/user/workshop",
-                "beta"
-            )
+            .fire(TriggerField::ShellDirectory, "/home/user/workshop", "beta")
             .is_empty(),
         "a trigger qualified for alpha fired for beta"
     );

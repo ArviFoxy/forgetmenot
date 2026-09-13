@@ -1,18 +1,19 @@
 import type { MemoryKind, MemorySource, Trigger, TriggerField } from '../api/types';
 
-/** The six strings the harness supplies, in the order the documentation lists them. */
+/** The seven strings a trigger can name, in the order the documentation lists them. */
 export const triggerFields: TriggerField[] = [
   'user_message',
   'assistant_message',
   'tool_name',
   'tool_input',
   'tool_result',
-  'working_directory',
+  'shell_directory',
+  'session_directory',
 ];
 
 /**
  * What a field select offers. `any` comes first and is the default, because a
- * trigger that names no field matches every text, which is the plain case; the six
+ * trigger that names no field matches every text, which is the plain case; the seven
  * texts narrow it.
  */
 export const triggerFieldChoices: TriggerField[] = ['any', ...triggerFields];

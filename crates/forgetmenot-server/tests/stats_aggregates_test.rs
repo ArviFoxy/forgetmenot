@@ -57,7 +57,7 @@ Stage numbering is written up separately in [[rocket-stages]]. A link written as
 /// implies against the example store:
 ///
 /// 1. **SessionStart.** The context starts in `global`, `machine:alpha` and its
-///    own session scope, and the working directory matches no trigger. Due, and
+///    own session scope, and neither of its directories matches a trigger. Due, and
 ///    none of it delivered yet: `bench-power` in full (new), `reading-list` and
 ///    `sessions/alpha/session-1/notes` as index lines (new).
 /// 2. **UserPromptSubmit naming a widget.** The `widgets` pattern on

@@ -1,16 +1,18 @@
 //! The forgetmenot hook client.
 //!
 //! Claude Code runs this binary for every hook event, with the event JSON on
-//! stdin, and injects whatever it writes to stdout. The client adds the two
-//! things the server cannot know by itself, the machine name and the size of
-//! the session's context, POSTs the result to the server and copies the
-//! server's answer to stdout unchanged. It holds no state, so any number of
-//! them may run at once.
+//! stdin, and injects whatever it writes to stdout. The client adds what the
+//! server cannot know by itself: the machine name, and what only the session's
+//! transcript says, the size of the session's context, the name the user gave
+//! the session and its first prompt. It POSTs the result to the server and
+//! copies the server's answer to stdout unchanged. It holds no state, so any
+//! number of them may run at once.
 //!
 //! Claude Code shows the model whatever lands on stdout, so a failure must
 //! stay off it: every failure path writes one line to stderr, nothing to
 //! stdout, and exits 1.
 
+pub mod transcript_name;
 pub mod transcript_tail;
 
 use std::io::{Read, Write};
@@ -95,12 +97,34 @@ pub fn run(
             return fail(stderr, format_args!("stdin is not valid JSON: {error}"));
         }
     };
-    let context_tokens = event
+    let transcript_path = event
         .get("transcript_path")
+        .and_then(serde_json::Value::as_str);
+    let context_tokens = transcript_path.and_then(transcript_tail::last_assistant_context_tokens);
+    // A session is named once and the line saying so is re-emitted as the
+    // transcript grows, so the whole file is read only at the one event per
+    // session that can afford it; every other event reads the tail, and a
+    // rename mid-session is reported at the next event after it.
+    let title_scan = if event
+        .get("hook_event_name")
         .and_then(serde_json::Value::as_str)
-        .and_then(transcript_tail::last_assistant_context_tokens);
+        == Some("SessionStart")
+    {
+        transcript_name::TitleScan::WholeFile
+    } else {
+        transcript_name::TitleScan::TailWindow
+    };
+    let session_title =
+        transcript_path.and_then(|path| transcript_name::session_title(path, title_scan));
+    let first_prompt = transcript_path.and_then(transcript_name::first_prompt);
 
-    let body = request_body(&parsed.machine, context_tokens, hook_json);
+    let body = request_body(
+        &parsed.machine,
+        context_tokens,
+        session_title.as_deref(),
+        first_prompt.as_deref(),
+        hook_json,
+    );
     let url = format!("{}/hook", parsed.server.trim_end_matches('/'));
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -149,8 +173,14 @@ fn fail(stderr: &mut impl Write, what_failed: std::fmt::Arguments) -> i32 {
 /// the event through `serde_json::Value` would reorder its keys and drop the
 /// distinction between the bytes Claude Code sent and this client's idea of
 /// them.
-fn request_body(machine: &str, context_tokens: Option<u64>, hook_json: &[u8]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(hook_json.len() + 64);
+fn request_body(
+    machine: &str,
+    context_tokens: Option<u64>,
+    session_title: Option<&str>,
+    first_prompt: Option<&str>,
+    hook_json: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(hook_json.len() + 512);
     body.extend_from_slice(b"{\"machine\":");
     serde_json::to_writer(&mut body, machine).expect("a string always serialises");
     body.extend_from_slice(b",\"context_tokens\":");
@@ -158,10 +188,24 @@ fn request_body(machine: &str, context_tokens: Option<u64>, hook_json: &[u8]) ->
         Some(tokens) => body.extend_from_slice(tokens.to_string().as_bytes()),
         None => body.extend_from_slice(b"null"),
     }
+    body.extend_from_slice(b",\"session_title\":");
+    write_optional_string(&mut body, session_title);
+    body.extend_from_slice(b",\"first_prompt\":");
+    write_optional_string(&mut body, first_prompt);
     body.extend_from_slice(b",\"hook\":");
     body.extend_from_slice(hook_json);
     body.extend_from_slice(b"}");
     body
+}
+
+/// Write a JSON string, or `null` when there is nothing to write. The value
+/// comes from a transcript the client did not write, so the quoting and
+/// escaping are left to `serde_json` rather than done here.
+fn write_optional_string(body: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(text) => serde_json::to_writer(body, text).expect("a string always serialises"),
+        None => body.extend_from_slice(b"null"),
+    }
 }
 
 /// Claude Code ends the payload with a newline; JSON does not care, but the

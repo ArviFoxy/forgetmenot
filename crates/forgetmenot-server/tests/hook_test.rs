@@ -702,6 +702,303 @@ fn a_machine_qualified_directory_trigger_fires_only_on_its_machine() {
     );
 }
 
+// ------------------------------------------------------- the two directories
+//
+// The two directory fields differ only once the agent has run `cd`: until then
+// the session directory and the shell directory are the same string, so every
+// test below moves the shell and then asks which of the two a trigger saw.
+// Source: the README's account of the two fields, and the hook payloads Claude
+// Code sends, where `cwd` is the shell's directory at the time of the event.
+
+/// The directory the session is started in.
+const STARTED_IN: &str = "/start/project";
+/// The directory the agent's shell moves to.
+const MOVED_TO: &str = "/moved/elsewhere";
+
+/// A line that appears only in the body of the `bench-vice` memory built below,
+/// so that "the directory trigger fired" can be told apart from anything the
+/// example store delivers on its own.
+const BENCH_VICE_BODY: &str = "The vice jaws are shimmed with copper";
+
+/// One scope whose only trigger is `on: <field>` with `pattern`, and one
+/// critical memory in it, as files to commit. A pair rather than a whole store,
+/// so that a test can either start a server with them or add them to a store a
+/// server is already reading.
+fn directory_scope_files(field: &str, pattern: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    vec![
+        (
+            "scopes/bench.yaml".to_string(),
+            Some(format!("id: bench\ntriggers:\n- on: {field}\n  pattern: '{pattern}'\n").into_bytes()),
+        ),
+        (
+            "memories/bench-vice.md".to_string(),
+            Some(
+                format!(
+                    "---\nname: bench-vice\ndescription: The bench vice is shimmed and the shims stay with it\nmetadata:\n  kind: critical\n  scopes:\n  - bench\n  source: user\n---\n# The bench vice\n\n{BENCH_VICE_BODY}\n"
+                )
+                .into_bytes(),
+            ),
+        ),
+    ]
+}
+
+/// `files` with the directory scope added, for a server that is to start with it.
+fn with_directory_scope(
+    files: Vec<(String, Option<Vec<u8>>)>,
+    field: &str,
+    pattern: &str,
+) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = files;
+    files.extend(directory_scope_files(field, pattern));
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// A session start in `cwd`, which is the directory the session is started in.
+fn session_start_in(cwd: &str) -> Value {
+    event_with("session_start", &[("cwd", json!(cwd))])
+}
+
+/// A prompt sent from `cwd`, whose text matches no trigger in the example
+/// store. A prompt is matched against no directory at all, so it leaves the two
+/// directories to the events that do match them.
+fn prompt_from(cwd: &str) -> Value {
+    event_with(
+        "user_prompt_submit",
+        &[("cwd", json!(cwd)), ("prompt", json!("carry on"))],
+    )
+}
+
+/// A tool call from `cwd` whose tool and input match no trigger in the example
+/// store, so that only the directories can fire anything.
+fn tool_call_from(cwd: &str) -> Value {
+    event_with(
+        "pre_tool_use_read",
+        &[
+            ("cwd", json!(cwd)),
+            ("tool_name", json!("Read")),
+            (
+                "tool_input",
+                json!({ "file_path": "/home/dev/notes/README.md" }),
+            ),
+        ],
+    )
+}
+
+/// A tool call inside the subagent of the `subagent_start` fixture, from `cwd`,
+/// whose input matches no trigger in the example store.
+fn subagent_tool_call_from(cwd: &str) -> Value {
+    event_with(
+        "pre_tool_use_in_subagent",
+        &[
+            ("cwd", json!(cwd)),
+            ("tool_input", json!({ "pattern": "pub fn" })),
+        ],
+    )
+}
+
+/// Detects a `session_directory` trigger matched against the directory the
+/// shell is in at the time of the event: the session directory is where
+/// `claude` was started and does not move, so a trigger on it must still fire
+/// at a tool call the agent makes from somewhere else.
+///
+/// The scope is committed after the session start because at a session start
+/// the two directories are the same string; firing there would say nothing
+/// about which of them was matched.
+#[test]
+fn a_session_directory_trigger_fires_at_a_tool_call_from_another_directory() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &session_start_in(STARTED_IN));
+    server.commit(
+        "add a scope triggered by the session directory",
+        directory_scope_files("session_directory", "/start(/|$)"),
+    );
+
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &tool_call_from(MOVED_TO));
+
+    assert!(
+        context_of(&answer).contains(BENCH_VICE_BODY),
+        "a session_directory trigger on {STARTED_IN} must fire at a call made from {MOVED_TO}, got {:?}",
+        context_of(&answer)
+    );
+}
+
+/// Detects a `session_directory` trigger matched against the directory the
+/// shell moved to, which would turn a scope on for a session that was never
+/// started there: the whole point of the field is that it names where the
+/// session began.
+#[test]
+fn a_session_directory_trigger_does_not_fire_on_the_directory_the_shell_moved_to() {
+    let server = TestServer::start(
+        with_directory_scope(example_store_files(), "session_directory", "/moved(/|$)"),
+        |_| {},
+    );
+
+    let (_, start) = server.hook("alpha", SOME_TOKENS, &session_start_in(STARTED_IN));
+    let (_, call) = server.hook("alpha", SOME_TOKENS, &tool_call_from(MOVED_TO));
+
+    assert!(
+        !context_of(&start).contains(BENCH_VICE_BODY),
+        "the scope must stay off at a session start in {STARTED_IN}, got {:?}",
+        context_of(&start)
+    );
+    assert!(
+        !context_of(&call).contains(BENCH_VICE_BODY),
+        "the scope must stay off at a call made from {MOVED_TO} by a session started in {STARTED_IN}, got {:?}",
+        context_of(&call)
+    );
+
+    // The same trigger on a session that did start there, so that "it never
+    // fires" cannot pass for "it fired on the wrong directory".
+    let elsewhere = event_with(
+        "session_start",
+        &[("cwd", json!(MOVED_TO)), ("session_id", json!("session-2"))],
+    );
+    let (_, started_there) = server.hook("alpha", SOME_TOKENS, &elsewhere);
+    assert!(
+        context_of(&started_there).contains(BENCH_VICE_BODY),
+        "the same trigger must fire for a session started in {MOVED_TO}, got {:?}",
+        context_of(&started_there)
+    );
+}
+
+/// Detects a `shell_directory` trigger that is left behind in the directory the
+/// session started in: the field is the working directory of the session's
+/// shell, so a scope written for the directory the agent moved into would never
+/// turn on.
+#[test]
+fn a_shell_directory_trigger_fires_at_a_tool_call_in_the_directory_the_shell_moved_to() {
+    let server = TestServer::start(
+        with_directory_scope(example_store_files(), "shell_directory", "/moved(/|$)"),
+        |_| {},
+    );
+
+    let (_, start) = server.hook("alpha", SOME_TOKENS, &session_start_in(STARTED_IN));
+    let (_, call) = server.hook("alpha", SOME_TOKENS, &tool_call_from(MOVED_TO));
+
+    assert!(
+        !context_of(&start).contains(BENCH_VICE_BODY),
+        "the scope must stay off while the shell is in {STARTED_IN}, got {:?}",
+        context_of(&start)
+    );
+    assert!(
+        context_of(&call).contains(BENCH_VICE_BODY),
+        "a shell_directory trigger on {MOVED_TO} must fire at a call made from there, got {:?}",
+        context_of(&call)
+    );
+}
+
+/// Detects a `shell_directory` trigger matched against the directory the
+/// session started in rather than the one the shell is in now, which would keep
+/// a scope turning on for work the agent has moved away from.
+///
+/// The session's first event is a prompt, which is matched against no
+/// directory, so the trigger's one chance to fire is the tool call.
+#[test]
+fn a_shell_directory_trigger_does_not_fire_on_the_directory_the_session_started_in() {
+    let server = TestServer::start(
+        with_directory_scope(example_store_files(), "shell_directory", "/start(/|$)"),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &prompt_from(STARTED_IN));
+
+    let (_, moved_away) = server.hook("alpha", SOME_TOKENS, &tool_call_from(MOVED_TO));
+    assert!(
+        !context_of(&moved_away).contains(BENCH_VICE_BODY),
+        "the scope must stay off at a call made from {MOVED_TO}, got {:?}",
+        context_of(&moved_away)
+    );
+
+    // The same trigger with the shell back where the session began, so that "it
+    // never fires" cannot pass for "it ignored the shell's directory".
+    let (_, back_again) = server.hook("alpha", SOME_TOKENS, &tool_call_from(STARTED_IN));
+    assert!(
+        context_of(&back_again).contains(BENCH_VICE_BODY),
+        "the same trigger must fire at a call made from {STARTED_IN}, got {:?}",
+        context_of(&back_again)
+    );
+}
+
+/// Detects a subagent given a session directory of its own, or none at all: a
+/// subagent runs in its parent's session, so the directory `claude` was started
+/// in is the same for both, whatever the subagent's shell is doing.
+///
+/// Subagents are set to inherit no scopes, so the only way the scope can reach
+/// the subagent is the session directory it took from its parent.
+#[test]
+fn a_subagent_takes_the_session_directory_of_the_session_it_runs_in() {
+    let server = TestServer::start(
+        with_directory_scope(
+            example_store_with_settings("subagents_inherit_scopes: false\n"),
+            "session_directory",
+            "/start(/|$)",
+        ),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &session_start_in(STARTED_IN));
+    server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_with("cwd_changed", &[("cwd", json!(MOVED_TO))]),
+    );
+    server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_with("subagent_start", &[("cwd", json!(MOVED_TO))]),
+    );
+
+    let (_, in_subagent) = server.hook("alpha", SOME_TOKENS, &subagent_tool_call_from(MOVED_TO));
+
+    assert!(
+        context_of(&in_subagent).contains(BENCH_VICE_BODY),
+        "the subagent's session directory must be the {STARTED_IN} its session was started in, got {:?}",
+        context_of(&in_subagent)
+    );
+}
+
+/// Detects a context whose first event is not a session start being left
+/// without a session directory: the server misses the start of a session that
+/// was already running when it came up, and such a session must still match
+/// directory triggers rather than silently matching nothing.
+#[test]
+fn a_context_first_seen_at_a_prompt_takes_that_events_directory_as_its_session_directory() {
+    let server = TestServer::start(
+        with_directory_scope(example_store_files(), "session_directory", "/start(/|$)"),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &prompt_from(STARTED_IN));
+
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &tool_call_from(MOVED_TO));
+
+    assert!(
+        context_of(&answer).contains(BENCH_VICE_BODY),
+        "the directory of the first event seen must serve as the session directory, got {:?}",
+        context_of(&answer)
+    );
+}
+
+/// Detects a session directory that is not written to the context snapshot: the
+/// server would come back up having forgotten where every running session
+/// began, and their directory triggers would stop firing.
+#[test]
+fn a_restart_keeps_the_directory_each_session_was_started_in() {
+    let mut server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &session_start_in(STARTED_IN));
+    server.commit(
+        "add a scope triggered by the session directory",
+        directory_scope_files("session_directory", "/start(/|$)"),
+    );
+
+    server.restart();
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &tool_call_from(MOVED_TO));
+
+    assert!(
+        context_of(&answer).contains(BENCH_VICE_BODY),
+        "the session directory must survive a restart, got {:?}",
+        context_of(&answer)
+    );
+}
+
 /// A line that appears only in the body of the `lathe-safety` memory built
 /// below, so that "the scope turned on" can be told apart from anything the
 /// example store delivers on its own.
@@ -886,6 +1183,10 @@ mod state_machine {
                 },
             )]),
             parent: None,
+            session_directory: None,
+            session_title: None,
+            first_prompt: None,
+            task: None,
             last_seen: chrono::Utc::now(),
         }
     }

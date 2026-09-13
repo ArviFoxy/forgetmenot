@@ -90,13 +90,18 @@ function sessionParts(id: string): { machine: string; session: string } {
   return { machine: rest.slice(0, slash), session: rest.slice(slash + 1) };
 }
 
-/** Sessions are two levels: the machine, then the sessions on it. */
-function sessionNodes(entries: ScopeEntry[]): TreeNode[] {
+/**
+ * Sessions are two levels: the machine, then the sessions on it. A session known
+ * by a name is labelled with its id and that name, because the id says nothing
+ * about what the session is and the name is what the user recognises.
+ */
+function sessionNodes(entries: ScopeEntry[], names: ReadonlyMap<string, string>): TreeNode[] {
   const machines = new Map<string, TreeNode[]>();
   for (const entry of entries) {
     const { machine, session } = sessionParts(entry.id);
+    const name = names.get(entry.id) ?? '';
     const nodes = machines.get(machine) ?? [];
-    nodes.push(scopeNode(entry, session));
+    nodes.push(scopeNode(entry, name === '' ? session : `${session} ${name}`));
     machines.set(machine, nodes);
   }
   return [...machines.entries()]
@@ -115,11 +120,15 @@ function sessionNodes(entries: ScopeEntry[]): TreeNode[] {
  * contexts have on. Scopes with a file are included even when no memory names them;
  * scopes without a file are included when a memory or a context names them, and
  * `global` always is.
+ *
+ * `sessionNames` maps a session scope id, `session:<machine>/<id>`, to what to
+ * call that session; a session it does not name is labelled by its id alone.
  */
 export function buildTree(
   scopes: ScopeDoc[],
   memories: MemorySummary[],
   activeScopes: string[] = [],
+  sessionNames: ReadonlyMap<string, string> = new Map(),
 ): TreeNode[] {
   const entries = new Map<string, ScopeEntry>();
   const entry = (id: string): ScopeEntry => {
@@ -157,7 +166,7 @@ export function buildTree(
   });
 
   if (sessions.length === 0) return flat;
-  const children = sessionNodes(sessions);
+  const children = sessionNodes(sessions, sessionNames);
   return [
     ...flat,
     {

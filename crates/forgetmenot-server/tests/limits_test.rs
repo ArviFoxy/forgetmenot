@@ -4,7 +4,7 @@
 //! README as well. A hook runs on every Claude Code event and a slow one is felt
 //! as a slow harness, so the limits are asserted here rather than watched.
 //!
-//! Both tests report the measured figure in their failure message, and print it
+//! Every test reports the measured figure in its failure message, and prints it
 //! under `cargo test -- --nocapture`, so a run on another machine says how much
 //! room is left rather than only whether it passed.
 
@@ -13,7 +13,8 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{
-    TestServer, example_store_files, hook_fixture_payload, run_hook_client_binary, write_transcript,
+    TestServer, example_store_files, hook_fixture_payload, run_hook_client_binary,
+    write_transcript, write_transcript_with_custom_title,
 };
 use serde_json::json;
 
@@ -25,8 +26,21 @@ const HOOK_P99_LIMIT: Duration = Duration::from_millis(50);
 const EVENTS: usize = 200;
 
 /// The limit on one whole run of the client, from spawning the process to its
-/// exit, with a transcript of the size a long session reaches.
+/// exit, with a transcript of the size a long session reaches. It is the limit
+/// at every event but `SessionStart`, which reads more of the transcript and
+/// has [`SESSION_START_CLIENT_LIMIT`] of its own.
 const CLIENT_LIMIT: Duration = Duration::from_millis(30);
+
+/// The limit on one whole run of the client at `SessionStart`, the one event
+/// that reads the whole transcript instead of its tail, so that a session named
+/// long ago is still named after its transcript has grown past the tail window.
+/// It happens once per session, which is what buys it the larger budget.
+const SESSION_START_CLIENT_LIMIT: Duration = Duration::from_millis(200);
+
+/// The name the session start test gives its session. Distinctive, so that a
+/// name read back cannot have come from anywhere else in the transcript, the
+/// event or the store.
+const SESSION_TITLE: &str = "Rebuild the vacuum former thermocouple rig";
 
 /// The transcript size the client limit is stated for. Source: the plan.
 const TRANSCRIPT_BYTES: u64 = 40 * 1024 * 1024;
@@ -134,6 +148,8 @@ fn one_client_run_with_a_40_megabyte_transcript_stays_under_the_limit() {
         written >= TRANSCRIPT_BYTES,
         "the transcript must be at least {TRANSCRIPT_BYTES} bytes, got {written}"
     );
+    // A tool call, not a session start: this limit is the one for the events
+    // that read the tail of the transcript, and a session start reads all of it.
     let payload = hook_fixture_payload("pre_tool_use_bash", &transcript);
     let binary = match std::env::var_os("FORGETMENOT_RELEASE_BIN") {
         Some(path) => std::path::PathBuf::from(path),
@@ -160,5 +176,86 @@ fn one_client_run_with_a_40_megabyte_transcript_stays_under_the_limit() {
         elapsed < CLIENT_LIMIT,
         "one client run with a {written} byte transcript took {elapsed:?}, \
          over the {CLIENT_LIMIT:?} limit"
+    );
+}
+
+/// Detects a `SessionStart` that has become slow enough to be felt as a hanging
+/// harness: the whole transcript is read at that event, so a byte-at-a-time
+/// scan, a second pass over the file, or the file being read into memory whole
+/// all show up here. It also detects the scan being narrowed back to the tail,
+/// through the name the run must have found.
+///
+/// The transcript is 40 MB with its `custom-title` line near the start, which is
+/// where a session named at its beginning has it after a long session has grown
+/// past it. Only a scan of the whole file reaches it.
+///
+/// Tolerance: the stated limit is 200 ms for one whole run, process spawn
+/// included. Measured on the development machine with the dev-profile binary
+/// against a real server: 88 to 91 ms, so a conforming implementation has room
+/// to spare while a scan that costs a comparison per byte of 40 MB, measured at
+/// 113 ms for the scan alone, does not fit beside the rest of the run.
+/// `FORGETMENOT_RELEASE_BIN` runs the same check against another build.
+#[test]
+fn one_session_start_client_run_with_a_40_megabyte_transcript_stays_under_the_limit() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_with_custom_title(
+        &transcript,
+        SESSION_TITLE,
+        CONTEXT_TOKENS,
+        TRANSCRIPT_BYTES,
+    );
+    let written = std::fs::metadata(&transcript)
+        .expect("the transcript was written")
+        .len();
+    assert!(
+        written >= TRANSCRIPT_BYTES,
+        "the transcript must be at least {TRANSCRIPT_BYTES} bytes, got {written}"
+    );
+    let payload = hook_fixture_payload("session_start", &transcript);
+    let binary = match std::env::var_os("FORGETMENOT_RELEASE_BIN") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => common::hook_client_binary(),
+    };
+
+    let started = Instant::now();
+    let run = run_hook_client_binary(&binary, &server.url(), "alpha", &payload);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        run.code,
+        Some(0),
+        "the timed run must have succeeded; stderr was {}",
+        run.stderr_text()
+    );
+    run.single_json_object()
+        .unwrap_or_else(|problem| panic!("the timed run must answer with one object: {problem}"));
+    println!(
+        "client end to end at SessionStart with a {written} byte transcript, {}: {elapsed:?}",
+        binary.display()
+    );
+
+    // What the run did, before how long it took: a run that skipped the scan is
+    // fast and is not a measurement of anything.
+    let (status, contexts) = server.api("GET", "/api/contexts", None);
+    assert_eq!(status, 200, "the contexts must be readable, got {contexts}");
+    let row = contexts
+        .as_array()
+        .expect("the contexts are a list")
+        .iter()
+        .find(|row| row["key"] == json!("alpha/session-1"))
+        .unwrap_or_else(|| panic!("the session the run was for must be listed, got {contexts}"));
+    assert_eq!(
+        row["name"],
+        json!(SESSION_TITLE),
+        "the timed run must have found the title near the start of the {written} byte \
+         transcript, got {row}"
+    );
+
+    assert!(
+        elapsed < SESSION_START_CLIENT_LIMIT,
+        "one SessionStart client run with a {written} byte transcript took {elapsed:?}, \
+         over the {SESSION_START_CLIENT_LIMIT:?} limit"
     );
 }

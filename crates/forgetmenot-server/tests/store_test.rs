@@ -8,6 +8,7 @@ use std::process::{Command, Output};
 
 use forgetmenot_server::store::git::GitError;
 use forgetmenot_server::store::memory::MemoryDocument;
+use forgetmenot_server::store::scope::Trigger;
 use forgetmenot_server::store::validate::{
     Candidate, CrossDocumentRules, ValidationError, ValidationReport, ValidationWarning, WriteMode,
     validate, validate_write,
@@ -693,7 +694,8 @@ fn a_machine_qualifier_is_accepted_on_a_trigger_of_every_field() {
         "on: tool_name\n    ",
         "on: tool_input\n    ",
         "on: tool_result\n    ",
-        "on: working_directory\n    ",
+        "on: shell_directory\n    ",
+        "on: session_directory\n    ",
     ] {
         let file =
             format!("id: workshop\ntriggers:\n  - {on}pattern: workshop\n    machine: alpha\n");
@@ -711,6 +713,47 @@ fn a_machine_qualifier_is_accepted_on_a_trigger_of_every_field() {
             "the machine-qualified trigger with {on:?} was not compiled into the index"
         );
     }
+}
+
+/// Detects `working_directory` being kept alive as an alias of one of the two
+/// directory fields that replaced it. The name is gone, not aliased: a store
+/// that still says `on: working_directory` has to be told, because an alias
+/// would silently pick one of the two meanings and a field quietly accepted and
+/// dropped would leave a scope that never turns on and no sign of why. Source:
+/// the trigger fields the README lists, which are the seven a file may name.
+#[test]
+fn a_trigger_on_the_removed_working_directory_field_is_refused_and_reported() {
+    let store = store_with(&[(
+        "scopes/workshop.yaml",
+        b"id: workshop\ntriggers:\n  - on: working_directory\n    pattern: '/workshop(/|$)'\n",
+    )]);
+    let catalog = store.catalog();
+
+    // What `forgetmenot check` reports: the file is named and the message says
+    // something, whatever serde words it as.
+    assert_reports(
+        &validate(&catalog),
+        "a trigger on the removed field",
+        |error| matches!(error, ValidationError::ParseFailure { path, message } if path == "scopes/workshop.yaml" && !message.is_empty()),
+    );
+    assert!(
+        catalog.scope(&ScopeId::new("workshop")).is_none(),
+        "a scope file naming the removed field was loaded as if it were valid"
+    );
+
+    // What a scope write does with the same value: the triggers of a write
+    // request are these, so a body naming the removed field is refused rather
+    // than stored.
+    let refused = serde_json::from_value::<Trigger>(
+        serde_json::json!({ "on": "working_directory", "pattern": "/workshop(/|$)" }),
+    );
+    assert!(
+        refused
+            .as_ref()
+            .err()
+            .is_some_and(|error| !error.to_string().is_empty()),
+        "a scope write naming the removed field must be refused with a message, got {refused:?}"
+    );
 }
 
 /// Detects a scope whose declared id differs from its file name, which would

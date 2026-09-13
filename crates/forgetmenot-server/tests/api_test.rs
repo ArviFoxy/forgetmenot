@@ -1506,7 +1506,7 @@ fn the_trigger_test_applies_the_machine_qualifier_of_a_directory_trigger() {
             "POST",
             "/api/triggers/test",
             Some(&json!({
-                "field": "working_directory",
+                "field": "shell_directory",
                 "text": "/home/dev/workshop/bench",
                 "machine": machine,
             })),
@@ -1695,6 +1695,154 @@ fn the_machines_page_lists_every_machine_that_has_sent_an_event_across_a_restart
     assert_eq!(
         machines, sorted_without_repeats,
         "the machines must be sorted and named once each, got {answer}"
+    );
+}
+
+/// The name the user gave the session in the tests below, longer than the 80
+/// characters a task or a prompt is cut to: a title is a name the user typed,
+/// so it is listed whole.
+const GIVEN_TITLE: &str =
+    "Rebuild the vacuum former thermocouple rig and write up what the old one did";
+
+/// A first prompt whose 80th character falls inside a word, and which carries
+/// multi-byte characters before that point, so that a cut counting bytes lands
+/// somewhere else and a cut that splits a character is not valid text at all.
+const FIRST_PROMPT: &str = "Prüfe die Späne am Drehbankbett und melde jeden Wert über neunzig Grad sofort der Werkstatt weiter";
+
+/// What [`FIRST_PROMPT`] is listed as. Computed from the rule rather than
+/// captured: its first 80 characters end "… sofort de", the last space among
+/// them is the one before "der", so what is kept is the 77 characters up to
+/// "sofort" and one `…` stands for the rest.
+const FIRST_PROMPT_NAME: &str =
+    "Prüfe die Späne am Drehbankbett und melde jeden Wert über neunzig Grad sofort…";
+
+/// The row of one context in the answer of `GET /api/contexts`.
+fn context_row<'answer>(answer: &'answer Value, key: &str) -> &'answer Value {
+    answer
+        .as_array()
+        .expect("the contexts are a list")
+        .iter()
+        .find(|row| row["key"] == json!(key))
+        .unwrap_or_else(|| panic!("{key} must be listed, got {answer}"))
+}
+
+/// Detects a contexts page that lists sessions by their identifiers alone: the
+/// name the user gave a session with `/rename` is the only thing that says what
+/// the session is, and a page that drops it cannot be read. It also detects the
+/// name being recorded before the session start wipes the context clean, which
+/// would leave the session that had just been named nameless.
+#[test]
+fn the_contexts_page_names_a_session_by_the_title_the_user_gave_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook_named(
+        "alpha",
+        SOME_TOKENS,
+        Some(GIVEN_TITLE),
+        Some(FIRST_PROMPT),
+        &hook_fixture("session_start"),
+    );
+
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    let row = context_row(&answer, "alpha/session-1");
+    assert_eq!(
+        row["name"],
+        json!(GIVEN_TITLE),
+        "a session the user named must be listed under that name, whole, got {row}"
+    );
+}
+
+/// Detects a name cut by bytes rather than by characters, and one cut in the
+/// middle of a word: a session nobody named is listed by its first prompt, and
+/// a prompt runs to paragraphs, so it is cut to fit one cell of the table. A
+/// cut counted in bytes lands in a different place, and one that splits a
+/// multi-byte character produces text no reader can show.
+#[test]
+fn the_contexts_page_names_an_unnamed_session_by_its_first_prompt_cut_at_a_word_boundary() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook_named(
+        "alpha",
+        SOME_TOKENS,
+        None,
+        Some(FIRST_PROMPT),
+        &hook_fixture("session_start"),
+    );
+
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    let row = context_row(&answer, "alpha/session-1");
+    assert_eq!(
+        row["name"],
+        json!(FIRST_PROMPT_NAME),
+        "a session nobody named must be listed by its first prompt, cut at a word \
+         boundary and counted in characters, got {row}"
+    );
+}
+
+/// Detects a subagent listed as a session of its own: a subagent's row has to
+/// say which session it runs in, or the list cannot be put in order, and it has
+/// to be named for the task it was given, because a subagent has no title of
+/// its own and its session's first prompt says nothing about what it is doing.
+#[test]
+fn the_contexts_page_reports_a_subagents_parent_and_names_it_by_its_task() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let event = hook_fixture("subagent_start");
+    let task = event["task_description"]
+        .as_str()
+        .expect("the recorded payload carries a task")
+        .to_string();
+    server.hook_named("alpha", SOME_TOKENS, Some(GIVEN_TITLE), None, &event);
+
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    let row = context_row(&answer, "alpha/session-1/agent-7f3a");
+    assert_eq!(
+        row["parent"],
+        json!("alpha/session-1"),
+        "a subagent must report the session it runs in, got {row}"
+    );
+    assert_eq!(
+        row["name"],
+        json!(task),
+        "a subagent must be named for the task it was given, not for its session, got {row}"
+    );
+}
+
+/// Detects a name overwritten with nothing by an event whose transcript could
+/// not be read: the transcript is missing or unreadable at any event, the
+/// client then sends no name, and a context that took that as the name being
+/// taken away would blink out of the list and back into it as the session ran.
+#[test]
+fn an_event_that_carries_no_title_does_not_erase_the_name_the_context_holds() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let prompt = hook_fixture("user_prompt_submit");
+    server.hook_named(
+        "alpha",
+        SOME_TOKENS,
+        Some(GIVEN_TITLE),
+        Some(FIRST_PROMPT),
+        &prompt,
+    );
+
+    server.hook_named("alpha", SOME_TOKENS, None, None, &prompt);
+    let (_, after_nothing) = server.api("GET", "/api/contexts", None);
+    let renamed = "The thermocouple rig, second attempt";
+    server.hook_named("alpha", SOME_TOKENS, Some(renamed), None, &prompt);
+    let (_, after_rename) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(
+        context_row(&after_nothing, "alpha/session-1")["name"],
+        json!(GIVEN_TITLE),
+        "an event that says nothing about the name must leave the one held alone, \
+         got {after_nothing}"
+    );
+    assert_eq!(
+        context_row(&after_rename, "alpha/session-1")["name"],
+        json!(renamed),
+        "the last name the user gave the session must be the one listed, got {after_rename}"
     );
 }
 

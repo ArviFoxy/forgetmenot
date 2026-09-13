@@ -19,7 +19,17 @@ function scope(id: string): ScopeDoc {
 }
 
 function context(key: string, active: string[]): ContextRow {
-  return { key, active_scopes: active, delivered_count: 0, last_seen: '2026-01-01T00:00:00Z' };
+  return {
+    key,
+    name: '',
+    title: null,
+    first_prompt: null,
+    parent: null,
+    task: null,
+    active_scopes: active,
+    delivered_count: 0,
+    last_seen: '2026-01-01T00:00:00Z',
+  };
 }
 
 test('a typed id keeps the spaces and commas that separate ids', () => {

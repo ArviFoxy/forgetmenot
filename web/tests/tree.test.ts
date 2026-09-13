@@ -73,6 +73,22 @@ test('a session memory is listed outside the Sessions category and its machine',
   expect(labels(find(machine.children, 'session-1').children)).toEqual(['notes']);
 });
 
+test('a session known by a name is still listed by its id alone', () => {
+  // The name a session is known by, which the contexts the sidebar loads report.
+  const nodes = buildTree(
+    [],
+    [],
+    ['session:alpha/session-1'],
+    new Map([['session:alpha/session-1', 'the thermocouple rig']]),
+  );
+
+  const listed = find(nodes, 'alpha').children;
+  expect(listed).toHaveLength(1);
+  expect(listed[0]?.scopeId).toBe('session:alpha/session-1');
+  expect(listed[0]?.label).toContain('session-1');
+  expect(listed[0]?.label).toContain('the thermocouple rig');
+});
+
 test('a machine scope is put under a category instead of in the list with the rest', () => {
   const nodes = buildTree([scope('widgets')], [], ['machine:alpha', 'global']);
   expect(labels(nodes)).toEqual(['global', 'machine:alpha', 'widgets']);

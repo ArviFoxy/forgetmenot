@@ -129,6 +129,27 @@ pub struct ContextState {
     pub delivered: BTreeMap<MemoryId, Shown>,
     /// The context this one inherited its scopes from, for a subagent.
     pub parent: Option<ContextKey>,
+    /// The directory `claude` was started in: the `cwd` of this context's first
+    /// event, remembered for as long as the context lives and never moved by a
+    /// later event. Defaulted, so that a snapshot an older build wrote loads.
+    #[serde(default)]
+    pub session_directory: Option<String>,
+    /// The name the user gave this session with `/rename`, as the client last
+    /// read it from the transcript. `None` while the session has never been
+    /// named; an event that could not read the transcript leaves the name
+    /// already held alone rather than clearing it.
+    #[serde(default)]
+    pub session_title: Option<String>,
+    /// The first thing the user said in this session, as the client last read
+    /// it from the transcript, already cut short there. `None` while the
+    /// transcript carries none.
+    #[serde(default)]
+    pub first_prompt: Option<String>,
+    /// The task a subagent was given at its `SubagentStart`, which is the only
+    /// thing that says what the subagent is for. `None` for a session's own
+    /// context, which is given no task.
+    #[serde(default)]
+    pub task: Option<String>,
     pub last_seen: DateTime<Utc>,
 }
 
@@ -143,6 +164,10 @@ impl ContextState {
             active,
             delivered: BTreeMap::new(),
             parent,
+            session_directory: None,
+            session_title: None,
+            first_prompt: None,
+            task: None,
             last_seen: now,
         }
     }

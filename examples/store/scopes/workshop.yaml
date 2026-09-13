@@ -1,5 +1,5 @@
 id: workshop
 triggers:
-- on: working_directory
+- on: shell_directory
   pattern: '/workshop(/|$)'
   machine: alpha

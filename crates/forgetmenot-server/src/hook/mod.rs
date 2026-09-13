@@ -26,6 +26,7 @@ use crate::stats::{Decision, HookEventRecord, TriggerFire};
 use crate::store::ScopeId;
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
+use crate::store::scope::TriggerField;
 use events::{EventPlan, Reset};
 
 /// Why a tool call was stopped. Fixed text: the model has to be able to tell
@@ -66,10 +67,14 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
 
     let now = state.clock.now();
     let tokens_now = request.context_tokens;
+    let named = SessionName {
+        title: request.session_title.as_deref(),
+        first_prompt: request.first_prompt.as_deref(),
+    };
     let outcome = state
         .contexts
         .with_context(&plan.key, now, Inheritance::of(settings), |context| {
-            apply(context, &plan, &catalog, tokens_now, now)
+            apply(context, &plan, &catalog, tokens_now, now, named)
         })
         .await;
 
@@ -125,6 +130,17 @@ struct Outcome {
     fires: Vec<TriggerFire>,
 }
 
+/// What this event's client read from the session's transcript about what the
+/// session is.
+///
+/// Both are absent when the client could not read the transcript, which is not
+/// the same as the session having no name: see [`apply`].
+#[derive(Clone, Copy, Debug)]
+struct SessionName<'event> {
+    title: Option<&'event str>,
+    first_prompt: Option<&'event str>,
+}
+
 /// The whole critical section: reset, activate, compute, record.
 ///
 /// Pure, so that the decision a context makes depends on the catalog snapshot,
@@ -135,6 +151,7 @@ fn apply(
     catalog: &Catalog,
     tokens_now: Option<u64>,
     now: chrono::DateTime<chrono::Utc>,
+    named: SessionName<'_>,
 ) -> Outcome {
     match plan.reset {
         Reset::Keep => {}
@@ -148,11 +165,45 @@ fn apply(
         Reset::ClearDelivered => context.delivered.clear(),
     }
 
+    // The first event this context is seen at says where the session started.
+    // A `Reset::Fresh` above has just cleared it, so a session start fills it
+    // in from its own event in this same pass.
+    if context.session_directory.is_none() {
+        context.session_directory = plan.cwd.clone();
+    }
+
+    // What the session is, as the last event that could say anything said it.
+    // A `None` is the client having read no transcript, not the user having
+    // taken the name away, so it leaves what the context holds alone; the read
+    // fails on every event whose transcript is missing, and the name must not
+    // blink out of the contexts list when one does. This is after the reset
+    // above, so a session start that begins the record afresh fills the name
+    // back in from its own event.
+    if let Some(title) = named.title {
+        context.session_title = Some(title.to_string());
+    }
+    if let Some(first_prompt) = named.first_prompt {
+        context.first_prompt = Some(first_prompt.to_string());
+    }
+    if let Some(task) = &plan.task {
+        context.task = Some(task.clone());
+    }
+
+    // The session directory is not in the plan's texts, because only the
+    // context knows it; it joins them here for the events that match on a
+    // directory at all.
+    let mut texts = plan.texts.clone();
+    if plan.matches_directories
+        && let Some(started_in) = &context.session_directory
+    {
+        texts.push((TriggerField::SessionDirectory, started_in.clone()));
+    }
+
     // `fire` rather than `fire_closed` because the statistics record which
     // pattern fired; the implies closure is applied to the whole active set
     // afterwards, which has the same effect.
     let mut fires = Vec::new();
-    for (field, text) in &plan.texts {
+    for (field, text) in &texts {
         for hit in catalog.triggers().fire(*field, text, &plan.key.machine) {
             let activated_new = !context.active.contains(&hit.scope);
             context.active.insert(hit.scope.clone());

@@ -438,3 +438,612 @@ fn client_exits_two_on_arguments_it_cannot_parse() {
         );
     }
 }
+
+/// The tail window the client scans for a title at events other than
+/// `SessionStart`, mirrored here because these tests are about which side of it
+/// a line falls on. Changing the client's window is a change to this constant,
+/// and the assertions below say so in their messages.
+const CLIENT_TAIL_WINDOW_BYTES: u64 = 256 * 1024;
+
+/// A user line shaped like Claude Code's: `type` is not the first key, so a
+/// reader that looks only at the start of a line does not find it.
+///
+/// Expectation source: a transcript written by Claude Code 2.1.257, read on
+/// this machine on 2026-09-13, whose user lines begin
+/// `{"parentUuid":…,"isSidechain":…,"promptId":…,"type":"user",…}`.
+fn user_line(content: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "parentUuid": serde_json::Value::Null,
+        "isSidechain": false,
+        "promptId": "prompt-1",
+        "type": "user",
+        "message": { "role": "user", "content": content },
+    })
+}
+
+/// A user line Claude Code marks as its own, `isMeta`, rather than the user's.
+///
+/// Expectation source: the same transcripts, in 17 of which the first user line
+/// is an `isMeta` line.
+fn meta_user_line(content: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "parentUuid": serde_json::Value::Null,
+        "isSidechain": false,
+        "type": "user",
+        "message": { "role": "user", "content": content },
+        "isMeta": true,
+    })
+}
+
+/// The line `/rename` appends, as Claude Code writes it.
+///
+/// Expectation source: the same transcript, whose title lines are exactly
+/// `{"type":"custom-title","customTitle":"ROC audio #2","sessionId":"…"}`.
+fn title_line(title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "custom-title",
+        "customTitle": title,
+        "sessionId": "session-1",
+    })
+}
+
+/// Write `lines` as a JSONL transcript, one line each, newline-terminated.
+fn write_transcript_lines(path: &Path, lines: &[serde_json::Value]) {
+    let mut text = String::new();
+    for line in lines {
+        text.push_str(&serde_json::to_string(line).expect("a transcript line must serialise"));
+        text.push('\n');
+    }
+    std::fs::write(path, text).expect("the transcript must be writable");
+}
+
+/// A hook event that is not `SessionStart`, so the client scans only the tail.
+fn stop_event(transcript: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "session-1",
+        "transcript_path": transcript.to_str().expect("a utf-8 temp path"),
+    })
+}
+
+/// The one event per session at which the client scans the whole transcript.
+fn session_start_event(transcript: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "session-1",
+        "transcript_path": transcript.to_str().expect("a utf-8 temp path"),
+        "source": "startup",
+    })
+}
+
+/// Run the client for one event against a one-shot stub and give back the
+/// request the stub received.
+fn post_one_event(event: &serde_json::Value) -> HookRequest {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let port = listener.local_addr().expect("a bound address").port();
+    let server_thread = std::thread::spawn(move || serve_one_request(listener, "{}"));
+
+    let payload = format!(
+        "{}\n",
+        serde_json::to_string(event).expect("the event serialises")
+    );
+    let output = run_client(
+        &format!("http://127.0.0.1:{port}"),
+        "alpha",
+        payload.as_bytes(),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the client must exit 0; stderr was {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let recorded = server_thread.join().expect("the server thread must finish");
+    serde_json::from_slice(&recorded.body).expect("the body must be a HookRequest")
+}
+
+// Detects a title read that keeps the first custom-title line instead of the
+// last: /rename appends a line and leaves the earlier ones in the file, so a
+// renamed session would keep travelling under the name it was given first.
+// Also detects a first prompt that never leaves the client, and a user line
+// found by its first bytes rather than by a search inside the line.
+#[test]
+fn client_sends_the_last_custom_title_line_and_the_first_prompt() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[
+            user_line(serde_json::json!("the very first prompt")),
+            title_line("the name it was given first"),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant"}}),
+            user_line(serde_json::json!("a later prompt")),
+            title_line("the name in force"),
+        ],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title.as_deref(),
+        Some("the name in force"),
+        "the title must come from the last custom-title line of the transcript"
+    );
+    assert_eq!(
+        request.first_prompt.as_deref(),
+        Some("the very first prompt"),
+        "the first prompt must come from the first user line, not a later one"
+    );
+}
+
+// Detects a first-prompt read that only understands a string content: a prompt
+// submitted with an attachment is written as content blocks, and a reader that
+// gives up on it, or that takes the text of every block including an image's,
+// reports the wrong thing for exactly the sessions that pasted something.
+#[test]
+fn client_joins_the_text_blocks_of_a_first_prompt_written_as_content_blocks() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[user_line(serde_json::json!([
+            {"type": "text", "text": "the first line of the prompt"},
+            {"type": "image", "source": {"type": "base64", "data": "not text"}},
+            {"type": "text", "text": "the second line of the prompt"},
+        ]))],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.first_prompt.as_deref(),
+        Some("the first line of the prompt\nthe second line of the prompt"),
+        "the prompt must be the text blocks joined with a newline, and nothing from the other blocks"
+    );
+}
+
+// Detects a client that invents a title for a session nobody named: Claude Code
+// writes no title line of its own, so anything sent for such a session is made
+// up. Also detects a title read that reports the previous session's title, or
+// fails, when the file has no custom-title line at all.
+#[test]
+fn client_sends_no_title_for_a_session_that_was_never_named() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[
+            user_line(serde_json::json!("the very first prompt")),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant"}}),
+        ],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title, None,
+        "a session with no custom-title line has no name to send"
+    );
+    assert_eq!(
+        request.first_prompt.as_deref(),
+        Some("the very first prompt"),
+        "an unnamed session must still be identified by its first prompt"
+    );
+}
+
+/// A transcript written with custom-title lines at known places. The offsets
+/// are counted as the file is built, not read back out of it.
+struct TitledTranscript {
+    /// Byte offset of the title line written near the start of the file.
+    early_title_offset: Option<u64>,
+    /// Byte offset of the title line written at the end of the file.
+    late_title_offset: Option<u64>,
+    /// Length of the whole file in bytes.
+    file_length: u64,
+}
+
+/// Append `line` and a newline to `text` and report the offset it starts at.
+fn push_line(text: &mut String, line: &serde_json::Value) -> u64 {
+    let offset = text.len() as u64;
+    text.push_str(&serde_json::to_string(line).expect("a transcript line must serialise"));
+    text.push('\n');
+    offset
+}
+
+/// Write a transcript of at least `minimum_bytes`: a first user line, then
+/// `early_title` if given, then padding, then `late_title` if given.
+fn write_titled_transcript(
+    path: &Path,
+    first_prompt: &str,
+    early_title: Option<&str>,
+    late_title: Option<&str>,
+    minimum_bytes: u64,
+) -> TitledTranscript {
+    let padding = "z".repeat(900);
+    let mut text = String::new();
+    push_line(&mut text, &user_line(serde_json::json!(first_prompt)));
+    let early_title_offset = early_title.map(|title| push_line(&mut text, &title_line(title)));
+    let mut index = 0u64;
+    while (text.len() as u64) < minimum_bytes {
+        push_line(
+            &mut text,
+            &serde_json::json!({"type": "assistant", "index": index, "text": padding}),
+        );
+        index += 1;
+    }
+    let late_title_offset = late_title.map(|title| push_line(&mut text, &title_line(title)));
+    std::fs::write(path, &text).expect("the transcript must be writable");
+
+    TitledTranscript {
+        early_title_offset,
+        late_title_offset,
+        file_length: text.len() as u64,
+    }
+}
+
+/// Independent read of the same question: the byte offset and text of every
+/// custom-title line, found by walking the file line by line.
+fn title_lines_by_reading_everything(path: &Path) -> Vec<(u64, String)> {
+    let text = std::fs::read_to_string(path).expect("the transcript must be readable");
+    let mut found = Vec::new();
+    let mut offset = 0u64;
+    for line in text.split_inclusive('\n') {
+        let without_newline = line.strip_suffix('\n').unwrap_or(line);
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(without_newline)
+            && parsed.get("type").and_then(|value| value.as_str()) == Some("custom-title")
+        {
+            let title = parsed
+                .get("customTitle")
+                .and_then(|value| value.as_str())
+                .expect("a custom-title line carries a customTitle");
+            found.push((offset, title.to_string()));
+        }
+        offset += line.len() as u64;
+    }
+    found
+}
+
+// Detects a generator that does not put the title lines where it says it does:
+// the window tests below decide what they decide from those offsets, so a
+// silent bug here would make them pass whatever the client did.
+#[test]
+fn transcript_generator_places_the_title_lines_where_it_reports() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let path = directory.path().join("session-1.jsonl");
+    let generated =
+        write_titled_transcript(&path, "the prompt", Some("early"), Some("late"), 512 * 1024);
+
+    assert_eq!(
+        title_lines_by_reading_everything(&path),
+        vec![
+            (
+                generated.early_title_offset.expect("an early title"),
+                "early".to_string()
+            ),
+            (
+                generated.late_title_offset.expect("a late title"),
+                "late".to_string()
+            ),
+        ],
+        "a read of every line must find exactly the title lines the generator reports, where it reports them"
+    );
+    assert_eq!(
+        std::fs::metadata(&path).expect("metadata").len(),
+        generated.file_length,
+        "the generator must write as many bytes as it reports"
+    );
+}
+
+// Detects a client that scans the whole transcript at every event: that is the
+// cost the owner accepted once per session, not on every tool call. The title
+// line here is outside the tail window, so a client that reports it read more
+// than the window.
+#[test]
+fn client_does_not_report_a_title_line_before_the_tail_window_at_a_later_event() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    let generated = write_titled_transcript(
+        &transcript,
+        "the very first prompt",
+        Some("named before the window"),
+        None,
+        512 * 1024,
+    );
+    let early_title_offset = generated.early_title_offset.expect("an early title");
+    assert!(
+        early_title_offset + CLIENT_TAIL_WINDOW_BYTES < generated.file_length,
+        "the fixture must put the title line outside the {CLIENT_TAIL_WINDOW_BYTES} byte tail window: it starts at {early_title_offset} of {} bytes",
+        generated.file_length
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title, None,
+        "an event other than SessionStart must read no further back than the tail window"
+    );
+}
+
+// Detects a tail scan that loses the title line it does cover: the window
+// starts in the middle of a line, and a scan that mis-slices that fragment, or
+// stops at the first line instead of the last, reports no name for a session
+// that has one. This is the ordinary case, a long session that was renamed.
+#[test]
+fn client_reports_a_title_line_inside_the_tail_window_at_a_later_event() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    let generated = write_titled_transcript(
+        &transcript,
+        "the very first prompt",
+        None,
+        Some("named inside the window"),
+        512 * 1024,
+    );
+    let late_title_offset = generated.late_title_offset.expect("a late title");
+    assert!(
+        generated.file_length - late_title_offset < CLIENT_TAIL_WINDOW_BYTES,
+        "the fixture must put the title line inside the {CLIENT_TAIL_WINDOW_BYTES} byte tail window: it starts at {late_title_offset} of {} bytes",
+        generated.file_length
+    );
+    assert!(
+        generated.file_length > CLIENT_TAIL_WINDOW_BYTES,
+        "the fixture must be larger than the tail window, or the window covers the file and the test says nothing; it is {} bytes",
+        generated.file_length
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title.as_deref(),
+        Some("named inside the window"),
+        "a title line inside the tail window must reach the server"
+    );
+}
+
+// Detects a SessionStart that reads no further than the other events do: a
+// session named at its first prompt and resumed a week later would arrive
+// nameless, and nothing later in the session would fix it. Same fixture as the
+// tail test, opposite expectation, which is the whole difference SessionStart
+// makes.
+#[test]
+fn client_reports_a_title_line_before_the_tail_window_at_session_start() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    let generated = write_titled_transcript(
+        &transcript,
+        "the very first prompt",
+        Some("named before the window"),
+        None,
+        512 * 1024,
+    );
+    let early_title_offset = generated.early_title_offset.expect("an early title");
+    assert!(
+        early_title_offset + CLIENT_TAIL_WINDOW_BYTES < generated.file_length,
+        "the fixture must put the title line outside the {CLIENT_TAIL_WINDOW_BYTES} byte tail window: it starts at {early_title_offset} of {} bytes",
+        generated.file_length
+    );
+
+    let request = post_one_event(&session_start_event(&transcript));
+
+    assert_eq!(
+        request.session_title.as_deref(),
+        Some("named before the window"),
+        "SessionStart must scan the whole transcript, however far back the title line is"
+    );
+    assert_eq!(
+        request.first_prompt.as_deref(),
+        Some("the very first prompt"),
+        "the first prompt must be read from the head of the file whatever its size"
+    );
+}
+
+/// A JSON transcript line of exactly `length` bytes, newline included.
+fn filler_line(length: usize) -> String {
+    let overhead = "{\"type\":\"system\",\"text\":\"\"}\n".len();
+    assert!(
+        length >= overhead,
+        "a filler line needs at least {overhead} bytes, asked for {length}"
+    );
+    let padding = "x".repeat(length - overhead);
+    format!("{{\"type\":\"system\",\"text\":\"{padding}\"}}\n")
+}
+
+// Detects a whole-file scan that treats each read of the file as a fresh start:
+// a title line that spans two reads would be lost, and a session whose title
+// happens to sit at that offset would have no name at all. Input: the title
+// line starts ten bytes before a power-of-two offset, for every power of two
+// from 4 KiB to 1 MiB, so it straddles whatever read size the scan uses.
+#[test]
+fn whole_file_scan_finds_a_title_line_that_spans_two_reads() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    for boundary in [4096usize, 16 * 1024, 64 * 1024, 256 * 1024, 1024 * 1024] {
+        let path = directory.path().join(format!("session-{boundary}.jsonl"));
+        let head = format!(
+            "{}\n",
+            serde_json::to_string(&user_line(serde_json::json!("the very first prompt")))
+                .expect("serialises")
+        );
+        let title_starts_at = boundary - 10;
+        let mut text = head.clone();
+        text.push_str(&filler_line(title_starts_at - head.len()));
+        assert_eq!(
+            text.len(),
+            title_starts_at,
+            "the fixture must start the title line ten bytes before {boundary}"
+        );
+        text.push_str(
+            &serde_json::to_string(&title_line("the name in force")).expect("serialises"),
+        );
+        text.push('\n');
+        text.push_str(&filler_line(500));
+        std::fs::write(&path, &text).expect("the transcript must be writable");
+
+        assert_eq!(
+            forgetmenot_hook::transcript_name::session_title(
+                &path,
+                forgetmenot_hook::transcript_name::TitleScan::WholeFile
+            )
+            .as_deref(),
+            Some("the name in force"),
+            "a title line starting at byte {title_starts_at} must be found"
+        );
+    }
+}
+
+// Detects a prompt sent whole, which would put a pasted file into every hook
+// request, and detects a cut made at byte 200 rather than character 200, which
+// splits a multi-byte character: that is a panic in the client, on Claude
+// Code's critical path, for any prompt whose 200th character is not ASCII.
+// The expectation is arithmetic: the first 150 characters are two bytes each,
+// so byte 200 falls inside the 101st of them.
+#[test]
+fn a_long_first_prompt_is_cut_to_two_hundred_characters_not_two_hundred_bytes() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let path = directory.path().join("session-1.jsonl");
+    let prompt = format!("{}{}", "é".repeat(150), "a".repeat(150));
+    write_transcript_lines(&path, &[user_line(serde_json::json!(prompt))]);
+    let expected = format!("{}{}", "é".repeat(150), "a".repeat(50));
+    assert_eq!(
+        expected.chars().count(),
+        200,
+        "the expected prompt is the first 200 characters of the written one"
+    );
+
+    let read = forgetmenot_hook::transcript_name::first_prompt(&path);
+
+    assert_eq!(
+        read.as_deref(),
+        Some(expected.as_str()),
+        "the prompt must be cut after 200 characters, whatever they weigh in bytes"
+    );
+}
+
+// Detects a read that fails, or panics, on a transcript that is not there: at
+// SessionStart Claude Code may not have written the file yet, and a client that
+// dies there takes the hook down with it.
+#[test]
+fn a_transcript_that_does_not_exist_reports_nothing_rather_than_failing() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let missing = directory.path().join("not-written-yet.jsonl");
+
+    assert_eq!(
+        forgetmenot_hook::transcript_name::session_title(
+            &missing,
+            forgetmenot_hook::transcript_name::TitleScan::WholeFile
+        ),
+        None,
+        "a transcript that does not exist has no title"
+    );
+    assert_eq!(
+        forgetmenot_hook::transcript_name::session_title(
+            &missing,
+            forgetmenot_hook::transcript_name::TitleScan::TailWindow
+        ),
+        None,
+        "the tail scan of a transcript that does not exist has no title either"
+    );
+    assert_eq!(
+        forgetmenot_hook::transcript_name::first_prompt(&missing),
+        None,
+        "a transcript that does not exist has no first prompt"
+    );
+}
+
+// Detects the two new fields being made mandatory on the wire: a client that
+// predates them POSTs a body without the keys, and the server must still read
+// it rather than reject every hook event that machine sends.
+#[test]
+fn a_body_without_the_transcript_fields_still_reads_as_a_request() {
+    let body = br#"{"machine":"alpha","context_tokens":42,"hook":{"hook_event_name":"Stop"}}"#;
+
+    let request: HookRequest =
+        serde_json::from_slice(body).expect("a body from an older client must still parse");
+
+    assert_eq!(
+        request.session_title, None,
+        "a body that names no title must read as no title"
+    );
+    assert_eq!(
+        request.first_prompt, None,
+        "a body that names no first prompt must read as no first prompt"
+    );
+}
+
+// Detects a first prompt taken from the harness's own turns: Claude Code writes
+// the caveat it prepends to a slash command, the command itself, the command's
+// output and a skill's instructions as user lines, so a client that takes the
+// first user line reports "Caveat: The messages below…" as what the session is
+// about, for most sessions.
+//
+// The fixture is the real sequence, read on this machine on 2026-09-13: an
+// isMeta <local-command-caveat> block, an isMeta skill block that carries no
+// tag, <command-name> and <local-command-stdout> lines that carry no isMeta, a
+// user line whose content is only a tool result, and then the user's words. It
+// turns red if either half of the skip rule is dropped: the skill block is
+// skipped only by isMeta, the command lines only by their opening tag.
+#[test]
+fn client_skips_the_harness_turns_that_precede_the_first_prompt() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[
+            meta_user_line(serde_json::json!(
+                "<local-command-caveat>Caveat: The messages below were generated by the user while running local commands.</local-command-caveat>"
+            )),
+            meta_user_line(serde_json::json!(
+                "Base directory for this skill: /home/arvi/.claude/skills/recover-memory"
+            )),
+            user_line(serde_json::json!("<command-name>/model</command-name>")),
+            user_line(serde_json::json!(
+                "<local-command-stdout>Set model to claude-opus-5</local-command-stdout>"
+            )),
+            user_line(serde_json::json!([
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "a tool's answer"},
+            ])),
+            user_line(serde_json::json!(
+                "please recover the memory of the last session"
+            )),
+        ],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.first_prompt.as_deref(),
+        Some("please recover the memory of the last session"),
+        "the prompt must be the first user line that is the user's own words"
+    );
+}
+
+// Detects a first-prompt read that gives up on a line longer than one read of
+// the file: a session that opened with a pasted file has a first user line of
+// hundreds of kilobytes, and it is exactly the sessions that pasted something
+// that are worth identifying. Also detects a read that returns the line's tail
+// or its middle rather than its opening.
+#[test]
+fn client_sends_the_opening_of_a_first_prompt_larger_than_one_read() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    let opening = "abcdefghij".repeat(30);
+    let prompt = format!("{opening}{}", "p".repeat(300 * 1024));
+    write_transcript_lines(&transcript, &[user_line(serde_json::json!(prompt))]);
+
+    // An independent read of what was written, so the size this test claims is
+    // the size on disk and not the generator's word for it.
+    let written = std::fs::read_to_string(&transcript).expect("the transcript must be readable");
+    let first_line_bytes = written.lines().next().expect("a first line").len();
+    assert!(
+        first_line_bytes >= 300 * 1024,
+        "the fixture's first user line must be at least 300 KiB, it is {first_line_bytes} bytes"
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.first_prompt.as_deref(),
+        Some(&opening[..200]),
+        "the prompt must be the first 200 characters of the line, however long the line is"
+    );
+}

@@ -7,9 +7,9 @@ use super::frontmatter::FrontmatterError;
 
 /// The string a trigger regex is matched against.
 ///
-/// [`TriggerField::Any`] is not one of the texts a hook event carries: it
-/// stands for all of them at once, and is what a trigger means when its file
-/// does not say which field it is about.
+/// [`TriggerField::Any`] is not one of those strings: it stands for all of them
+/// at once, and is what a trigger means when its file does not say which field
+/// it is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerField {
@@ -18,24 +18,30 @@ pub enum TriggerField {
     ToolName,
     ToolInput,
     ToolResult,
-    WorkingDirectory,
+    /// The working directory of the session's shell: where `claude` was
+    /// started, and after the agent runs `cd`, wherever it went.
+    ShellDirectory,
+    /// The directory `claude` was started in, remembered from the context's
+    /// first event and never moved by a later one.
+    SessionDirectory,
     Any,
 }
 
 impl TriggerField {
-    /// Every text a hook event carries, in declaration order. `Any` is not
-    /// among them, because it is every one of them rather than a text of its
-    /// own.
-    pub const ALL: [TriggerField; 6] = [
+    /// Every text a trigger is matched against, in declaration order. `Any` is
+    /// not among them, because it is every one of them rather than a text of
+    /// its own.
+    pub const ALL: [TriggerField; 7] = [
         TriggerField::UserMessage,
         TriggerField::AssistantMessage,
         TriggerField::ToolName,
         TriggerField::ToolInput,
         TriggerField::ToolResult,
-        TriggerField::WorkingDirectory,
+        TriggerField::ShellDirectory,
+        TriggerField::SessionDirectory,
     ];
 
-    /// The number of texts a hook event carries.
+    /// The number of texts a trigger is matched against.
     pub const COUNT: usize = TriggerField::ALL.len();
 
     /// This field's position in [`TriggerField::ALL`], used to index the
@@ -53,7 +59,8 @@ impl TriggerField {
             TriggerField::ToolName => "tool_name",
             TriggerField::ToolInput => "tool_input",
             TriggerField::ToolResult => "tool_result",
-            TriggerField::WorkingDirectory => "working_directory",
+            TriggerField::ShellDirectory => "shell_directory",
+            TriggerField::SessionDirectory => "session_directory",
             TriggerField::Any => "any",
         }
     }
@@ -146,18 +153,32 @@ mod tests {
 
     /// Detects a rename that breaks the file format: the names in scope files
     /// are snake_case and a change to them would silently stop parsing stores
-    /// people already wrote.
+    /// people already wrote. The names are the ones the README documents.
     #[test]
     fn field_names_are_the_snake_case_names_used_in_files() {
-        let trigger: Trigger =
-            yaml_serde::from_str("on: working_directory\npattern: /x\nmachine: alpha\n").unwrap();
-        assert_eq!(trigger.field(), TriggerField::WorkingDirectory);
-        assert_eq!(trigger.machine.as_deref(), Some("alpha"));
-        assert!(
-            yaml_serde::to_string(&trigger)
-                .unwrap()
-                .contains("working_directory")
-        );
+        for (name, expected) in [
+            ("user_message", TriggerField::UserMessage),
+            ("assistant_message", TriggerField::AssistantMessage),
+            ("tool_name", TriggerField::ToolName),
+            ("tool_input", TriggerField::ToolInput),
+            ("tool_result", TriggerField::ToolResult),
+            ("shell_directory", TriggerField::ShellDirectory),
+            ("session_directory", TriggerField::SessionDirectory),
+        ] {
+            let trigger: Trigger =
+                yaml_serde::from_str(&format!("on: {name}\npattern: /x\nmachine: alpha\n"))
+                    .unwrap_or_else(|error| panic!("`on: {name}` must parse, got {error}"));
+            assert_eq!(
+                trigger.field(),
+                expected,
+                "`on: {name}` parsed as another field"
+            );
+            assert_eq!(trigger.machine.as_deref(), Some("alpha"));
+            assert!(
+                yaml_serde::to_string(&trigger).unwrap().contains(name),
+                "a trigger on {name} was not written back with that name"
+            );
+        }
     }
 
     /// Detects two failures of the default field. A trigger whose file says

@@ -31,7 +31,7 @@ One server serves every machine on a network, and subagents receive the same mem
 
 **Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers.
 
-**Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and the session's working directory; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
+**Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its directories; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
 
 **Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A subagent starts with the scopes its parent had active.
 
@@ -58,12 +58,12 @@ id: widgets
 implies: [rocketry]
 triggers:
   - pattern: '\bwidgets?\b'
-  - on: working_directory
+  - on: session_directory
     pattern: '/widgets(/|$)'
     machine: alpha
 ```
 
-A trigger with no `on` is matched against every text of the session; `on` is one of `any`, `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result` or `working_directory`. `working_directory` is the working directory of the Claude Code session as Claude Code reports it in every hook event: the directory Claude Code was started in, and after the agent changes directory in its shell, that directory. It is matched when the session starts, before every tool call, and when it changes. `machine` restricts a trigger to one machine: the trigger fires only when the session runs on that machine and the pattern matches.
+A trigger with no `on` is matched against every text of the session; `on` is one of `any`, `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result`, `shell_directory` or `session_directory`. Both directories come from the `cwd` value Claude Code sends with every hook event. `session_directory` is the directory `claude` was started in: the `cwd` of the session's first event, remembered for the whole session and never moved. `shell_directory` is the working directory of the session's shell: the same directory at first, and after the agent runs `cd` in its shell, wherever it went. Both are matched when the session starts, before every tool call, and when the shell directory changes. `machine` restricts a trigger to one machine: the trigger fires only when the session runs on that machine and the pattern matches.
 
 A memory file uses Claude Code's own memory format, with forgetmenot's fields inside `metadata`:
 
@@ -188,7 +188,8 @@ These are requirements, checked by tests:
 
 - `cargo test --workspace` under 60 s
 - `POST /hook` p99 under 50 ms on loopback with the example store
-- `forgetmenot-hook` end to end under 30 ms with a 40 MB transcript
+- `forgetmenot-hook` end to end under 30 ms with a 40 MB transcript, at every event but SessionStart
+- `forgetmenot-hook` at SessionStart under 200 ms with a 40 MB transcript
 - `npm test` and `npx playwright test` together under 5 minutes
 
 ## License

@@ -138,7 +138,8 @@ impl ContextRegistry {
     /// A subagent's context starts from a copy of its session's active scopes,
     /// taken under the session's own lock so that a scope activated at the same
     /// moment is either fully in or fully out, unless `inheritance` says the
-    /// store wants subagents to start from nothing.
+    /// store wants subagents to start from nothing. It always takes its
+    /// parent's session directory, whatever `inheritance` says about scopes.
     pub async fn with_context<R>(
         &self,
         key: &ContextKey,
@@ -165,25 +166,34 @@ impl ContextRegistry {
         if let Some(existing) = self.contexts.lock().await.get(key).cloned() {
             return existing;
         }
-        let (active, parent) = if key.is_subagent() {
+        let (active, parent, session_directory) = if key.is_subagent() {
             let parent_key = key.session_context();
             let parent = self.handle_main(&parent_key, now).await;
             // The map lock is not held here, so the parent's own events are not
-            // blocked by a child being created.
-            let active = match inheritance {
-                Inheritance::FromParent => parent.lock().await.active.clone(),
-                // The parent is still the parent: what changes is only what the
-                // child starts with.
-                Inheritance::ImplicitOnly => initial_active(&key.machine, &key.session_id),
+            // blocked by a child being created. The scopes and the session
+            // directory are read in the one pass under the parent's lock.
+            let (active, session_directory) = {
+                let parent = parent.lock().await;
+                let active = match inheritance {
+                    Inheritance::FromParent => parent.active.clone(),
+                    // The parent is still the parent: what changes is only what
+                    // the child starts with.
+                    Inheritance::ImplicitOnly => initial_active(&key.machine, &key.session_id),
+                };
+                // The session directory is a fact about the session the
+                // subagent runs in, not a scope, so it is inherited either way.
+                (active, parent.session_directory.clone())
             };
-            (active, Some(parent_key))
+            (active, Some(parent_key), session_directory)
         } else {
-            (initial_active(&key.machine, &key.session_id), None)
+            (initial_active(&key.machine, &key.session_id), None, None)
         };
         let mut contexts = self.contexts.lock().await;
-        let handle = contexts
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(ContextState::fresh(active, parent, now))));
+        let handle = contexts.entry(key.clone()).or_insert_with(|| {
+            let mut state = ContextState::fresh(active, parent, now);
+            state.session_directory = session_directory;
+            Arc::new(Mutex::new(state))
+        });
         self.changed.notify_one();
         handle.clone()
     }

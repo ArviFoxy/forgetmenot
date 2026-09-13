@@ -6,8 +6,8 @@
 //!
 //! * [`HookEvent`] is the object Claude Code writes to stdin.
 //! * [`HookRequest`] is the object the `forgetmenot-hook` client POSTs to the
-//!   server's `/hook` endpoint: the hook event plus the two things only the
-//!   client can know, the machine name and the size of the session's context.
+//!   server's `/hook` endpoint: the hook event plus what only the client can
+//!   know, the machine name and what the session's transcript says about it.
 //! * [`HookResponse`] is the object the handler writes to stdout.
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,13 @@ use serde::{Deserialize, Serialize};
 /// `hook` is the event JSON as Claude Code wrote it, so the server sees fields
 /// this crate does not model yet. `context_tokens` is the context size read
 /// from the transcript's last assistant message, `None` when the transcript is
-/// missing or carries no usage record yet.
+/// missing or carries no usage record yet. `session_title` and `first_prompt`
+/// are read from the same transcript and say what the session is, which no
+/// hook event carries.
+///
+/// Everything but `machine` and `hook` defaults to absent, because a client
+/// older than the field it does not know still POSTs a body the server must
+/// accept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookRequest {
     /// Name of the machine the Claude Code session runs on, from the client's
@@ -26,6 +32,16 @@ pub struct HookRequest {
     pub machine: String,
     /// Context size in tokens at the last assistant message of the session.
     pub context_tokens: Option<u64>,
+    /// The name the user gave the session with `/rename`, from the last
+    /// `custom-title` line of the transcript. `None` when the session was
+    /// never named; Claude Code writes no title of its own.
+    #[serde(default)]
+    pub session_title: Option<String>,
+    /// The first thing the user said in the session, cut to 200 characters.
+    /// The harness writes its own turns as user lines too, and those are not
+    /// it. `None` when the transcript carries none yet.
+    #[serde(default)]
+    pub first_prompt: Option<String>,
     /// The hook event JSON, verbatim.
     pub hook: serde_json::Value,
 }

@@ -9,7 +9,8 @@ import { fieldOf, triggerFieldChoices, withField, withMachine } from '../src/mod
 
 test('the field list leaves out any, or offers it somewhere other than first', () => {
   expect(triggerFieldChoices[0]).toBe('any');
-  expect(triggerFieldChoices).toContain('working_directory');
+  expect(triggerFieldChoices).toContain('shell_directory');
+  expect(triggerFieldChoices).toContain('session_directory');
 });
 
 test('a trigger without a field means something other than any', () => {

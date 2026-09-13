@@ -84,7 +84,24 @@ export class FmnSidebar extends PageElement {
         api.memoryIndex(),
         api.contexts(),
       ]);
-      return buildTree(scopes, memories, contexts.flatMap((context) => context.active_scopes));
+      // Only a session's own context names the session: a subagent's row is
+      // named for the task it was given, which is not what the session is.
+      const names = new Map(
+        contexts
+          .filter(
+            (context) =>
+              (context.parent ?? null) === null &&
+              context.key.indexOf('/') === context.key.lastIndexOf('/') &&
+              context.name !== '',
+          )
+          .map((context) => [`session:${context.key}`, context.name] as const),
+      );
+      return buildTree(
+        scopes,
+        memories,
+        contexts.flatMap((context) => context.active_scopes),
+        names,
+      );
     });
   }
 
