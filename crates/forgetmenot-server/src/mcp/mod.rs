@@ -170,7 +170,7 @@ impl ToolServer {
         let id = MemoryId::new(params.id);
         let branch = match requested_branch(params.branch.as_deref()) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let catalog = match operations::target_catalog(&self.state, branch.as_ref()).await {
             Ok(catalog) => catalog,
@@ -217,7 +217,7 @@ impl ToolServer {
         let id = MemoryId::new(params.id);
         let branch = match requested_branch(params.branch.as_deref()) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let base_version = match params.base_version {
             Some(version) => version,
@@ -262,7 +262,7 @@ impl ToolServer {
         let author = parse_session_key(&params.session_key)?;
         let branch = match requested_branch(params.branch.as_deref()) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let request = ReplaceTextRequest {
             old_string: params.old_string,
@@ -294,7 +294,7 @@ impl ToolServer {
         let author = parse_session_key(&params.session_key)?;
         let branch = match requested_branch(params.branch.as_deref()) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let request = SetFieldsRequest {
             description: params.description,
@@ -329,7 +329,7 @@ impl ToolServer {
         let author = parse_session_key(&params.session_key)?;
         let branch = match requested_branch(params.branch.as_deref()) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let request = RenameRequest {
             to: MemoryId::new(params.to),
@@ -385,7 +385,7 @@ impl ToolServer {
     ) -> Result<CallToolResult, ErrorData> {
         let branch = match parse_branch(&params.branch) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         match branches::branch_diff(&self.state, &branch).await {
             Ok(diff) => json_text(&diff),
@@ -407,7 +407,7 @@ impl ToolServer {
         let author = parse_session_key(&params.session_key)?;
         let branch = match parse_branch(&params.branch) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let request = LandRequest {
             message: params.message,
@@ -430,7 +430,7 @@ impl ToolServer {
     ) -> Result<CallToolResult, ErrorData> {
         let branch = match parse_branch(&params.branch) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         match branches::branch_abandon(&self.state, &branch).await {
             Ok(abandoned) => json_text(&abandoned),
@@ -468,7 +468,7 @@ impl ToolServer {
         let author = parse_session_key(&params.session_key)?;
         let branch = match requested_branch(params.branch.as_deref()) {
             Ok(branch) => branch,
-            Err(failure) => return Ok(failure),
+            Err(failure) => return Ok(*failure),
         };
         let request = SettingsWriteRequest {
             value: params.value,
@@ -588,7 +588,7 @@ pub fn service(state: Arc<AppState>) -> StreamableHttpService<ToolServer, LocalS
 ///
 /// A name that is not a branch name is a failure the model reads and can correct,
 /// not a protocol error: it wrote the name.
-fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, CallToolResult> {
+fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, Box<CallToolResult>> {
     match branch.filter(|name| !name.is_empty()) {
         None => Ok(None),
         Some(name) => parse_branch(name).map(Some),
@@ -596,8 +596,10 @@ fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, CallTool
 }
 
 /// The branch a branch tool is about.
-fn parse_branch(branch: &str) -> Result<BranchName, CallToolResult> {
-    BranchName::parse(branch).map_err(|error| tool_failure(&OperationError::BadBranchName(error)))
+fn parse_branch(branch: &str) -> Result<BranchName, Box<CallToolResult>> {
+    // Boxed because a tool result is large and the failure is the rare path.
+    BranchName::parse(branch)
+        .map_err(|error| Box::new(tool_failure(&OperationError::BadBranchName(error))))
 }
 
 /// A resource as the JSON text of a successful call.
