@@ -141,13 +141,13 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> Result<RunningServe
         source,
     })?;
 
+    // Once at start as well as at every snapshot, so that a server that was down
+    // longer than the window does not have to wait for the next event to clear
+    // the branches nobody is working on.
+    prune_branches(&state).await;
+
     let cancel = CancellationToken::new();
-    let snapshots = tokio::spawn(snapshot_loop(
-        contexts,
-        config.state_path.clone(),
-        clock,
-        cancel.clone(),
-    ));
+    let snapshots = tokio::spawn(snapshot_loop(state.clone(), cancel.clone()));
     let shutdown = cancel.clone();
     let router = build_router(state.clone());
     let server = tokio::spawn(async move {
@@ -194,17 +194,42 @@ impl RunningServer {
 }
 
 /// Write the contexts whenever they change, no more often than the debounce
-/// window allows.
-async fn snapshot_loop(
-    contexts: Arc<ContextRegistry>,
-    path: PathBuf,
-    clock: Arc<dyn Clock>,
-    cancel: CancellationToken,
-) {
-    while contexts.wait_for_change(&cancel).await {
-        if let Err(error) = contexts.snapshot_to(&path, clock.now()).await {
+/// window allows, and delete the branches nobody has written to for as long as
+/// the retention window allows.
+///
+/// The two run together because both are housekeeping on a timer nothing else
+/// provides, and neither is on the path of a request.
+async fn snapshot_loop(state: Arc<AppState>, cancel: CancellationToken) {
+    while state.contexts.wait_for_change(&cancel).await {
+        if let Err(error) = state
+            .contexts
+            .snapshot_to(&state.config.state_path, state.clock.now())
+            .await
+        {
             tracing::error!("writing the context state failed: {error}");
         }
+        prune_branches(&state).await;
+    }
+}
+
+/// Delete every transaction branch that has been idle longer than the retention
+/// window. Without a window, branches are kept until they are landed or
+/// abandoned.
+async fn prune_branches(state: &AppState) {
+    let Some(retention) = state.config.branch_retention() else {
+        return;
+    };
+    match state
+        .store
+        .prune_idle_branches(state.clock.now(), retention)
+        .await
+    {
+        Ok(deleted) => {
+            for branch in deleted {
+                tracing::info!("deleted the idle branch {branch}");
+            }
+        }
+        Err(error) => tracing::error!("deleting idle branches failed: {error}"),
     }
 }
 

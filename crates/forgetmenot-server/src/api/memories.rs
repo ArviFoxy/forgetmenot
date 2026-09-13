@@ -17,18 +17,21 @@ use serde::Deserialize;
 use crate::app::AppState;
 use crate::operations::{
     self, DeleteRequest, DocumentKind, MemoryCreateRequest, MemoryFilter, MemoryWriteRequest,
-    OperationError,
+    OperationError, RenameRequest, ReplaceTextRequest, SetFieldsRequest,
 };
 use crate::store::MemoryId;
 use crate::store::memory::MemoryKind;
 use crate::store::validate::WriteMode;
 
-use super::{Rejection, answer, history, parse_body, resource};
+use super::{BranchQuery, Rejection, answer, history, parse_body, resource};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/memories", get(index).post(create))
-        .route("/memories/{*rest}", get(read).put(replace).delete(remove))
+        .route(
+            "/memories/{*rest}",
+            get(read).post(act).put(replace).delete(remove),
+        )
 }
 
 /// The index filter, as the query string carries it.
@@ -77,12 +80,29 @@ async fn index(State(state): State<Arc<AppState>>, Query(query): Query<IndexQuer
 }
 
 /// `POST /api/memories`: create one memory.
-async fn create(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
+async fn create(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<BranchQuery>,
+    body: Bytes,
+) -> Response {
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
     let request: MemoryCreateRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::memory_put(&state, &request.id, &request.write, WriteMode::Create).await)
+    answer(
+        operations::memory_put(
+            &state,
+            &request.id,
+            &request.write,
+            WriteMode::Create,
+            branch.as_ref(),
+        )
+        .await,
+    )
 }
 
 /// `GET /api/memories/{*rest}`: the document, its history, or one commit of it.
@@ -105,32 +125,108 @@ async fn read(State(state): State<Arc<AppState>>, Path(rest): Path<String>) -> R
 async fn replace(
     State(state): State<Arc<AppState>>,
     Path(rest): Path<String>,
+    Query(query): Query<BranchQuery>,
     body: Bytes,
 ) -> Response {
     let MemoryRoute::Document(id) = MemoryRoute::of(&rest) else {
         return unknown_path(&rest);
     };
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
     let request: MemoryWriteRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::memory_put(&state, &MemoryId::new(id), &request, WriteMode::Update).await)
+    answer(
+        operations::memory_put(
+            &state,
+            &MemoryId::new(id),
+            &request,
+            WriteMode::Update,
+            branch.as_ref(),
+        )
+        .await,
+    )
+}
+
+/// `POST /api/memories/{*id}/replace-text`, `/fields` and `/rename`: the three
+/// single operations, each of which changes one part of one memory.
+async fn act(
+    State(state): State<Arc<AppState>>,
+    Path(rest): Path<String>,
+    Query(query): Query<BranchQuery>,
+    body: Bytes,
+) -> Response {
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
+    match MemoryAction::of(&rest) {
+        MemoryAction::ReplaceText(id) => {
+            let request: ReplaceTextRequest = match parse_body(&body) {
+                Ok(request) => request,
+                Err(rejection) => return rejection.into_response(),
+            };
+            answer(
+                operations::memory_replace_text(
+                    &state,
+                    &MemoryId::new(id),
+                    &request,
+                    branch.as_ref(),
+                )
+                .await,
+            )
+        }
+        MemoryAction::Fields(id) => {
+            let request: SetFieldsRequest = match parse_body(&body) {
+                Ok(request) => request,
+                Err(rejection) => return rejection.into_response(),
+            };
+            answer(
+                operations::memory_set_fields(
+                    &state,
+                    &MemoryId::new(id),
+                    &request,
+                    branch.as_ref(),
+                )
+                .await,
+            )
+        }
+        MemoryAction::Rename(id) => {
+            let request: RenameRequest = match parse_body(&body) {
+                Ok(request) => request,
+                Err(rejection) => return rejection.into_response(),
+            };
+            answer(
+                operations::memory_rename(&state, &MemoryId::new(id), &request, branch.as_ref())
+                    .await,
+            )
+        }
+        MemoryAction::Unknown => unknown_path(&rest),
+    }
 }
 
 /// `DELETE /api/memories/{*id}`: remove the version the caller read.
 async fn remove(
     State(state): State<Arc<AppState>>,
     Path(rest): Path<String>,
+    Query(query): Query<BranchQuery>,
     body: Bytes,
 ) -> Response {
     let MemoryRoute::Document(id) = MemoryRoute::of(&rest) else {
         return unknown_path(&rest);
     };
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
     let request: DeleteRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::memory_delete(&state, &MemoryId::new(id), &request).await)
+    answer(operations::memory_delete(&state, &MemoryId::new(id), &request, branch.as_ref()).await)
 }
 
 /// What the path after `/api/memories/` names.
@@ -160,6 +256,31 @@ impl MemoryRoute {
                 MemoryRoute::History(join(segments.len() - 1))
             }
             _ => MemoryRoute::Document(segments.join("/")),
+        }
+    }
+}
+
+/// Which single operation a POST under `/api/memories/` asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum MemoryAction {
+    ReplaceText(String),
+    Fields(String),
+    Rename(String),
+    Unknown,
+}
+
+impl MemoryAction {
+    fn of(rest: &str) -> Self {
+        let segments: Vec<&str> = rest.split('/').filter(|part| !part.is_empty()).collect();
+        if segments.len() < 2 {
+            return MemoryAction::Unknown;
+        }
+        let id = segments[..segments.len() - 1].join("/");
+        match segments[segments.len() - 1] {
+            "replace-text" => MemoryAction::ReplaceText(id),
+            "fields" => MemoryAction::Fields(id),
+            "rename" => MemoryAction::Rename(id),
+            _ => MemoryAction::Unknown,
         }
     }
 }
@@ -201,5 +322,29 @@ mod tests {
             }
         );
         assert_eq!(MemoryRoute::of(""), MemoryRoute::Unknown);
+    }
+
+    /// Detects an action split that takes the action as part of the id, which
+    /// would make every replace-text a write to a memory that does not exist,
+    /// and one that takes a memory id's own last segment as an action.
+    #[test]
+    fn the_trailing_segment_of_a_post_selects_the_single_operation() {
+        assert_eq!(
+            MemoryAction::of("bench-power/replace-text"),
+            MemoryAction::ReplaceText("bench-power".to_string())
+        );
+        assert_eq!(
+            MemoryAction::of("sessions/alpha/session-1/notes/fields"),
+            MemoryAction::Fields("sessions/alpha/session-1/notes".to_string())
+        );
+        assert_eq!(
+            MemoryAction::of("bench-power/rename"),
+            MemoryAction::Rename("bench-power".to_string())
+        );
+        assert_eq!(MemoryAction::of("bench-power"), MemoryAction::Unknown);
+        assert_eq!(
+            MemoryAction::of("bench-power/history"),
+            MemoryAction::Unknown
+        );
     }
 }

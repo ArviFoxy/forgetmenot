@@ -9,6 +9,8 @@
 //!
 //! - `memory_*` changes the store. Every write is a git commit and affects every
 //!   context the memory's scopes cover.
+//! - `branch_*` opens, inspects and lands a transaction, which is a git branch:
+//!   writes made on one become a single commit on `main` when it lands.
 //! - `session_*` changes the calling context alone and never touches the store.
 //!
 //! An MCP tool call carries no session identity, so the calling context is a
@@ -28,15 +30,20 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 
 use crate::app::AppState;
+use crate::operations::branches::{self, LandRequest};
 use crate::operations::{
     self, CurrentDocument, DeleteRequest, MemoryFilter, MemoryWriteRequest, OperationError,
+    RenameRequest, ReplaceTextRequest, SetFieldsRequest,
 };
 use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord};
+use crate::store::branch::BranchName;
 use crate::store::validate::WriteMode;
 use crate::store::{MemoryId, ScopeId};
 use params::{
-    MemoryDeleteParams, MemoryGetParams, MemoryIndexParams, MemoryPutParams, SessionInheritParams,
-    SessionParams, SessionScopeParams, parse_session_key,
+    BranchCreateParams, BranchLandParams, BranchParams, MemoryDeleteParams, MemoryGetParams,
+    MemoryIndexParams, MemoryPutParams, MemoryRenameParams, MemoryReplaceTextParams,
+    MemorySetFieldsParams, SessionInheritParams, SessionParams, SessionScopeParams,
+    parse_session_key,
 };
 
 /// What the model is told about this server when it connects.
@@ -45,13 +52,16 @@ use params::{
 /// commits to the store when it meant to change its own scopes, or expects a
 /// scope change to reach everyone.
 const INSTRUCTIONS: &str = "\
-The memory management tools (memory_index, memory_get, memory_put, memory_delete) read and \
-change the shared store of memories, where every write is one git commit and takes effect in \
-every session the memory's scopes cover. The session management tools (session_scopes, \
-session_scope_on, session_scope_off, session_inherit) change only the calling session's own \
-scopes and never touch the store; every tool takes session_key, which is printed in this \
-session's first hook context as machine/session-id, or machine/session-id/agent-id inside a \
-subagent.";
+The memory management tools (memory_index, memory_get, memory_put, memory_replace_text, \
+memory_set_fields, memory_rename, memory_delete) read and change the shared store of memories, \
+where every write is one git commit and takes effect in every session the memory's scopes \
+cover. A branch is how several changes land as one commit: branch_create opens one, every write \
+tool takes its name in branch and then changes nothing any session sees, and branch_land \
+squashes the whole branch onto main as a single commit. The session management tools \
+(session_scopes, session_scope_on, session_scope_off, session_inherit) change only the calling \
+session's own scopes and never touch the store; every tool takes session_key, which is printed \
+in this session's first hook context as machine/session-id, or machine/session-id/agent-id \
+inside a subagent.";
 
 /// The tool handler: one per connection, over the server's shared state.
 #[derive(Clone)]
@@ -150,9 +160,13 @@ impl ToolServer {
     ) -> Result<CallToolResult, ErrorData> {
         let author = parse_session_key(&params.session_key)?;
         let id = MemoryId::new(params.id);
-        let catalog = match self.state.store.snapshot().await {
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        let catalog = match operations::target_catalog(&self.state, branch.as_ref()).await {
             Ok(catalog) => catalog,
-            Err(error) => return Ok(tool_failure(&OperationError::from(error))),
+            Err(error) => return Ok(tool_failure(&error)),
         };
         // A call without a version is a creation only where there is nothing to
         // overwrite; at an id that exists it is an update missing its version,
@@ -172,7 +186,7 @@ impl ToolServer {
             author: author.to_string(),
             message: params.message,
         };
-        match operations::memory_put(&self.state, &id, &request, mode).await {
+        match operations::memory_put(&self.state, &id, &request, mode, branch.as_ref()).await {
             Ok(outcome) => json_text(&outcome),
             Err(error) => Ok(tool_failure(&error)),
         }
@@ -192,12 +206,16 @@ impl ToolServer {
     ) -> Result<CallToolResult, ErrorData> {
         let author = parse_session_key(&params.session_key)?;
         let id = MemoryId::new(params.id);
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
         let base_version = match params.base_version {
             Some(version) => version,
             None => {
-                let catalog = match self.state.store.snapshot().await {
+                let catalog = match operations::target_catalog(&self.state, branch.as_ref()).await {
                     Ok(catalog) => catalog,
-                    Err(error) => return Ok(tool_failure(&OperationError::from(error))),
+                    Err(error) => return Ok(tool_failure(&error)),
                 };
                 match catalog.memory(&id) {
                     Some(entry) => entry.version.to_string(),
@@ -214,8 +232,196 @@ impl ToolServer {
             author: author.to_string(),
             message: params.message,
         };
-        match operations::memory_delete(&self.state, &id, &request).await {
+        match operations::memory_delete(&self.state, &id, &request, branch.as_ref()).await {
             Ok(outcome) => json_text(&outcome),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Memory management family: replace one exact snippet of one memory's body \
+                       in the shared store, as one git commit authored by session_key. Everything \
+                       else about the memory, its description, kind and scopes, is left alone. \
+                       old_string is matched literally and must appear exactly once unless \
+                       replace_all is set; a snippet that is not there is refused, so read the \
+                       body with memory_get and copy from it."
+    )]
+    async fn memory_replace_text(
+        &self,
+        Parameters(params): Parameters<MemoryReplaceTextParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        let request = ReplaceTextRequest {
+            old_string: params.old_string,
+            new_string: params.new_string,
+            replace_all: params.replace_all,
+            base_version: params.base_version,
+            author: author.to_string(),
+            message: params.message,
+        };
+        let id = MemoryId::new(params.id);
+        match operations::memory_replace_text(&self.state, &id, &request, branch.as_ref()).await {
+            Ok(outcome) => json_text(&outcome),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Memory management family: set some of one memory's fields in the shared \
+                       store, as one git commit authored by session_key. The body is not touched \
+                       at all, and a field that is not sent keeps the value it has, so this is \
+                       how a memory changes scope or kind without its text being sent back."
+    )]
+    async fn memory_set_fields(
+        &self,
+        Parameters(params): Parameters<MemorySetFieldsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        let request = SetFieldsRequest {
+            description: params.description,
+            kind: params.kind.map(Into::into),
+            scopes: params
+                .scopes
+                .map(|scopes| scopes.into_iter().map(ScopeId::new).collect()),
+            source: params.source.map(Into::into),
+            base_version: params.base_version,
+            author: author.to_string(),
+            message: params.message,
+        };
+        let id = MemoryId::new(params.id);
+        match operations::memory_set_fields(&self.state, &id, &request, branch.as_ref()).await {
+            Ok(outcome) => json_text(&outcome),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Memory management family: move one memory in the shared store to another \
+                       id, as one git commit authored by session_key. Every [[link]] to it in \
+                       every other memory is rewritten in the same commit, so no version of the \
+                       store has the file moved and the links left behind. The new id has to be \
+                       free."
+    )]
+    async fn memory_rename(
+        &self,
+        Parameters(params): Parameters<MemoryRenameParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        let request = RenameRequest {
+            to: MemoryId::new(params.to),
+            base_version: params.base_version,
+            author: author.to_string(),
+            message: params.message,
+        };
+        let from = MemoryId::new(params.from);
+        match operations::memory_rename(&self.state, &from, &request, branch.as_ref()).await {
+            Ok(outcome) => json_text(&outcome),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Branch family: open a branch, which is how several writes become one \
+                       commit on main. Answers with its name; pass that name as branch to every \
+                       write, and nothing any session is delivered changes until branch_land \
+                       squashes the branch. The branch starts from main as it is now."
+    )]
+    async fn branch_create(
+        &self,
+        Parameters(params): Parameters<BranchCreateParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let owner = parse_session_key(&params.session_key)?;
+        match branches::branch_create(&self.state, &owner.to_string()).await {
+            Ok(opened) => json_text(&opened),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Branch family: the branches that are open and waiting to become one \
+                       commit on main, with the session that opened each, how far it is ahead of \
+                       and behind main, and when it was last written to."
+    )]
+    async fn branch_list(&self) -> Result<CallToolResult, ErrorData> {
+        match branches::branch_list(&self.state).await {
+            Ok(rows) => json_text(&rows),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Branch family: what one branch would change if it became one commit on \
+                       main. Reports each file with whether it is added, modified or deleted and \
+                       its diff against the point the branch left main, and how far the branch is \
+                       ahead and behind."
+    )]
+    async fn branch_diff(
+        &self,
+        Parameters(params): Parameters<BranchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let branch = match parse_branch(&params.branch) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        match branches::branch_diff(&self.state, &branch).await {
+            Ok(diff) => json_text(&diff),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Branch family: land one branch, so every write on it becomes one commit on \
+                       main with message as its title, and the branch is gone. A change made on \
+                       main meanwhile is merged in. A file the branch and main both changed \
+                       incompatibly is reported with the text of both sides and nothing lands: \
+                       write the version you want on the branch and land again."
+    )]
+    async fn branch_land(
+        &self,
+        Parameters(params): Parameters<BranchLandParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let branch = match parse_branch(&params.branch) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        let request = LandRequest {
+            message: params.message,
+            author: author.to_string(),
+        };
+        match branches::branch_land(&self.state, &branch, &request).await {
+            Ok(landed) => json_text(&landed),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Branch family: delete one branch with everything written on it, so none of \
+                       it ever becomes one commit on main. main is untouched. This is how a \
+                       transaction is thrown away."
+    )]
+    async fn branch_abandon(
+        &self,
+        Parameters(params): Parameters<BranchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let branch = match parse_branch(&params.branch) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        match branches::branch_abandon(&self.state, &branch).await {
+            Ok(abandoned) => json_text(&abandoned),
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -318,6 +524,22 @@ pub fn service(state: Arc<AppState>) -> StreamableHttpService<ToolServer, LocalS
     )
 }
 
+/// The branch a write names, if any.
+///
+/// A name that is not a branch name is a failure the model reads and can correct,
+/// not a protocol error: it wrote the name.
+fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, CallToolResult> {
+    match branch.filter(|name| !name.is_empty()) {
+        None => Ok(None),
+        Some(name) => parse_branch(name).map(Some),
+    }
+}
+
+/// The branch a branch tool is about.
+fn parse_branch(branch: &str) -> Result<BranchName, CallToolResult> {
+    BranchName::parse(branch).map_err(|error| tool_failure(&OperationError::BadBranchName(error)))
+}
+
 /// A resource as the JSON text of a successful call.
 fn json_text<Body: Serialize>(body: &Body) -> Result<CallToolResult, ErrorData> {
     let text = serde_json::to_string_pretty(body).map_err(|error| {
@@ -332,7 +554,9 @@ fn json_text<Body: Serialize>(body: &Body) -> Result<CallToolResult, ErrorData> 
 ///
 /// A conflict names the version the store holds now, so the model can read that
 /// version and write again instead of guessing; a refused document carries one
-/// line per problem, so it knows which part to fix.
+/// line per problem, so it knows which part to fix; a land that could not be
+/// merged carries each file with the text on both sides, so the model can write
+/// the version it wants on the branch and land again.
 fn tool_failure(error: &OperationError) -> CallToolResult {
     let mut text = error.to_string();
     match error {
@@ -347,10 +571,26 @@ fn tool_failure(error: &OperationError) -> CallToolResult {
                 text.push_str(&format!("\n{}: {}", problem.path, problem.message));
             }
         }
+        OperationError::MergeConflicts { conflicts } => {
+            for conflict in conflicts {
+                text.push_str(&format!(
+                    "\n\n{}\n--- on main ---\n{}\n--- on the branch ---\n{}",
+                    conflict.path,
+                    conflict.ours.as_deref().unwrap_or(DELETED_SIDE),
+                    conflict.theirs.as_deref().unwrap_or(DELETED_SIDE),
+                ));
+            }
+            text.push_str(
+                "\nWrite the version you want on the branch with a normal write, then land again.",
+            );
+        }
         _ => {}
     }
     CallToolResult::error(vec![ContentBlock::text(text)])
 }
+
+/// What a conflict shows for a side that no longer has the file.
+const DELETED_SIDE: &str = "(the file was deleted on this side)";
 
 /// The version of the document a conflict carries.
 fn current_version(current: &CurrentDocument) -> &str {

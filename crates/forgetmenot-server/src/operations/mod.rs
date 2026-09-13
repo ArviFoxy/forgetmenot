@@ -9,8 +9,16 @@
 //! Writes are optimistic: the caller sends the version it read, the store
 //! commits compare-and-swap against it, and a caller whose version is no longer
 //! current gets the current document back rather than overwriting it.
+//!
+//! Every write takes an optional branch. Without one it commits to `main` and
+//! takes effect at once; with one it commits to that branch, is checked and
+//! validated against that branch, and reaches no context until the branch is
+//! landed. The branch operations themselves are in [`branches`].
+
+pub mod branches;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, SubsecRound, Utc};
 use git2::Oid;
@@ -19,13 +27,14 @@ use serde::{Deserialize, Serialize};
 use crate::app::AppState;
 use crate::context::registry::ContextRegistry;
 use crate::context::{ContextKey, Form, Shown};
-use crate::service::{StoreError, WriteError, is_valid_message_title};
+use crate::service::{self, StoreError, WriteError, is_valid_message_title};
 use crate::stats::ToolCallRecord;
+use crate::store::branch::{BranchName, BranchNameError};
 use crate::store::catalog::{Catalog, MemoryEntry, ScopeEntry};
 use crate::store::frontmatter::FrontmatterError;
-use crate::store::git::{CommitSummary, GitError, GitRepo};
+use crate::store::git::{CommitSummary, FileConflict, GitError, GitRepo};
 use crate::store::memory::{
-    MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource,
+    MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource, rewrite_links,
 };
 use crate::store::scope::{ScopeDocument, Trigger, TriggerField};
 use crate::store::validate::{self, Candidate, ValidationError, WriteMode};
@@ -72,6 +81,20 @@ pub enum OperationError {
     #[error("no session `{0}` has been seen by this server")]
     UnknownSession(String),
 
+    /// The call named a branch that is not open. A write is never quietly
+    /// redirected to `main`: the caller meant the transaction.
+    #[error("there is no branch `{0}`")]
+    UnknownBranch(BranchName),
+
+    #[error(transparent)]
+    BadBranchName(#[from] BranchNameError),
+
+    /// The branch and `main` changed the same lines of the same files, so the
+    /// land was refused; the branch is left as it is, for the caller to
+    /// overwrite the file on it and land again.
+    #[error("the branch cannot be landed: {} file(s) changed on both sides", conflicts.len())]
+    MergeConflicts { conflicts: Vec<ConflictedFile> },
+
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -92,7 +115,7 @@ impl OperationError {
     /// One refusal about one path, used for the problems that are not
     /// [`ValidationError`]s: a missing or unusable commit message, or a
     /// `base_version` that is not a version.
-    fn invalid(path: &str, message: &str) -> Self {
+    pub(crate) fn invalid(path: &str, message: &str) -> Self {
         OperationError::Invalid {
             errors: vec![ValidationMessage {
                 path: path.to_string(),
@@ -111,10 +134,40 @@ pub struct ValidationMessage {
 }
 
 impl ValidationMessage {
-    fn of(error: &ValidationError) -> Self {
+    pub(crate) fn of(error: &ValidationError) -> Self {
         Self {
             path: error.path().to_string(),
             message: error.to_string(),
+        }
+    }
+}
+
+/// One file a land could not merge, with the three versions of it a resolution
+/// needs.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConflictedFile {
+    pub path: String,
+    /// The text where the two sides last agreed; absent when the file was added
+    /// on both sides.
+    pub base: Option<String>,
+    /// The text on `main`; absent when `main` deleted the file.
+    pub ours: Option<String>,
+    /// The text on the branch; absent when the branch deleted the file.
+    pub theirs: Option<String>,
+}
+
+impl ConflictedFile {
+    pub(crate) fn of(conflict: &FileConflict) -> Self {
+        let text = |bytes: &Option<Vec<u8>>| {
+            bytes
+                .as_ref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        };
+        Self {
+            path: conflict.path.clone(),
+            base: text(&conflict.base),
+            ours: text(&conflict.ours),
+            theirs: text(&conflict.theirs),
         }
     }
 }
@@ -346,6 +399,64 @@ pub struct MemoryCreateRequest {
     pub write: MemoryWriteRequest,
 }
 
+/// One snippet of one memory's body to replace.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReplaceTextRequest {
+    /// The text to replace, matched exactly and taken from the body as it is.
+    pub old_string: String,
+    pub new_string: String,
+    /// Whether every occurrence is replaced; without it a snippet that appears
+    /// more than once is refused.
+    #[serde(default)]
+    pub replace_all: bool,
+    /// The version the caller read; the current one when absent.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    pub author: String,
+    pub message: String,
+}
+
+/// The frontmatter fields of one memory to set. A field that is absent is left
+/// exactly as it is, and the body is never touched.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SetFieldsRequest {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub kind: Option<MemoryKind>,
+    #[serde(default)]
+    pub scopes: Option<Vec<ScopeId>>,
+    #[serde(default)]
+    pub source: Option<MemorySource>,
+    /// The version the caller read; the current one when absent.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    pub author: String,
+    pub message: String,
+}
+
+impl SetFieldsRequest {
+    /// Whether the request would change no field, which is a write worth
+    /// refusing rather than a commit that says nothing.
+    fn sets_nothing(&self) -> bool {
+        self.description.is_none()
+            && self.kind.is_none()
+            && self.scopes.is_none()
+            && self.source.is_none()
+    }
+}
+
+/// Where one memory is moved to.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RenameRequest {
+    pub to: MemoryId,
+    /// The version the caller read; the current one when absent.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    pub author: String,
+    pub message: String,
+}
+
 /// A deletion, which removes the file and so carries no content.
 ///
 /// One type for memories and scopes: a deletion says which version it removes
@@ -460,8 +571,9 @@ pub async fn memory_put(
     id: &MemoryId,
     request: &MemoryWriteRequest,
     mode: WriteMode,
+    branch: Option<&BranchName>,
 ) -> Result<WriteOutcome, OperationError> {
-    let catalog = state.store.snapshot().await?;
+    let catalog = target_catalog(state, branch).await?;
     let path = id.repository_path();
     let existing = catalog.memory(id);
 
@@ -515,6 +627,7 @@ pub async fn memory_put(
         expected,
         &request.author,
         &request.message,
+        branch,
     )
     .await
 }
@@ -529,8 +642,9 @@ pub async fn memory_delete(
     state: &AppState,
     id: &MemoryId,
     request: &DeleteRequest,
+    branch: Option<&BranchName>,
 ) -> Result<WriteOutcome, OperationError> {
-    let catalog = state.store.snapshot().await?;
+    let catalog = target_catalog(state, branch).await?;
     let path = id.repository_path();
     let Some(entry) = catalog.memory(id) else {
         return Err(OperationError::missing_memory(id));
@@ -548,24 +662,24 @@ pub async fn memory_delete(
         ));
     }
 
-    let outcome = state
-        .store
-        .commit_documents(
-            &request.author,
-            &request.message,
-            &commit_body("memory", id.as_str(), &request.author),
-            // No content: the commit removes the file.
-            vec![(path.clone(), None)],
-            vec![(path.clone(), Some(expected))],
-        )
-        .await;
+    let outcome = commit_to(
+        state,
+        branch,
+        &request.author,
+        &request.message,
+        &commit_body("memory", id.as_str(), &request.author),
+        // No content: the commit removes the file.
+        vec![(path.clone(), None)],
+        vec![(path.clone(), Some(expected))],
+    )
+    .await;
 
     match outcome {
         Ok(outcome) => Ok(write_outcome(&outcome, &path)),
         Err(WriteError::VersionMismatch { .. }) => {
             // The store moved between the version check above and the commit,
             // so the answer is the document as it is now.
-            let catalog = state.store.snapshot().await?;
+            let catalog = target_catalog(state, branch).await?;
             match catalog.memory(id) {
                 Some(entry) => Err(memory_conflict(state, &catalog, entry).await),
                 None => Err(OperationError::missing_memory(id)),
@@ -575,8 +689,284 @@ pub async fn memory_delete(
     }
 }
 
+/// Replace one exact snippet of one memory's body.
+///
+/// The snippet is matched exactly, not as a pattern: a caller that read the body
+/// can name a line of it without sending the whole document back, which is what
+/// a model editing one rule of a long memory wants. A snippet that is not there,
+/// or that is there more than once without `replace_all`, is refused rather than
+/// guessed at. Nothing but the body, `modified` and `author` changes.
+pub async fn memory_replace_text(
+    state: &AppState,
+    id: &MemoryId,
+    request: &ReplaceTextRequest,
+    branch: Option<&BranchName>,
+) -> Result<WriteOutcome, OperationError> {
+    let catalog = target_catalog(state, branch).await?;
+    let path = id.repository_path();
+    let Some(entry) = catalog.memory(id) else {
+        return Err(OperationError::missing_memory(id));
+    };
+    let expected =
+        expected_memory_version(state, &catalog, entry, request.base_version.as_deref()).await?;
+
+    if request.old_string.is_empty() {
+        return Err(OperationError::invalid(&path, EMPTY_SNIPPET));
+    }
+    let body = &entry.document.body;
+    let occurrences = body.matches(&request.old_string).count();
+    match occurrences {
+        0 => return Err(OperationError::invalid(&path, SNIPPET_NOT_FOUND)),
+        1 => {}
+        several if !request.replace_all => {
+            return Err(OperationError::invalid(
+                &path,
+                &format!(
+                    "old_string appears {several} times in this memory's body; \
+                     send replace_all to replace every one of them"
+                ),
+            ));
+        }
+        _ => {}
+    }
+    let rewritten = if request.replace_all {
+        body.replace(&request.old_string, &request.new_string)
+    } else {
+        body.replacen(&request.old_string, &request.new_string, 1)
+    };
+
+    let now = state.clock.now().trunc_subsecs(0);
+    let mut document = entry.document.clone();
+    document.body = with_final_newline(&rewritten);
+    document.frontmatter.modified = Some(now);
+    document.frontmatter.metadata.author = Some(request.author.clone());
+    commit_memory(
+        state,
+        &catalog,
+        document,
+        WriteMode::Update,
+        Some(expected),
+        &request.author,
+        &request.message,
+        branch,
+    )
+    .await
+}
+
+/// Set some of one memory's frontmatter fields, leaving the body alone.
+///
+/// Only the fields the request carries change, so a caller that wants to move a
+/// memory to another scope does not have to send the body back and cannot
+/// truncate it by forgetting to.
+pub async fn memory_set_fields(
+    state: &AppState,
+    id: &MemoryId,
+    request: &SetFieldsRequest,
+    branch: Option<&BranchName>,
+) -> Result<WriteOutcome, OperationError> {
+    let catalog = target_catalog(state, branch).await?;
+    let path = id.repository_path();
+    let Some(entry) = catalog.memory(id) else {
+        return Err(OperationError::missing_memory(id));
+    };
+    let expected =
+        expected_memory_version(state, &catalog, entry, request.base_version.as_deref()).await?;
+    if request.sets_nothing() {
+        return Err(OperationError::invalid(&path, NO_FIELDS_TO_SET));
+    }
+
+    let now = state.clock.now().trunc_subsecs(0);
+    // Started from the file as it is, and the body is not touched at all, so the
+    // bytes after the frontmatter are the same bytes.
+    let mut document = entry.document.clone();
+    if let Some(description) = &request.description {
+        document.frontmatter.description = Some(description.clone());
+    }
+    if let Some(kind) = request.kind {
+        document.frontmatter.metadata.kind = Some(kind);
+    }
+    if let Some(scopes) = &request.scopes {
+        document.frontmatter.metadata.scopes = Some(scopes.clone());
+    }
+    if let Some(source) = request.source {
+        document.frontmatter.metadata.source = Some(source);
+    }
+    document.frontmatter.modified = Some(now);
+    document.frontmatter.metadata.author = Some(request.author.clone());
+    commit_memory(
+        state,
+        &catalog,
+        document,
+        WriteMode::Update,
+        Some(expected),
+        &request.author,
+        &request.message,
+        branch,
+    )
+    .await
+}
+
+/// Move one memory to another id, rewriting every link to it in the same commit.
+///
+/// One commit, because a store in which the file has moved and the links have
+/// not is a store the validator calls invalid: no revision of the store may show
+/// the rename half done.
+pub async fn memory_rename(
+    state: &AppState,
+    from: &MemoryId,
+    request: &RenameRequest,
+    branch: Option<&BranchName>,
+) -> Result<WriteOutcome, OperationError> {
+    let catalog = target_catalog(state, branch).await?;
+    let to = &request.to;
+    let from_path = from.repository_path();
+    let to_path = to.repository_path();
+    let Some(entry) = catalog.memory(from) else {
+        return Err(OperationError::missing_memory(from));
+    };
+    let expected =
+        expected_memory_version(state, &catalog, entry, request.base_version.as_deref()).await?;
+    if to == from {
+        return Err(OperationError::invalid(&to_path, SAME_RENAME_TARGET));
+    }
+
+    let now = state.clock.now().trunc_subsecs(0);
+    let mut moved = entry.document.clone();
+    moved.id = to.clone();
+    // The declared name is the last segment of the id, so moving the file
+    // changes it; a rename that left it behind would be an invalid store.
+    moved.frontmatter.name = to.name().to_string();
+    moved.frontmatter.modified = Some(now);
+    moved.frontmatter.metadata.author = Some(request.author.clone());
+
+    let report = validate::validate_write(
+        &catalog,
+        Candidate::Memory { document: &moved },
+        WriteMode::Create,
+    );
+    let mut errors: Vec<ValidationMessage> =
+        report.errors().iter().map(ValidationMessage::of).collect();
+    if !is_valid_message_title(&request.message) {
+        errors.push(ValidationMessage {
+            path: to_path.clone(),
+            message: WriteError::BadMessage.to_string(),
+        });
+    }
+
+    let mut files = vec![
+        (to_path.clone(), Some(moved.render()?.into_bytes())),
+        // The old file leaves the store in the same commit the new one arrives
+        // in, so no revision holds both.
+        (from_path.clone(), None),
+    ];
+    let mut expected_versions = vec![(to_path.clone(), None), (from_path.clone(), Some(expected))];
+    for linker in catalog.memories().filter(|other| &other.id != from) {
+        let targets: Vec<String> = linker
+            .links
+            .iter()
+            .filter(|target| {
+                validate::resolve_link(&catalog, &linker.id, target).as_ref() == Some(from)
+            })
+            .cloned()
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        // Rewriting the link would make a memory outside a silo link into it,
+        // which is the one thing a silo forbids, so the rename is refused
+        // instead of being made and reported invalid afterwards.
+        if let Some(silo) = to.session_silo()
+            && linker.id.session_silo() != Some(silo)
+        {
+            errors.push(ValidationMessage {
+                path: linker.path.clone(),
+                message: format!(
+                    "links to `{from}`, which the rename would move into session silo `{silo}`; \
+                     only memories in that silo may link to it"
+                ),
+            });
+            continue;
+        }
+        let replacement = link_text_for(&linker.id, to);
+        let mut document = linker.document.clone();
+        for target in &targets {
+            document.body = rewrite_links(&document.body, target, &replacement);
+        }
+        files.push((linker.path.clone(), Some(document.render()?.into_bytes())));
+        expected_versions.push((linker.path.clone(), Some(linker.version)));
+    }
+
+    if !errors.is_empty() {
+        return Err(OperationError::Invalid { errors });
+    }
+
+    let outcome = commit_to(
+        state,
+        branch,
+        &request.author,
+        &request.message,
+        &format!(
+            "memory: {to}\nrenamed-from: {from}\nauthor: {}",
+            request.author
+        ),
+        files,
+        expected_versions,
+    )
+    .await;
+
+    match outcome {
+        Ok(outcome) => Ok(write_outcome(&outcome, &to_path)),
+        Err(WriteError::VersionMismatch { path, .. }) => {
+            // A file the rename touches moved under it: the answer is the
+            // document the caller asked about as the store has it now.
+            let catalog = target_catalog(state, branch).await?;
+            match catalog.memory(from) {
+                Some(entry) => Err(memory_conflict(state, &catalog, entry).await),
+                None => Err(OperationError::invalid(
+                    &path,
+                    "a memory the rename touches changed while it was being made",
+                )),
+            }
+        }
+        Err(error) => Err(write_error(&to_path, error)),
+    }
+}
+
+/// The text a link from `linker` to `target` is written as: a bare name inside
+/// the silo they share, because that is how a session's notes link to each
+/// other, and the full id everywhere else.
+fn link_text_for(linker: &MemoryId, target: &MemoryId) -> String {
+    match target.session_silo() {
+        Some(silo) if linker.session_silo() == Some(silo) => target.name().to_string(),
+        _ => target.as_str().to_string(),
+    }
+}
+
+/// The version a memory write replaces: the one the caller read, or the one the
+/// store holds when the caller sent none, which is what the operations with an
+/// optional `base_version` do.
+async fn expected_memory_version(
+    state: &AppState,
+    catalog: &Catalog,
+    entry: &MemoryEntry,
+    base_version: Option<&str>,
+) -> Result<Oid, OperationError> {
+    match base_version {
+        None => Ok(entry.version),
+        Some(text) => match Oid::from_str(text) {
+            Ok(version) if version == entry.version => Ok(version),
+            Ok(_) => Err(memory_conflict(state, catalog, entry).await),
+            Err(_) => Err(OperationError::invalid(
+                &entry.path,
+                UNREADABLE_BASE_VERSION,
+            )),
+        },
+    }
+}
+
 /// Validate one memory and commit it, which is the part every memory write
 /// shares.
+#[allow(clippy::too_many_arguments)]
 async fn commit_memory(
     state: &AppState,
     catalog: &Catalog,
@@ -586,6 +976,7 @@ async fn commit_memory(
     expected: Option<Oid>,
     author: &str,
     message: &str,
+    branch: Option<&BranchName>,
 ) -> Result<WriteOutcome, OperationError> {
     let id = document.id.clone();
     let path = id.repository_path();
@@ -609,23 +1000,23 @@ async fn commit_memory(
     }
 
     let bytes = document.render()?.into_bytes();
-    let outcome = state
-        .store
-        .commit_documents(
-            author,
-            message,
-            &commit_body("memory", id.as_str(), author),
-            vec![(path.clone(), Some(bytes))],
-            vec![(path.clone(), expected)],
-        )
-        .await;
+    let outcome = commit_to(
+        state,
+        branch,
+        author,
+        message,
+        &commit_body("memory", id.as_str(), author),
+        vec![(path.clone(), Some(bytes))],
+        vec![(path.clone(), expected)],
+    )
+    .await;
 
     match outcome {
         Ok(outcome) => Ok(write_outcome(&outcome, &path)),
         Err(WriteError::VersionMismatch { .. }) => {
             // The store moved between the version check above and the commit,
             // so the answer is the document as it is now.
-            let catalog = state.store.snapshot().await?;
+            let catalog = target_catalog(state, branch).await?;
             match catalog.memory(&id) {
                 Some(entry) => Err(memory_conflict(state, &catalog, entry).await),
                 None => Err(OperationError::missing_memory(&id)),
@@ -762,8 +1153,9 @@ pub async fn scope_put(
     id: &ScopeId,
     request: &ScopeWriteRequest,
     mode: WriteMode,
+    branch: Option<&BranchName>,
 ) -> Result<WriteOutcome, OperationError> {
-    let catalog = state.store.snapshot().await?;
+    let catalog = target_catalog(state, branch).await?;
     let path = id.repository_path();
     let existing = catalog.scope(id);
 
@@ -815,21 +1207,21 @@ pub async fn scope_put(
     }
 
     let bytes = document.render()?.into_bytes();
-    let outcome = state
-        .store
-        .commit_documents(
-            &request.author,
-            &request.message,
-            &commit_body("scope", id.as_str(), &request.author),
-            vec![(path.clone(), Some(bytes))],
-            vec![(path.clone(), expected)],
-        )
-        .await;
+    let outcome = commit_to(
+        state,
+        branch,
+        &request.author,
+        &request.message,
+        &commit_body("scope", id.as_str(), &request.author),
+        vec![(path.clone(), Some(bytes))],
+        vec![(path.clone(), expected)],
+    )
+    .await;
 
     match outcome {
         Ok(outcome) => Ok(write_outcome(&outcome, &path)),
         Err(WriteError::VersionMismatch { .. }) => {
-            let catalog = state.store.snapshot().await?;
+            let catalog = target_catalog(state, branch).await?;
             match catalog.scope(id) {
                 Some(entry) => Err(scope_conflict(entry)),
                 None => Err(OperationError::missing_scope(id)),
@@ -855,6 +1247,7 @@ pub async fn scope_delete(
     state: &AppState,
     id: &ScopeId,
     request: &DeleteRequest,
+    branch: Option<&BranchName>,
 ) -> Result<WriteOutcome, OperationError> {
     // Checked before the store is read: `global`, `machine:<name>` and
     // `session:<machine>/<session-id>` exist without a file, so "not found" would
@@ -862,7 +1255,7 @@ pub async fn scope_delete(
     if id.is_implicit() {
         return Err(OperationError::ImplicitScopeHasNoFile(id.clone()));
     }
-    let catalog = state.store.snapshot().await?;
+    let catalog = target_catalog(state, branch).await?;
     let path = id.repository_path();
     let Some(entry) = catalog.scope(id) else {
         return Err(OperationError::missing_scope(id));
@@ -884,24 +1277,24 @@ pub async fn scope_delete(
         return Err(OperationError::Invalid { errors });
     }
 
-    let outcome = state
-        .store
-        .commit_documents(
-            &request.author,
-            &request.message,
-            &commit_body("scope", id.as_str(), &request.author),
-            // No content: the commit removes the file.
-            vec![(path.clone(), None)],
-            vec![(path.clone(), Some(expected))],
-        )
-        .await;
+    let outcome = commit_to(
+        state,
+        branch,
+        &request.author,
+        &request.message,
+        &commit_body("scope", id.as_str(), &request.author),
+        // No content: the commit removes the file.
+        vec![(path.clone(), None)],
+        vec![(path.clone(), Some(expected))],
+    )
+    .await;
 
     match outcome {
         Ok(outcome) => Ok(write_outcome(&outcome, &path)),
         Err(WriteError::VersionMismatch { .. }) => {
             // The store moved between the version check above and the commit, so
             // the answer is the document as it is now.
-            let catalog = state.store.snapshot().await?;
+            let catalog = target_catalog(state, branch).await?;
             match catalog.scope(id) {
                 Some(entry) => Err(scope_conflict(entry)),
                 None => Err(OperationError::missing_scope(id)),
@@ -1255,6 +1648,66 @@ const MISSING_BASE_VERSION: &str =
 /// What a write is refused for when its `base_version` is not a version at all.
 const UNREADABLE_BASE_VERSION: &str = "base_version is not a version of this document";
 
+/// What a replacement is refused for when it does not say what to replace.
+const EMPTY_SNIPPET: &str = "old_string is empty: a replacement needs the text it replaces";
+
+/// What a replacement is refused for when the snippet is not in the body.
+const SNIPPET_NOT_FOUND: &str =
+    "old_string does not appear in this memory's body, so there is nothing to replace";
+
+/// What a field write is refused for when it names no field.
+const NO_FIELDS_TO_SET: &str =
+    "no field was given: send at least one of description, kind, scopes or source";
+
+/// What a rename is refused for when it moves a memory to where it already is.
+const SAME_RENAME_TARGET: &str = "the memory already has this id, so there is nothing to move";
+
+/// The catalog a write is made against: the branch's own head when the write
+/// names one, else `main`.
+///
+/// This is what makes a branch a transaction: the version check and the
+/// validation of a write on a branch see the branch, so two writes on one branch
+/// build on each other and neither sees anything landed on `main` meanwhile.
+pub async fn target_catalog(
+    state: &AppState,
+    branch: Option<&BranchName>,
+) -> Result<Arc<Catalog>, OperationError> {
+    match branch {
+        None => Ok(state.store.snapshot().await?),
+        Some(branch) => state
+            .store
+            .branch_snapshot(branch)
+            .await?
+            .ok_or_else(|| OperationError::UnknownBranch(branch.clone())),
+    }
+}
+
+/// Commit one set of files where the write says: to `main`, or to one branch.
+async fn commit_to(
+    state: &AppState,
+    branch: Option<&BranchName>,
+    author: &str,
+    message: &str,
+    body: &str,
+    files: Vec<(String, Option<Vec<u8>>)>,
+    expected_versions: Vec<(String, Option<Oid>)>,
+) -> Result<service::WriteOutcome, WriteError> {
+    match branch {
+        None => {
+            state
+                .store
+                .commit_documents(author, message, body, files, expected_versions)
+                .await
+        }
+        Some(branch) => {
+            state
+                .store
+                .commit_documents_on_branch(branch, author, message, body, files, expected_versions)
+                .await
+        }
+    }
+}
+
 /// The commit's body, which records what was written and by whom, since the
 /// title line is the author's own words.
 fn commit_body(kind: &str, id: &str, author: &str) -> String {
@@ -1275,6 +1728,7 @@ fn write_error(path: &str, error: WriteError) -> OperationError {
             OperationError::invalid(path, &WriteError::BadMessage.to_string())
         }
         WriteError::Conflict => OperationError::Busy,
+        WriteError::NoSuchBranch(branch) => OperationError::UnknownBranch(branch),
         WriteError::Store(error) => OperationError::Store(error),
         WriteError::Git(error) => OperationError::Git(error),
         // Handled by the callers, which answer it with the current document.
@@ -1293,6 +1747,6 @@ fn with_final_newline(body: &str) -> String {
 }
 
 /// A timestamp in the form the API and the frontend use.
-fn iso8601(instant: DateTime<Utc>) -> String {
+pub(crate) fn iso8601(instant: DateTime<Utc>) -> String {
     instant.to_rfc3339_opts(SecondsFormat::Secs, true)
 }

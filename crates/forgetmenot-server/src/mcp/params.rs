@@ -102,6 +102,11 @@ pub struct MemoryPutParams {
     /// creates a memory at an id that is free.
     #[serde(default)]
     pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the write is committed to that
+    /// branch instead of to main, so no session is delivered anything until the
+    /// branch is landed.
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 /// One memory to delete.
@@ -118,6 +123,115 @@ pub struct MemoryDeleteParams {
     /// deletes whatever version the store holds now.
     #[serde(default)]
     pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the deletion is committed to that
+    /// branch instead of to main, so the memory keeps being delivered until the
+    /// branch is landed.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// One snippet of one memory's body to replace.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemoryReplaceTextParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The memory id whose body is edited.
+    pub id: String,
+    /// The exact text to replace, copied from the body as `memory_get` reported
+    /// it. It is matched literally, not as a pattern.
+    pub old_string: String,
+    /// What to put in its place.
+    pub new_string: String,
+    /// Replace every occurrence. Without it, a snippet that appears more than
+    /// once is refused rather than one of them being picked.
+    #[serde(default)]
+    pub replace_all: bool,
+    /// The commit's title line: one line, at most 72 characters.
+    pub message: String,
+    /// The version this write replaces. Absent edits whatever version the store
+    /// holds now.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the write is committed to that
+    /// branch instead of to main.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// The fields of one memory to set, leaving its body alone.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemorySetFieldsParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The memory id whose fields are set.
+    pub id: String,
+    /// The one-line description that is this memory's index entry.
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub kind: Option<RequestedKind>,
+    /// The scope ids this memory is delivered in, replacing the ones it has.
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+    #[serde(default)]
+    pub source: Option<RequestedSource>,
+    /// The commit's title line: one line, at most 72 characters.
+    pub message: String,
+    /// The version this write replaces. Absent edits whatever version the store
+    /// holds now.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the write is committed to that
+    /// branch instead of to main.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// One memory to move to another id.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemoryRenameParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The memory id as it is now.
+    pub from: String,
+    /// The memory id it takes. It has to be free.
+    pub to: String,
+    /// The commit's title line: one line, at most 72 characters.
+    pub message: String,
+    /// The version this write moves. Absent moves whatever version the store
+    /// holds now.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the move is committed to that
+    /// branch instead of to main.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Which session is opening a branch.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BranchCreateParams {
+    /// The calling session's key, recorded as the branch's owner.
+    pub session_key: String,
+}
+
+/// Which branch a call is about.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BranchParams {
+    /// The branch name `branch_create` answered with, as `tx/<name>`.
+    pub branch: String,
+}
+
+/// Which branch to land, and as what commit.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BranchLandParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The branch name `branch_create` answered with, as `tx/<name>`.
+    pub branch: String,
+    /// The title line of the one commit every write on the branch becomes: one
+    /// line, at most 72 characters, saying what the whole change did.
+    pub message: String,
 }
 
 /// Which session is asking.

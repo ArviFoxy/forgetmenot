@@ -37,6 +37,9 @@ pub struct Config {
     pub snapshot_debounce_ms: u64,
     /// Contexts not seen for this long are dropped; unset keeps them forever.
     pub context_retention_days: Option<u64>,
+    /// Transaction branches not written to for this long are deleted; unset
+    /// keeps them forever.
+    pub branch_retention_days: Option<u64>,
 }
 
 impl Config {
@@ -57,6 +60,15 @@ impl Config {
             stale_tokens: DEFAULT_STALE_TOKENS,
             snapshot_debounce_ms: DEFAULT_SNAPSHOT_DEBOUNCE_MS,
             context_retention_days: None,
+            branch_retention_days: None,
         }
+    }
+}
+
+impl Config {
+    /// How long a branch may sit untouched before it is deleted.
+    pub fn branch_retention(&self) -> Option<std::time::Duration> {
+        self.branch_retention_days
+            .map(|days| std::time::Duration::from_secs(days.saturating_mul(24 * 60 * 60)))
     }
 }

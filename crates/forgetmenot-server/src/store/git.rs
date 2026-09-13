@@ -6,15 +6,17 @@
 //! itself a compare-and-swap, so a commit a person makes by hand between two
 //! server operations makes the server's update fail instead of discarding it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use chrono::{DateTime, TimeZone, Utc};
 use git2::build::CheckoutBuilder;
 use git2::{
-    DiffFormat, DiffOptions, ErrorCode, Index, IndexEntry, IndexTime, ObjectType, Oid, Repository,
-    RepositoryInitOptions, Signature, Sort, Tree,
+    BranchType, Delta, DiffDelta, DiffFormat, DiffOptions, ErrorCode, Index, IndexEntry, IndexTime,
+    ObjectType, Oid, Repository, RepositoryInitOptions, Signature, Sort, Tree,
 };
+
+use super::branch::{BranchName, BranchRecord, opening_message, owner_in_message};
 
 /// The branch a new store is created on.
 pub const DEFAULT_BRANCH: &str = "main";
@@ -47,7 +49,20 @@ pub enum GitError {
     NoHistory,
     #[error("the store contains a path that is not valid UTF-8")]
     NonUtf8Path,
+    /// A branch of that name is already open, so creating it again would take
+    /// over someone else's transaction.
+    #[error("the branch `{name}` already exists")]
+    BranchExists { name: String },
+    #[error("there is no branch `{name}`")]
+    NoSuchBranch { name: String },
+    /// The branch holds no commit `main` does not already have, so there is
+    /// nothing to squash into one.
+    #[error("the branch `{name}` has no commits to land")]
+    NothingToLand { name: String },
 }
+
+/// A set of file writes: each path with its new bytes, or `None` to delete it.
+pub type FileWrites = Vec<(String, Option<Vec<u8>>)>;
 
 /// One file in a revision of the store.
 #[derive(Clone, Debug)]
@@ -203,38 +218,14 @@ impl GitRepo {
             self.refuse_if_edited_by_hand(&parent_tree, path)?;
         }
 
-        // An index of its own, not the repository's, so that building the tree
-        // cannot disturb what is staged in the working tree.
-        let mut tree_index = Index::new()?;
-        tree_index.read_tree(&parent_tree)?;
-        let mut blob_oids = BTreeMap::new();
-        for (path, content) in &files {
-            match content {
-                Some(bytes) => {
-                    let blob_oid = self.repository.blob(bytes)?;
-                    tree_index.add(&index_entry(path, blob_oid, bytes.len()))?;
-                    blob_oids.insert(path.clone(), blob_oid);
-                }
-                None => {
-                    if tree_index.get_path(Path::new(path), 0).is_some() {
-                        tree_index.remove_path(Path::new(path))?;
-                    }
-                }
-            }
-        }
-        let tree_oid = tree_index.write_tree_to(&self.repository)?;
-        let tree = self.repository.find_tree(tree_oid)?;
-
-        let signature = signature_for(author_name)?;
-        let message = compose_message(message_title, message_body);
+        let (tree_oid, blob_oids) = self.tree_with(&parent_tree, &files)?;
         // The commit object is written without moving any reference, so a
         // failed compare-and-swap below leaves the branch exactly as it was.
-        let commit_oid = self.repository.commit(
-            None,
-            &signature,
-            &signature,
-            &message,
-            &tree,
+        let commit_oid = self.write_commit(
+            author_name,
+            message_title,
+            message_body,
+            tree_oid,
             &[&parent_commit],
         )?;
 
@@ -329,6 +320,493 @@ impl GitRepo {
             true
         })?;
         Ok(text)
+    }
+
+    // -----------------------------------------------------------------------
+    // Transaction branches
+    //
+    // A transaction is a branch under `tx/`. Nothing here touches the working
+    // tree: the checkout follows `main`, so a write on a branch leaves the
+    // files on disk alone and a later write to `main` still sees a clean tree.
+    // -----------------------------------------------------------------------
+
+    /// The commit `branch` points at, or `None` when there is no such branch.
+    pub fn branch_head(&self, branch: &BranchName) -> Result<Option<Oid>, GitError> {
+        match self
+            .repository
+            .find_branch(branch.as_str(), BranchType::Local)
+        {
+            Ok(found) => Ok(Some(found.get().peel_to_commit()?.id())),
+            Err(error) if matches!(error.code(), ErrorCode::NotFound) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Every transaction branch the repository holds, by name.
+    ///
+    /// Branches outside the prefix are left out, so `main` and a person's own
+    /// branches are not transactions and cannot be listed, landed or deleted.
+    pub fn open_branches(&self) -> Result<Vec<BranchName>, GitError> {
+        let mut names = Vec::new();
+        for found in self.repository.branches(Some(BranchType::Local))? {
+            let (found, _) = found?;
+            let Some(name) = found.name()? else {
+                continue;
+            };
+            if let Ok(branch) = BranchName::parse(name) {
+                names.push(branch);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// Create `branch` at `from` with the commit that opens it, failing when a
+    /// branch of that name exists.
+    ///
+    /// The opening commit changes nothing: its tree is `from`'s tree. It is there
+    /// so that who opened the branch and when are recorded where everything else
+    /// about the branch is, which is the branch itself.
+    pub fn create_branch(
+        &self,
+        branch: &BranchName,
+        from: Oid,
+        owner: &str,
+    ) -> Result<(), GitError> {
+        let parent = self.repository.find_commit(from)?;
+        let (title, body) = opening_message(branch, owner);
+        let opening = self.write_commit(owner, &title, &body, parent.tree()?.id(), &[&parent])?;
+        let commit = self.repository.find_commit(opening)?;
+        match self.repository.branch(branch.as_str(), &commit, false) {
+            Ok(_) => Ok(()),
+            Err(error) if matches!(error.code(), ErrorCode::Exists) => {
+                Err(GitError::BranchExists {
+                    name: branch.to_string(),
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Delete `branch`. Reports whether there was a branch to delete.
+    pub fn delete_branch(&self, branch: &BranchName) -> Result<bool, GitError> {
+        match self
+            .repository
+            .find_branch(branch.as_str(), BranchType::Local)
+        {
+            Ok(mut found) => {
+                found.delete()?;
+                Ok(true)
+            }
+            Err(error) if matches!(error.code(), ErrorCode::NotFound) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Commit a set of file writes and deletions to `branch` as one commit.
+    ///
+    /// `expected_head` is the branch head the caller read; if the branch has
+    /// moved since, nothing is committed and [`GitError::HeadMoved`] names
+    /// where it is now. The working tree is not touched, because it follows
+    /// `main`.
+    ///
+    /// The commit brings `main` into the branch as well when `main` has moved on
+    /// and the two merge, taking the written files from the write. That is what
+    /// makes overwriting a file the way to resolve a conflict: afterwards the
+    /// branch holds `main`'s content and the caller's, so the land has nothing
+    /// left to merge in that file. When a file the write does not touch cannot be
+    /// merged, the write is committed on the branch alone and the land reports
+    /// that file, because picking a side there is not this write's decision.
+    pub fn commit_files_on_branch(
+        &self,
+        branch: &BranchName,
+        author_name: &str,
+        message_title: &str,
+        message_body: &str,
+        files: Vec<(String, Option<Vec<u8>>)>,
+        expected_head: Oid,
+    ) -> Result<CommitOutcome, GitError> {
+        let current_head = self
+            .branch_head(branch)?
+            .ok_or_else(|| GitError::NoSuchBranch {
+                name: branch.to_string(),
+            })?;
+        if current_head != expected_head {
+            return Err(GitError::HeadMoved {
+                current: current_head,
+            });
+        }
+        let parent_commit = self.repository.find_commit(current_head)?;
+        let main_head = self.head_oid()?;
+        let main_commit = self.repository.find_commit(main_head)?;
+        let written: BTreeSet<String> = files.iter().map(|(path, _)| path.clone()).collect();
+        let synced = if main_head == current_head
+            || self
+                .repository
+                .graph_descendant_of(current_head, main_head)?
+        {
+            // The branch already holds every commit `main` has.
+            None
+        } else {
+            self.merged_index(&parent_commit, &main_commit, &written)?
+        };
+
+        let (tree_oid, blob_oids, parents) = match synced {
+            Some(mut index) => {
+                let blob_oids = self.apply_files(&mut index, &files)?;
+                let tree_oid = index.write_tree_to(&self.repository)?;
+                (tree_oid, blob_oids, vec![&parent_commit, &main_commit])
+            }
+            None => {
+                let (tree_oid, blob_oids) = self.tree_with(&parent_commit.tree()?, &files)?;
+                (tree_oid, blob_oids, vec![&parent_commit])
+            }
+        };
+        let commit_oid =
+            self.write_commit(author_name, message_title, message_body, tree_oid, &parents)?;
+        self.repository
+            .reference_matching(
+                &branch.reference(),
+                commit_oid,
+                true,
+                current_head,
+                &format!("forgetmenot: {message_title}"),
+            )
+            .map_err(|error| self.head_moved_or_branch(branch, error))?;
+        Ok(CommitOutcome {
+            commit_oid,
+            blob_oids,
+        })
+    }
+
+    /// How many commits `head` has that `upstream` does not, and the other way
+    /// round.
+    pub fn ahead_behind(&self, head: Oid, upstream: Oid) -> Result<(usize, usize), GitError> {
+        Ok(self.repository.graph_ahead_behind(head, upstream)?)
+    }
+
+    /// The commit `head` and `upstream` last had in common.
+    pub fn merge_base(&self, head: Oid, upstream: Oid) -> Result<Oid, GitError> {
+        Ok(self.repository.merge_base(head, upstream)?)
+    }
+
+    /// What changed in each file between two revisions, with the file's diff.
+    pub fn changes_between(&self, base: Oid, head: Oid) -> Result<Vec<FileChange>, GitError> {
+        let base_tree = self.repository.find_commit(base)?.tree()?;
+        let head_tree = self.repository.find_commit(head)?.tree()?;
+        let diff = self
+            .repository
+            .diff_tree_to_tree(Some(&base_tree), Some(&head_tree), None)?;
+
+        let mut changes: Vec<FileChange> = Vec::new();
+        let mut position = BTreeMap::new();
+        for delta in diff.deltas() {
+            let path = delta_path(&delta).ok_or(GitError::NonUtf8Path)?;
+            position.insert(path.clone(), changes.len());
+            changes.push(FileChange {
+                path,
+                status: ChangeStatus::of(delta.status()),
+                diff: String::new(),
+            });
+        }
+        // The patch is printed once and each line appended to the file it
+        // belongs to, so one read of the diff produces every file's text.
+        diff.print(DiffFormat::Patch, |delta, _hunk, line| {
+            if let Some(path) = delta_path(&delta)
+                && let Some(index) = position.get(&path)
+            {
+                let text = &mut changes[*index].diff;
+                if matches!(line.origin(), '+' | '-' | ' ') {
+                    text.push(line.origin());
+                }
+                text.push_str(&String::from_utf8_lossy(line.content()));
+            }
+            true
+        })?;
+        Ok(changes)
+    }
+
+    /// What the commits `head` has and `upstream` does not say about the branch:
+    /// who opened it, when, when it was last written to, and the title of every
+    /// commit that changed a file, oldest first.
+    ///
+    /// Everything comes from the commits themselves, so a restart rediscovers it
+    /// and there is no state file that could disagree with the refs.
+    pub fn branch_record(&self, head: Oid, upstream: Oid) -> Result<BranchRecord, GitError> {
+        let mut walk = self.repository.revwalk()?;
+        // Oldest first, so the first commit seen is the one that opened the
+        // branch and the last one seen is its newest.
+        walk.set_sorting(Sort::TOPOLOGICAL | Sort::REVERSE)?;
+        walk.push(head)?;
+        walk.hide(upstream)?;
+
+        let mut record = BranchRecord::default();
+        for oid in walk {
+            let commit = self.repository.find_commit(oid?)?;
+            let message = commit.message().unwrap_or_default().to_string();
+            if record.created.is_none() {
+                record.created = Some(commit_time(&commit));
+                record.owner = owner_in_message(&message);
+            }
+            record.last_activity = Some(commit_time(&commit));
+            // A commit whose tree is its parent's tree wrote nothing: the commit
+            // that opens a branch is one, and it is not one of the writes.
+            if self.changes_a_file(&commit)? {
+                record
+                    .titles
+                    .push(message.lines().next().unwrap_or_default().to_string());
+            }
+        }
+        Ok(record)
+    }
+
+    /// Whether `commit` differs from its first parent, which is what "this
+    /// commit wrote something" means.
+    fn changes_a_file(&self, commit: &git2::Commit<'_>) -> Result<bool, GitError> {
+        match commit.parent(0) {
+            Ok(parent) => Ok(parent.tree()?.id() != commit.tree()?.id()),
+            Err(_) => Ok(true),
+        }
+    }
+
+    /// Merge `branch` into the current `main` and write the squashed commit,
+    /// without moving any reference.
+    ///
+    /// The merge is the three-way merge of the branch head into the head of
+    /// `main` against their merge base, so an edit made on `main` since the
+    /// branch was opened is merged rather than lost. A file the two changed
+    /// incompatibly is reported as a conflict and nothing is written.
+    ///
+    /// The commit object exists after this returns but no reference names it,
+    /// so a caller that refuses it leaves the store exactly as it was; git
+    /// collects the unreferenced object.
+    pub fn prepare_land(
+        &self,
+        branch: &BranchName,
+        author_name: &str,
+        message_title: &str,
+    ) -> Result<LandAttempt, GitError> {
+        let main_head = self.head_oid()?;
+        let branch_head = self
+            .branch_head(branch)?
+            .ok_or_else(|| GitError::NoSuchBranch {
+                name: branch.to_string(),
+            })?;
+        let main_commit = self.repository.find_commit(main_head)?;
+        let branch_commit = self.repository.find_commit(branch_head)?;
+        let titles = self.branch_record(branch_head, main_head)?.titles;
+        if titles.is_empty() {
+            return Err(GitError::NothingToLand {
+                name: branch.to_string(),
+            });
+        }
+
+        let merged = self
+            .repository
+            .merge_commits(&main_commit, &branch_commit, None)?;
+        if merged.has_conflicts() {
+            return Ok(LandAttempt::Conflicts(self.conflicts_of(&merged)?));
+        }
+        // `merge_commits` builds its own index, so writing the tree from it
+        // cannot disturb the repository's index or the working tree.
+        let mut merged = merged;
+        let tree_oid = merged.write_tree_to(&self.repository)?;
+
+        let body = land_message_body(branch, author_name, &titles);
+        let commit_oid = self.write_commit(
+            author_name,
+            message_title,
+            &body,
+            tree_oid,
+            // One parent, so the history stays the line `git log` shows without
+            // a graph: the branch's own commits are squashed into this one.
+            &[&main_commit],
+        )?;
+
+        let main_tree = main_commit.tree()?;
+        let merged_tree = self.repository.find_tree(tree_oid)?;
+        Ok(LandAttempt::Prepared(PreparedLand {
+            commit_oid,
+            main_head,
+            changed: self.files_between(&main_tree, &merged_tree)?,
+        }))
+    }
+
+    /// Move `main` to a prepared squash commit and delete the branch.
+    ///
+    /// The reference move is a compare-and-swap against the head the merge was
+    /// made against, so a commit that landed in between makes this fail and the
+    /// caller merge again.
+    pub fn finish_land(
+        &self,
+        branch: &BranchName,
+        prepared: &PreparedLand,
+    ) -> Result<(), GitError> {
+        // The same check a direct commit makes, for the files this land would
+        // write: an edit made by hand in the working tree is work that was
+        // never recorded and must not be written over.
+        let main_tree = self.repository.find_commit(prepared.main_head)?.tree()?;
+        for (path, _) in &prepared.changed {
+            self.refuse_if_edited_by_hand(&main_tree, path)?;
+        }
+        self.repository
+            .reference_matching(
+                &self.branch_reference,
+                prepared.commit_oid,
+                true,
+                prepared.main_head,
+                &format!("forgetmenot: land {branch}"),
+            )
+            .map_err(|error| self.head_moved_or(error))?;
+        self.update_working_tree(&prepared.changed)?;
+        self.delete_branch(branch)?;
+        Ok(())
+    }
+
+    /// The index that would hold the result of writing `files` over
+    /// `parent_tree`, as a tree, with each written file's new blob id.
+    ///
+    /// An index of its own, not the repository's, so that building the tree
+    /// cannot disturb what is staged in the working tree.
+    fn tree_with(
+        &self,
+        parent_tree: &Tree<'_>,
+        files: &[(String, Option<Vec<u8>>)],
+    ) -> Result<(Oid, BTreeMap<String, Oid>), GitError> {
+        let mut tree_index = Index::new()?;
+        tree_index.read_tree(parent_tree)?;
+        let blob_oids = self.apply_files(&mut tree_index, files)?;
+        let tree_oid = tree_index.write_tree_to(&self.repository)?;
+        Ok((tree_oid, blob_oids))
+    }
+
+    /// Write `files` into `index`, reporting each written file's new blob id.
+    fn apply_files(
+        &self,
+        index: &mut Index,
+        files: &[(String, Option<Vec<u8>>)],
+    ) -> Result<BTreeMap<String, Oid>, GitError> {
+        let mut blob_oids = BTreeMap::new();
+        for (path, content) in files {
+            match content {
+                Some(bytes) => {
+                    let blob_oid = self.repository.blob(bytes)?;
+                    index.add(&index_entry(path, blob_oid, bytes.len()))?;
+                    blob_oids.insert(path.clone(), blob_oid);
+                }
+                None => {
+                    if index.get_path(Path::new(path), 0).is_some() {
+                        index.remove_path(Path::new(path))?;
+                    }
+                }
+            }
+        }
+        Ok(blob_oids)
+    }
+
+    /// The index of `branch` with `main` merged into it, or `None` when a file
+    /// the write does not touch cannot be merged.
+    ///
+    /// A conflict in a file the write overwrites is dropped: the write supplies
+    /// that file's whole content, which is the caller resolving it.
+    fn merged_index(
+        &self,
+        branch_commit: &git2::Commit<'_>,
+        main_commit: &git2::Commit<'_>,
+        written: &BTreeSet<String>,
+    ) -> Result<Option<Index>, GitError> {
+        let mut index = self
+            .repository
+            .merge_commits(branch_commit, main_commit, None)?;
+        if !index.has_conflicts() {
+            return Ok(Some(index));
+        }
+        let mut conflicted = Vec::new();
+        for conflict in index.conflicts()? {
+            conflicted.push(conflict_path(&conflict?)?);
+        }
+        if conflicted.iter().any(|path| !written.contains(path)) {
+            return Ok(None);
+        }
+        for path in conflicted {
+            index.conflict_remove(Path::new(&path))?;
+        }
+        Ok(Some(index))
+    }
+
+    /// Write a commit object without moving any reference, so that a caller
+    /// that refuses it leaves every branch exactly as it was.
+    fn write_commit(
+        &self,
+        author_name: &str,
+        message_title: &str,
+        message_body: &str,
+        tree_oid: Oid,
+        parents: &[&git2::Commit<'_>],
+    ) -> Result<Oid, GitError> {
+        let tree = self.repository.find_tree(tree_oid)?;
+        let signature = signature_for(author_name)?;
+        let message = compose_message(message_title, message_body);
+        Ok(self
+            .repository
+            .commit(None, &signature, &signature, &message, &tree, parents)?)
+    }
+
+    /// The files that differ between two trees, as the write list that turns
+    /// the first into the second.
+    fn files_between(&self, from: &Tree<'_>, to: &Tree<'_>) -> Result<FileWrites, GitError> {
+        let diff = self
+            .repository
+            .diff_tree_to_tree(Some(from), Some(to), None)?;
+        let mut files = Vec::new();
+        for delta in diff.deltas() {
+            let path = delta_path(&delta).ok_or(GitError::NonUtf8Path)?;
+            let content = match blob_oid_at(to, &path) {
+                Some(blob_oid) => Some(self.repository.find_blob(blob_oid)?.content().to_vec()),
+                None => None,
+            };
+            files.push((path, content));
+        }
+        Ok(files)
+    }
+
+    /// The files a merge could not resolve, with the three versions of each.
+    fn conflicts_of(&self, merged: &Index) -> Result<Vec<FileConflict>, GitError> {
+        let mut conflicts = Vec::new();
+        for conflict in merged.conflicts()? {
+            let conflict = conflict?;
+            let content = |entry: &Option<IndexEntry>| -> Result<Option<Vec<u8>>, GitError> {
+                match entry {
+                    Some(entry) => Ok(Some(
+                        self.repository.find_blob(entry.id)?.content().to_vec(),
+                    )),
+                    None => Ok(None),
+                }
+            };
+            conflicts.push(FileConflict {
+                path: conflict_path(&conflict)?,
+                base: content(&conflict.ancestor)?,
+                ours: content(&conflict.our)?,
+                theirs: content(&conflict.their)?,
+            });
+        }
+        Ok(conflicts)
+    }
+
+    /// Turn libgit2's "the reference moved" code into [`GitError::HeadMoved`]
+    /// carrying where the branch is now.
+    fn head_moved_or_branch(&self, branch: &BranchName, error: git2::Error) -> GitError {
+        if error.code() == ErrorCode::Modified {
+            match self.branch_head(branch) {
+                Ok(Some(current)) => GitError::HeadMoved { current },
+                Ok(None) => GitError::NoSuchBranch {
+                    name: branch.to_string(),
+                },
+                Err(other) => other,
+            }
+        } else {
+            GitError::Git(error)
+        }
     }
 
     /// The initial commit of a store with no history: an empty tree, so that
@@ -447,6 +925,109 @@ impl GitRepo {
             GitError::Git(error)
         }
     }
+}
+
+/// What one revision did to one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeStatus {
+    Added,
+    Modified,
+    Deleted,
+}
+
+impl ChangeStatus {
+    /// The word the API reports, which the frontend and the model read.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeStatus::Added => "added",
+            ChangeStatus::Modified => "modified",
+            ChangeStatus::Deleted => "deleted",
+        }
+    }
+
+    fn of(status: Delta) -> Self {
+        match status {
+            Delta::Added | Delta::Copied | Delta::Untracked => ChangeStatus::Added,
+            Delta::Deleted => ChangeStatus::Deleted,
+            // A rename or a type change is a file that is there and differs,
+            // which is what a reader of the diff needs to know.
+            _ => ChangeStatus::Modified,
+        }
+    }
+}
+
+/// One file's change between two revisions.
+#[derive(Clone, Debug)]
+pub struct FileChange {
+    pub path: String,
+    pub status: ChangeStatus,
+    /// Unified diff of this file alone.
+    pub diff: String,
+}
+
+/// One file two branches changed in a way git cannot merge.
+///
+/// Each side is absent when that side has no such file: a file added on one
+/// branch has no base, and a file one side deleted has no text there.
+#[derive(Clone, Debug)]
+pub struct FileConflict {
+    pub path: String,
+    pub base: Option<Vec<u8>>,
+    /// The version on the branch the merge was made against, which is `main`.
+    pub ours: Option<Vec<u8>>,
+    /// The version on the transaction branch.
+    pub theirs: Option<Vec<u8>>,
+}
+
+/// A squash commit that is written but which no reference names yet.
+#[derive(Clone, Debug)]
+pub struct PreparedLand {
+    pub commit_oid: Oid,
+    /// The head of `main` the merge was made against, which
+    /// [`GitRepo::finish_land`] compares and swaps on.
+    pub main_head: Oid,
+    /// The files the land changes, as the write list that brings the working
+    /// tree up to the merged revision.
+    pub changed: FileWrites,
+}
+
+/// What one attempt at landing a branch produced.
+#[derive(Clone, Debug)]
+pub enum LandAttempt {
+    Prepared(PreparedLand),
+    Conflicts(Vec<FileConflict>),
+}
+
+/// The body of a squash commit: the branch it came from, who landed it, and the
+/// title of every commit it holds, so the one commit still says what was in it.
+fn land_message_body(branch: &BranchName, author: &str, titles: &[String]) -> String {
+    let mut body = format!("branch: {branch}\nauthor: {author}\nsquashed:");
+    for title in titles {
+        body.push_str(&format!("\n- {title}"));
+    }
+    body
+}
+
+/// The path a merge conflict is about, from whichever of its three sides has a
+/// file there.
+fn conflict_path(conflict: &git2::IndexConflict) -> Result<String, GitError> {
+    [&conflict.our, &conflict.their, &conflict.ancestor]
+        .into_iter()
+        .flatten()
+        .map(|entry| String::from_utf8_lossy(&entry.path).into_owned())
+        .next()
+        .ok_or(GitError::NonUtf8Path)
+}
+
+/// The path a diff entry is about: where the file is now, or where it was when
+/// the change removed it.
+fn delta_path(delta: &DiffDelta<'_>) -> Option<String> {
+    delta
+        .new_file()
+        .path()
+        .or_else(|| delta.old_file().path())
+        .and_then(|path| path.to_str())
+        .map(str::to_string)
 }
 
 // git2::Repository is Send; naming it here documents that callers may move a

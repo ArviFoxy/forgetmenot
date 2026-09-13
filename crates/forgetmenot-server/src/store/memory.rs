@@ -15,6 +15,7 @@
 //! documented default, and an absent key is never written back, so reading a
 //! file and writing it again changes nothing.
 
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
@@ -255,8 +256,44 @@ fn level_one_heading(line: &str) -> Option<&str> {
 /// would otherwise link to whatever its examples name.
 pub fn extract_links(body: &str) -> Vec<String> {
     let mut links = Vec::new();
+    visit_links(body, |_, target| links.push(target.to_string()));
+    links
+}
+
+/// The body with every link to `from` rewritten to name `to`.
+///
+/// Only real links are rewritten: the same text inside a code span or a fenced
+/// block is not a link and is left exactly as it was, which is the rule
+/// [`extract_links`] reads by.
+pub fn rewrite_links(body: &str, from: &str, to: &str) -> String {
+    let mut rewritten = String::with_capacity(body.len());
+    let mut copied = 0;
+    visit_links(body, |range, target| {
+        if target == from {
+            rewritten.push_str(&body[copied..range.start]);
+            rewritten.push_str("[[");
+            rewritten.push_str(to);
+            rewritten.push_str("]]");
+            copied = range.end;
+        }
+    });
+    rewritten.push_str(&body[copied..]);
+    rewritten
+}
+
+/// Call `visit` for every `[[target]]` link of `body`, with the byte range of
+/// the whole link and the target it names.
+///
+/// The one scan both reading and rewriting links use, so a link the store
+/// resolves and a link a rename rewrites are always the same set.
+fn visit_links(body: &str, mut visit: impl FnMut(Range<usize>, &str)) {
     let mut open_fence: Option<(u8, usize)> = None;
-    for line in body.lines() {
+    let mut offset = 0;
+    // Split so that each piece keeps its newline, because the ranges are
+    // offsets into the body and a line's length has to include what follows it.
+    for chunk in body.split_inclusive('\n') {
+        let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let trimmed = line.trim_start();
         match open_fence {
             Some((fence_character, fence_length)) => {
@@ -266,11 +303,11 @@ pub fn extract_links(body: &str) -> Vec<String> {
             }
             None => match opening_fence(trimmed) {
                 Some(fence) => open_fence = Some(fence),
-                None => collect_links_in_line(line, &mut links),
+                None => visit_links_in_line(line, offset, &mut visit),
             },
         }
+        offset += chunk.len();
     }
-    links
 }
 
 /// The character and length of the fence this line opens, if it opens one.
@@ -302,8 +339,9 @@ fn closes_fence(trimmed: &str, fence_character: u8, fence_length: usize) -> bool
     }
 }
 
-/// Append the links of one line, skipping inline code spans.
-fn collect_links_in_line(line: &str, links: &mut Vec<String>) {
+/// Visit the links of one line, skipping inline code spans. `base` is the
+/// line's offset in the body, so the ranges name the body.
+fn visit_links_in_line(line: &str, base: usize, visit: &mut impl FnMut(Range<usize>, &str)) {
     let bytes = line.as_bytes();
     let mut position = 0;
     while position < bytes.len() {
@@ -322,11 +360,12 @@ fn collect_links_in_line(line: &str, links: &mut Vec<String>) {
         if bytes[position] == b'[' && bytes.get(position + 1) == Some(&b'[') {
             let content_start = position + 2;
             if let Some(relative_end) = line[content_start..].find("]]") {
+                let end = content_start + relative_end + 2;
                 let target = line[content_start..content_start + relative_end].trim();
                 if !target.is_empty() && !target.contains('[') {
-                    links.push(target.to_string());
+                    visit(base + position..base + end, target);
                 }
-                position = content_start + relative_end + 2;
+                position = end;
                 continue;
             }
         }

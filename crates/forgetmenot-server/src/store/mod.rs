@@ -9,6 +9,7 @@
 //! memories/sessions/<machine>/<session-id>/<name>.md
 //! ```
 
+pub mod branch;
 pub mod catalog;
 pub mod frontmatter;
 pub mod git;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
@@ -18,7 +18,7 @@ use crate::operations::{
 use crate::store::ScopeId;
 use crate::store::validate::WriteMode;
 
-use super::{answer, parse_body, resource};
+use super::{BranchQuery, answer, parse_body, resource};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -47,38 +47,74 @@ async fn read(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Res
 }
 
 /// `POST /api/scopes`: create one scope.
-async fn create(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
+async fn create(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<BranchQuery>,
+    body: Bytes,
+) -> Response {
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
     let request: ScopeCreateRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::scope_put(&state, &request.id, &request.write, WriteMode::Create).await)
+    answer(
+        operations::scope_put(
+            &state,
+            &request.id,
+            &request.write,
+            WriteMode::Create,
+            branch.as_ref(),
+        )
+        .await,
+    )
 }
 
 /// `PUT /api/scopes/{id}`: replace the version the caller read.
 async fn replace(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(query): Query<BranchQuery>,
     body: Bytes,
 ) -> Response {
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
     let request: ScopeWriteRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::scope_put(&state, &ScopeId::new(id), &request, WriteMode::Update).await)
+    answer(
+        operations::scope_put(
+            &state,
+            &ScopeId::new(id),
+            &request,
+            WriteMode::Update,
+            branch.as_ref(),
+        )
+        .await,
+    )
 }
 
 /// `DELETE /api/scopes/{id}`: remove the version the caller read.
 async fn remove(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(query): Query<BranchQuery>,
     body: Bytes,
 ) -> Response {
+    let branch = match query.branch() {
+        Ok(branch) => branch,
+        Err(rejection) => return rejection.into_response(),
+    };
     let request: DeleteRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::scope_delete(&state, &ScopeId::new(id), &request).await)
+    answer(operations::scope_delete(&state, &ScopeId::new(id), &request, branch.as_ref()).await)
 }
 
 /// `GET /api/scopes/{id}/history`

@@ -9,6 +9,7 @@
 //! resource, 409 carrying the document as the store has it now, 422 carrying one
 //! message per problem, 404 and 400 carrying `{"error": ...}`.
 
+pub mod branches;
 pub mod contexts;
 pub mod history;
 pub mod memories;
@@ -29,12 +30,14 @@ use serde::de::DeserializeOwned;
 
 use crate::app::AppState;
 use crate::operations::OperationError;
+use crate::store::branch::BranchName;
 
 /// Every route under `/api`.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .merge(memories::router())
         .merge(scopes::router())
+        .merge(branches::router())
         .merge(triggers::router())
         .merge(contexts::router())
         .merge(review::router())
@@ -68,6 +71,28 @@ impl Rejection {
 impl IntoResponse for Rejection {
     fn into_response(self) -> Response {
         error_response(self.status, &self.message)
+    }
+}
+
+/// The branch a write names in its query string.
+///
+/// Every write route takes it, because a write to a branch is the same write: it
+/// only lands somewhere else. An absent or empty value is a write to `main`.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct BranchQuery {
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+impl BranchQuery {
+    /// The branch this write goes to, or why the name names no branch.
+    pub fn branch(&self) -> Result<Option<BranchName>, Rejection> {
+        match self.branch.as_deref().filter(|name| !name.is_empty()) {
+            None => Ok(None),
+            Some(name) => BranchName::parse(name)
+                .map(Some)
+                .map_err(|error| Rejection::bad_request(error.to_string())),
+        }
     }
 }
 
@@ -115,6 +140,19 @@ impl IntoResponse for OperationError {
                 Json(serde_json::json!({ "errors": errors })),
             )
                 .into_response(),
+            // A land that conflicts is the same kind of answer as a stale
+            // write: the caller is given what it needs to resolve, per file.
+            OperationError::MergeConflicts { ref conflicts } => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "conflicts": conflicts })),
+            )
+                .into_response(),
+            OperationError::UnknownBranch(_) => {
+                error_response(StatusCode::NOT_FOUND, &self.to_string())
+            }
+            OperationError::BadBranchName(_) => {
+                error_response(StatusCode::BAD_REQUEST, &self.to_string())
+            }
             OperationError::Busy => {
                 error_response(StatusCode::SERVICE_UNAVAILABLE, &self.to_string())
             }

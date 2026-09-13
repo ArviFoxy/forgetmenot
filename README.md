@@ -26,31 +26,29 @@ One server serves every machine on a network, and subagents get the same memorie
 
 ## Concepts
 
-**Scope.** A flag identified by its id. A scope is either on or off in a context, and the id is all it is: scopes carry no kind or label. The only scopes with special meaning are the implicit ones, which need no file: `global` is always on, `machine:<name>` is on for sessions on that machine, `session:<machine>/<session-id>` is on for one session. A file-backed scope's file carries just its `id`, an `implies` list and its `triggers`.
+**Memory.** A markdown note with a one-line description, stored as a file in a git repository. There are two kinds. A *critical* memory holds a rule the agent must follow; whenever it applies, its full text is placed in the agent's context. A *knowledge* memory holds facts the agent may need; the agent sees only its description and reads the full text when it wants it. Memories can link to each other with `[[name]]`.
 
-**Trigger.** A regular expression over one of six strings the harness supplies: `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result`, `working_directory`. A match turns the trigger's scope on in the context where the text appeared. Triggers never turn scopes off. A trigger on `working_directory` may be qualified with a machine name.
+**Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers.
 
-**Memory.** A markdown file with YAML frontmatter that belongs to one or more scopes. `kind: critical` memories are delivered in full; `kind: knowledge` memories are delivered as one index line and fetched on demand by id. Bodies may link to other memories with `[[name]]`. Memories in a session scope are a silo: nothing outside the session may link into them. A memory is retired by deleting its file, which is one commit like any other write: it stops being delivered everywhere, and every version it ever had stays in the history.
+**Trigger.** A regular expression attached to a scope. It is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its working directory. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
 
-**Context.** One model conversation: a session, or one subagent inside it. Each context has a set of active scopes and a record of what it has been shown. The server delivers, at every hook event, whatever is due and not yet shown:
+**Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A subagent starts with the scopes its parent had active.
 
-```
-Due    = memories with any active scope
-Needs  = new        due and never shown here
-       ∪ changed    shown, but the file has changed since
-       ∪ stale      critical, shown more than K context tokens ago
-       ∪ retracted  shown, but deleted or its scope turned off
-```
+**Delivery.** At every hook event the server compares what is due, the memories of the active scopes, with what the context has already seen, and sends the difference: memories never shown, memories changed since they were shown, critical memories shown more than a configurable number of context tokens ago, and notices for memories that were deleted or whose scope was turned off. If a tool call is about to run while a critical memory is due that the context has not seen, the call is held, the memory is delivered, and the agent reissues the call.
 
-At `PreToolUse`, if a critical memory is new or changed, the call is denied with a fixed explanation and the memory is delivered; the agent reissues the call, which then passes. This is a delivery mechanism, not a review of the call. Parallel calls produce exactly one interrupt.
+**Branch.** Several changes to the store can be made on a git branch and landed as one commit. Nothing on a branch is delivered until it lands. See [Branches](#branches).
 
 ## Store layout
+
+The store is a git repository:
 
 ```
 scopes/<id>.yaml
 memories/<name>.md
 memories/sessions/<machine>/<session-id>/<name>.md
 ```
+
+A scope file names the scopes it implies and its triggers:
 
 ```yaml
 # scopes/widgets.yaml
@@ -63,6 +61,8 @@ triggers:
     pattern: '/widgets(/|$)'
     machine: alpha
 ```
+
+A memory file uses Claude Code's own memory format, with forgetmenot's fields inside `metadata`:
 
 ```markdown
 ---
@@ -77,18 +77,56 @@ Cut releases from `main` only, and only after `cargo test --workspace` is green.
 See [[rocketry-notes]].
 ```
 
-The file format is Claude Code's own auto-memory format: `name` (equal to the file name), `description` (the line the agent sees in an index), and a `metadata` map. forgetmenot keeps its fields inside `metadata` (`kind`, `scopes`, `source`, and server-maintained `created`, `author`) and preserves every other key untouched, except the `archived` key earlier versions of this server wrote to retire a memory, which is dropped when the file is read and never written back. An existing Claude Code memory directory is therefore a valid store as soon as it is a git repository: files without forgetmenot keys are `knowledge` memories in the `global` scope, and files without frontmatter such as `MEMORY.md` are skipped.
+`kind` is `critical` or `knowledge` and defaults to `knowledge`; `scopes` defaults to `[global]`; `source` records whether the user or the assistant wrote the memory. Any other key is preserved untouched, so an existing Claude Code memory directory becomes a valid store the moment it is a git repository.
 
-Every write through the API or MCP carries a `message` that becomes the commit title and a `base_version`, the blob hash the editor loaded. A write against a stale version is rejected with the current document.
+Every change to the store is a git commit with a title line. A write carries the version of the file it was based on, and is refused if someone else changed the file in between.
 
 ## Interfaces
 
-- `POST /hook`: the hook endpoint, called by `forgetmenot-hook`.
-- `/mcp`: MCP over streamable HTTP. Memory management tools (`memory_index`, `memory_get`, `memory_put`, `memory_delete`) change the store and are git commits. Session management tools (`session_scopes`, `session_scope_on`, `session_scope_off`, `session_inherit`) change only the calling context and never touch the store.
-- `/api/*`: the JSON API the frontend uses. Like a memory, a scope is retired by deleting its file (`DELETE /api/scopes/{id}`), which is one commit; the implicit scopes have no file, and a scope any memory still lists or any other scope still implies is refused, naming each file to edit first.
+- `POST /hook`: the hook endpoint, called by `forgetmenot-hook` on every Claude Code hook event.
+- `/mcp`: MCP over streamable HTTP, for the agent.
+- `/api/*`: the JSON API used by the frontend.
 - `/`: the frontend, served from `web/dist`.
 
 Claude Code templates for the hooks block and the MCP registration are in `examples/claude-code/`. An example store is in `examples/store/`.
+
+### MCP tools
+
+Memory tools read and change the store; every change is one commit.
+
+| Tool | What it does |
+|---|---|
+| `memory_index` | List memories with their descriptions, kinds and scopes |
+| `memory_get` | Read one memory |
+| `memory_put` | Create a memory or replace one whole |
+| `memory_replace_text` | Replace one exact snippet in a body, leaving the rest as it is |
+| `memory_set_fields` | Change the description, kind, scopes or source without touching the body |
+| `memory_rename` | Move a memory to a new id and update every `[[link]]` to it |
+| `memory_delete` | Remove a memory; its history stays in git |
+
+Session tools change what the calling session receives and never touch the store.
+
+| Tool | What it does |
+|---|---|
+| `session_scopes` | Show the active scopes and the scopes available |
+| `session_scope_on`, `session_scope_off` | Turn a scope on or off for this session |
+| `session_inherit` | Take over another session's active scopes and its private notes |
+
+Every session tool takes the session key that the first hook event of the session prints.
+
+### Branches
+
+To land several changes as one commit, work on a branch:
+
+```
+branch_create                     start a branch from main
+memory_put ... branch=<name>      any write, made on the branch instead of main
+branch_diff                       see what the branch would change
+branch_land message="..."         merge into main as one commit with that title
+branch_abandon                    throw the branch away
+```
+
+Nothing on a branch reaches any session until it lands. Landing is a three-way merge, so changes made on `main` in the meantime are kept, and two branches that edited different parts of the same memory both land. When the branch and `main` changed the same lines, landing reports the file with its three versions and leaves everything as it was; write the version you want on the branch and land again. Branches are ordinary git refs under `tx/`, so nothing about them is lost on a restart.
 
 ## Running
 
@@ -102,15 +140,16 @@ forgetmenot serve --store /path/to/store --listen 0.0.0.0:7373 --web-dist web/di
 forgetmenot stats --stats-path /var/lib/forgetmenot/stats.sqlite
 ```
 
-`--allowed-host` lists every `Host` header value clients use to reach `/mcp`; the MCP transport rejects other hosts and always accepts loopback. The stale threshold K defaults to 200000 context tokens (`--stale-tokens`). Contexts are kept indefinitely unless `--context-retention-days` is set. `forgetmenot stats` prints the same aggregates the frontend shows, or one JSON object with `--json`.
+`--allowed-host` lists every `Host` header value clients use to reach `/mcp`; loopback is always accepted. Critical memories are delivered again after 200000 context tokens (`--stale-tokens`). Session state and open branches are kept indefinitely unless `--context-retention-days` or `--branch-retention-days` is set. `forgetmenot stats` prints the same statistics the frontend shows, or JSON with `--json`.
 
-On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the hooks block from `examples/claude-code/settings-hooks.json` to `~/.claude/settings.json` with the server address and a machine name filled in, and register the MCP server with `claude mcp add --transport http forgetmenot http://SERVER/mcp`.
+On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the hooks block from `examples/claude-code/settings-hooks.json` to Claude Code's settings with the server address and a machine name filled in, and register the MCP server with `claude mcp add --transport http forgetmenot http://SERVER/mcp`.
 
 ## State the server holds
 
 | State | Mechanism | Survives restart |
 |---|---|---|
 | Scopes and memories | git repository, one commit per write, working tree checked out | yes |
+| Open branches and what they hold | git refs under `tx/` and their commits in the store repository, the source of truth | yes |
 | Parsed catalog with compiled triggers | in-memory cache of HEAD, rebuilt when HEAD moves | rebuilt |
 | Context state (active scopes, shown record) | in-memory map, atomic JSON snapshot on change and on SIGTERM | best effort; loss costs one redundant delivery |
 | Statistics (events, trigger fires, deliveries, tool calls) | sqlite, append-only | yes |

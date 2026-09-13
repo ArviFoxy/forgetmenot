@@ -76,6 +76,10 @@ struct ServeArgs {
     /// it.
     #[arg(long, value_name = "DAYS")]
     context_retention_days: Option<u64>,
+    /// Delete transaction branches not written to for this many days; they are
+    /// kept forever without it.
+    #[arg(long, value_name = "DAYS")]
+    branch_retention_days: Option<u64>,
 }
 
 impl ServeArgs {
@@ -95,6 +99,7 @@ impl ServeArgs {
         config.stale_tokens = self.stale_tokens;
         config.snapshot_debounce_ms = self.snapshot_debounce_ms;
         config.context_retention_days = self.context_retention_days;
+        config.branch_retention_days = self.branch_retention_days;
         config
     }
 }

@@ -1,14 +1,15 @@
 //! Tests of the MCP tools, driven by a real rmcp streamable HTTP client against a
 //! real server on a temporary copy of the example store.
 //!
-//! These test the adapter: that the eight tools are there, that each says which
-//! family it belongs to, that a tool's parameters reach the operation it stands
-//! for, and that a failure comes back as something the model can act on. What the
-//! operations themselves guarantee is tested in `operations_test.rs` and
-//! `api_test.rs`; what is asserted here is only visible through MCP.
+//! These test the adapter: that every tool is there, that each says which family
+//! it belongs to, that a tool's parameters reach the operation it stands for, and
+//! that a failure comes back as something the model can act on. What the
+//! operations themselves guarantee is tested in `operations_test.rs`,
+//! `api_test.rs` and `branch_test.rs`; what is asserted here is only visible
+//! through MCP.
 //!
-//! The expectations come from the plan's two tool families and its state machine,
-//! and from the example store committed in this repository.
+//! The expectations come from the plan's three tool families and its state
+//! machine, and from the example store committed in this repository.
 
 mod common;
 
@@ -31,8 +32,34 @@ const MACHINE: &str = "alpha";
 /// staleness.
 const SOME_TOKENS: Option<u64> = Some(10_000);
 
-/// The memory management tools, which change the store.
-const MEMORY_TOOLS: [&str; 4] = ["memory_index", "memory_get", "memory_put", "memory_delete"];
+/// The memory management tools, which read and change the store.
+const MEMORY_TOOLS: [&str; 7] = [
+    "memory_index",
+    "memory_get",
+    "memory_put",
+    "memory_replace_text",
+    "memory_set_fields",
+    "memory_rename",
+    "memory_delete",
+];
+
+/// The branch tools, which open, inspect and land a transaction.
+const BRANCH_TOOLS: [&str; 5] = [
+    "branch_create",
+    "branch_list",
+    "branch_diff",
+    "branch_land",
+    "branch_abandon",
+];
+
+/// The tools that write to the store, each of which takes an optional branch.
+const WRITE_TOOLS: [&str; 5] = [
+    "memory_put",
+    "memory_replace_text",
+    "memory_set_fields",
+    "memory_rename",
+    "memory_delete",
+];
 
 /// The session management tools, which change only the calling context.
 const SESSION_TOOLS: [&str; 4] = [
@@ -47,6 +74,9 @@ const MEMORY_FAMILY_PHRASE: &str = "git commit";
 
 /// What a session tool's description has to say: the store is not involved.
 const SESSION_FAMILY_PHRASE: &str = "never touches the store";
+
+/// What a branch tool's description has to say: what a branch is for.
+const BRANCH_FAMILY_PHRASE: &str = "one commit on main";
 
 // Lines that appear in one memory's body of the example store and nowhere else,
 // so that "delivered in full" can be told apart from "named in an index line".
@@ -124,14 +154,14 @@ fn history(server: &TestServer, id: &str) -> Vec<Value> {
         .clone()
 }
 
-/// Detects a tool that drifted between the two families: a memory tool whose
-/// description does not say that the call is a commit in the shared store, or a
-/// session tool that does not say the store is untouched, would have the model
-/// committing to everyone's store when it meant to change its own scopes, or
-/// expecting its own scope change to reach everyone. Detects a missing or an
-/// extra tool as well.
+/// Detects a tool that drifted between the families: a memory tool whose
+/// description does not say that the call is a commit in the shared store, a
+/// branch tool that does not say what a branch is for, or a session tool that
+/// does not say the store is untouched, would have the model committing to
+/// everyone's store when it meant to change its own scopes, or expecting a scope
+/// change to reach everyone. Detects a missing or an extra tool as well.
 #[test]
-fn tools_list_names_the_eight_tools_and_each_description_names_its_family() {
+fn tools_list_names_every_tool_and_each_description_names_its_family() {
     let server = TestServer::start(example_store_files(), |_| {});
     let session = server.mcp();
 
@@ -140,17 +170,20 @@ fn tools_list_names_the_eight_tools_and_each_description_names_its_family() {
     let offered: BTreeSet<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
     let expected: BTreeSet<String> = MEMORY_TOOLS
         .iter()
+        .chain(BRANCH_TOOLS.iter())
         .chain(SESSION_TOOLS.iter())
         .map(|name| (*name).to_string())
         .collect();
     assert_eq!(
         offered, expected,
-        "tools/list must name exactly the eight tools of the two families"
+        "tools/list must name exactly the tools of the three families"
     );
     for tool in &tools {
         let description = tool.description.as_deref().unwrap_or_default();
         let phrase = if MEMORY_TOOLS.contains(&tool.name.as_ref()) {
             MEMORY_FAMILY_PHRASE
+        } else if BRANCH_TOOLS.contains(&tool.name.as_ref()) {
+            BRANCH_FAMILY_PHRASE
         } else {
             SESSION_FAMILY_PHRASE
         };
@@ -158,6 +191,48 @@ fn tools_list_names_the_eight_tools_and_each_description_names_its_family() {
             description.contains(phrase),
             "the description of {} must carry its family's phrase {phrase:?}, got {description:?}",
             tool.name
+        );
+    }
+}
+
+/// Detects a write tool that cannot be given a branch, or one whose branch
+/// parameter does not say what it does: a model that cannot tell which parameter
+/// makes a write part of a transaction would write straight to main, and every
+/// session would see half a change.
+#[test]
+fn every_write_tool_takes_an_optional_branch_that_says_it_commits_there_instead() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let tools = session.tools();
+
+    for name in WRITE_TOOLS {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} must be offered"));
+        let schema = Value::Object((*tool.input_schema).clone());
+        let branch = schema
+            .get("properties")
+            .and_then(|properties| properties.get("branch"))
+            .unwrap_or_else(|| panic!("{name} must take a branch parameter, got {schema}"));
+        let description = branch
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            description.contains("branch instead of") || description.contains("instead of to main"),
+            "{name}'s branch parameter must say that it commits to the branch instead of main, \
+             got {description:?}"
+        );
+        let required: Vec<&str> = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        assert!(
+            !required.contains(&"branch"),
+            "{name}'s branch parameter must be optional, got required {required:?}"
         );
     }
 }
@@ -182,6 +257,11 @@ fn the_server_says_which_families_it_has_and_where_the_session_key_comes_from() 
     assert!(
         instructions.contains("memory management") && instructions.contains("session management"),
         "the instructions must name both families, got {instructions:?}"
+    );
+    assert!(
+        instructions.contains("branch") && instructions.contains("one commit"),
+        "the instructions must say that a branch is how several changes land as one \
+         commit, got {instructions:?}"
     );
 }
 
@@ -777,5 +857,204 @@ fn the_memory_index_filtered_by_scopes_lists_the_memories_of_those_scopes_only()
     assert!(
         all.as_array().is_some_and(|summaries| summaries.len() > 1),
         "without a filter every memory must be listed, got {all}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Branches
+// ---------------------------------------------------------------------------
+
+/// Detects a branch family that does not work through MCP: a transaction opened
+/// and landed by a model must keep its writes out of the index until it lands and
+/// then land them as one commit, or a model would publish half a change and have
+/// no way to see what it was about to publish.
+#[test]
+fn three_writes_on_a_branch_through_mcp_are_invisible_until_they_land_as_one_commit() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-11";
+
+    let opened = tool_json(&session.call("branch_create", json!({ "session_key": session_key })));
+    let branch = opened["branch"]
+        .as_str()
+        .expect("branch_create names the branch")
+        .to_string();
+    let revision_before = store_revision(&server);
+
+    let written = session.call(
+        "memory_put",
+        json!({
+            "session_key": session_key,
+            "id": "jig-storage",
+            "description": "The bracket jig lives in the second drawer",
+            "kind": "knowledge",
+            "scopes": ["global"],
+            "source": "assistant",
+            "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
+            "message": "record where the bracket jig lives",
+            "branch": branch,
+        }),
+    );
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "the write on the branch must be accepted, got {}",
+        tool_text(&written)
+    );
+    let replaced = session.call(
+        "memory_replace_text",
+        json!({
+            "session_key": session_key,
+            "id": "bench-power",
+            "old_string": "at the wall",
+            "new_string": "at the wall switch",
+            "message": "say which switch cuts the bench supply",
+            "branch": branch,
+        }),
+    );
+    assert_ne!(
+        replaced.is_error,
+        Some(true),
+        "the replacement on the branch must be accepted, got {}",
+        tool_text(&replaced)
+    );
+    let fields = session.call(
+        "memory_set_fields",
+        json!({
+            "session_key": session_key,
+            "id": "reading-list",
+            "kind": "critical",
+            "message": "make the reading list critical",
+            "branch": branch,
+        }),
+    );
+    assert_ne!(
+        fields.is_error,
+        Some(true),
+        "the field write on the branch must be accepted, got {}",
+        tool_text(&fields)
+    );
+
+    let index = tool_json(&session.call("memory_index", json!({})));
+    assert!(
+        !tool_text(&session.call("memory_index", json!({}))).contains("jig-storage"),
+        "nothing on the branch may be in the index yet, got {index}"
+    );
+    assert_eq!(
+        store_revision(&server),
+        revision_before,
+        "nothing on the branch may move the store's head"
+    );
+    let diff = tool_json(&session.call("branch_diff", json!({ "branch": branch })));
+    assert_eq!(
+        diff["ahead"],
+        json!(3),
+        "the diff must count the three writes, got {diff}"
+    );
+
+    let landed = tool_json(&session.call(
+        "branch_land",
+        json!({
+            "session_key": session_key,
+            "branch": branch,
+            "message": "record the jig and the bench power wording",
+        }),
+    ));
+
+    let commits = history(&server, "bench-power");
+    assert_eq!(
+        commits.first().map(|commit| commit["oid"].clone()),
+        Some(landed["commit_oid"].clone()),
+        "the landed commit must be the newest one to touch the memory, got {commits:?}"
+    );
+    assert_eq!(
+        commits.first().map(|commit| commit["title"].clone()),
+        Some(json!("record the jig and the bench power wording")),
+        "the one commit must carry the title the land was given, got {commits:?}"
+    );
+    let index = tool_text(&session.call("memory_index", json!({})));
+    assert!(
+        index.contains("jig-storage"),
+        "the landed memory must be in the index, got {index}"
+    );
+    let open = tool_json(&session.call("branch_list", json!({})));
+    assert_eq!(
+        open,
+        json!([]),
+        "the landed branch must no longer be open, got {open}"
+    );
+}
+
+/// Detects a land that reports a conflict the model cannot act on: the answer has
+/// to name the file and both texts, so that the model can write the version it
+/// wants on the branch instead of guessing or giving up.
+#[test]
+fn a_conflicting_land_through_mcp_reports_the_file_and_both_texts() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-12";
+
+    let branch =
+        tool_json(&session.call("branch_create", json!({ "session_key": session_key })))["branch"]
+            .as_str()
+            .expect("branch_create names the branch")
+            .to_string();
+    session.call(
+        "memory_replace_text",
+        json!({
+            "session_key": session_key,
+            "id": "bench-power",
+            "old_string": "reads zero",
+            "new_string": "reads zero volts",
+            "message": "say what the meter reads",
+            "branch": branch,
+        }),
+    );
+    let on_main = session.call(
+        "memory_replace_text",
+        json!({
+            "session_key": session_key,
+            "id": "bench-power",
+            "old_string": "reads zero",
+            "new_string": "reads nothing at all",
+            "message": "say what the meter reads on main",
+        }),
+    );
+    assert_ne!(
+        on_main.is_error,
+        Some(true),
+        "the write straight to main must be accepted, got {}",
+        tool_text(&on_main)
+    );
+
+    let failed = session.call(
+        "branch_land",
+        json!({
+            "session_key": session_key,
+            "branch": branch,
+            "message": "say what the meter reads",
+        }),
+    );
+
+    assert_eq!(
+        failed.is_error,
+        Some(true),
+        "a conflicting land must be reported as a failure, got {}",
+        tool_text(&failed)
+    );
+    let text = tool_text(&failed);
+    assert!(
+        text.contains("memories/bench-power.md"),
+        "the failure must name the file, got {text:?}"
+    );
+    assert!(
+        text.contains("reads nothing at all") && text.contains("reads zero volts"),
+        "the failure must carry the text of both sides, got {text:?}"
+    );
+    let open = tool_json(&session.call("branch_list", json!({})));
+    assert_eq!(
+        open.as_array().map(Vec::len),
+        Some(1),
+        "the branch must be left open to resolve on, got {open}"
     );
 }
