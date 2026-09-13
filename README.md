@@ -9,7 +9,7 @@ forgetmenot is a memory server for LLM coding agents, for people who work on man
 - **Critical memories.** Critical memories are delivered in full whenever they apply; other memories are delivered as a one-line index and read on demand.
 - **Interception.** A tool call that brings a critical memory into play is held until the agent has been given that memory.
 - **Reminders.** Optionally, everything that applies is delivered again after a set number of context tokens: critical memories in full, the rest as the index.
-- **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one.
+- **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one. Several agents and people can write at the same time: their changes are merged, and only edits to the same lines conflict.
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
 - **Statistics.** Every trigger match, delivery and fetch is recorded, so unused memories are visible.
 
