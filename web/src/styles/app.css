@@ -415,11 +415,29 @@ sl-details::part(content) {
   font-size: 0.8rem;
 }
 
+/* The description is the page's subtitle: muted, set on the reading measure, and
+   held to one line height so every line of a wrapped description sits the same
+   distance from the last. */
 .page-header .description {
   max-width: var(--fmn-measure);
   margin: 0;
   color: var(--fmn-fg-muted);
-  font-size: 0.93rem;
+  font-size: var(--sl-font-size-medium);
+  line-height: var(--sl-line-height-dense);
+}
+
+/* The pencil ends the last line of the text. Sized to the text and with no padding
+   or leading of its own, its box is shorter than the line box it sits in, so the
+   line that carries it is no taller than the lines above. */
+.page-header .description sl-icon-button {
+  margin-inline-start: 0.15em;
+  font-size: 0.9em;
+  vertical-align: -0.13em;
+}
+
+.page-header .description sl-icon-button::part(base) {
+  padding: 0;
+  line-height: 1;
 }
 
 .page-tabs {
@@ -744,8 +762,27 @@ h3 {
   min-width: 0;
 }
 
+/* Editing the description keeps the header's shape: the control sits on the same
+   measure as the text it replaces and sets it at the same size, and the field's
+   label takes no height, so a one line description barely moves the page. */
 .page-header .inline-edit {
-  max-width: 46rem;
+  max-width: var(--fmn-measure);
+}
+
+.page-header .inline-edit sl-input::part(input) {
+  font-size: var(--sl-font-size-medium);
+}
+
+/* The header shows one field and the page name says which page it is, so the label
+   is there for screen readers only and takes no height. */
+.page-header .inline-edit sl-input::part(form-control-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .field-grid {
