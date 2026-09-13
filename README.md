@@ -6,8 +6,9 @@ forgetmenot is a memory server for LLM coding agents, for people who work on man
 
 - **Scopes.** Every memory belongs to one or more scopes, such as a project, a topic, a machine or a session. A session receives only the memories of the scopes active in it.
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
-- **Critical memories.** Rules are delivered in full whenever they apply; other memories are delivered as a one-line index and read on demand. A tool call that brings a new rule into play is held until the agent has been given the rule.
-- **Reminders.** Optionally, rules are delivered again after a set number of context tokens.
+- **Critical memories.** Critical memories are delivered in full whenever they apply; other memories are delivered as a one-line index and read on demand.
+- **Interception.** A tool call that brings a critical memory into play is held until the agent has been given that memory.
+- **Reminders.** Optionally, critical memories are delivered again after a set number of context tokens.
 - **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one.
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
 - **Statistics.** Every trigger match, delivery and fetch is recorded, so unused memories are visible.
