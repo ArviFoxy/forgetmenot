@@ -123,7 +123,7 @@ These are requirements, checked by tests:
 - `cargo test --workspace` under 60 s
 - `POST /hook` p99 under 50 ms on loopback with the example store
 - `forgetmenot-hook` end to end under 30 ms with a 40 MB transcript
-- `npm test` under 30 s
+- `npm test` and `npx playwright test` together under 5 minutes
 
 ## License
 
