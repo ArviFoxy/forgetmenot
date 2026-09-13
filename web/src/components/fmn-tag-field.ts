@@ -11,6 +11,7 @@ import {
   filterSuggestions,
   removeLastTag,
   removeTag,
+  setSingleTag,
 } from '../model/tagField';
 
 export interface TagsChange {
@@ -23,6 +24,7 @@ export class FmnTagField extends PageElement {
     suggestions: { attribute: false },
     label: { type: String },
     showLabel: { type: Boolean },
+    single: { type: Boolean },
     placeholder: { type: String },
     text: { state: true },
     activeIndex: { state: true },
@@ -34,6 +36,8 @@ export class FmnTagField extends PageElement {
   /** The name the field answers to; always set, shown only when asked for. */
   label = 'Tags';
   showLabel = false;
+  /** One value rather than a list: a new choice replaces the one before it. */
+  single = false;
   placeholder = 'Type to search, Enter to add';
 
   private text = '';
@@ -46,11 +50,11 @@ export class FmnTagField extends PageElement {
   }
 
   private offered(): string[] {
-    return filterSuggestions(this.suggestions, this.value, this.text);
+    return filterSuggestions(this.suggestions, this.single ? [] : this.value, this.text);
   }
 
   private choose(id: string): void {
-    this.emit(addTag(this.value, id));
+    this.emit(this.single ? setSingleTag(id) : addTag(this.value, id));
     this.text = '';
     this.activeIndex = 0;
     this.open = false;

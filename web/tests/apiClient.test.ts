@@ -260,3 +260,29 @@ test('a write with a message is sent without the base version or the message', a
   expect(sent.base_version).toBe('a'.repeat(40));
   expect(fixture.requests[0]?.url).toBe('/api/memories/sessions/alpha/s1/notes');
 });
+
+test('a pattern is checked somewhere other than the validate endpoint, or its answer is lost', async () => {
+  fixture = await serveOnce((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: false, error: 'regex parse error: unclosed group' }));
+  });
+  const client = createApiClient(fixture.baseUrl);
+
+  const validity = await client.validatePattern('(');
+
+  expect(validity).toEqual({ ok: false, error: 'regex parse error: unclosed group' });
+  expect(fixture.requests[0]?.method).toBe('POST');
+  expect(fixture.requests[0]?.url).toBe('/api/triggers/validate');
+  expect(JSON.parse(fixture.requests[0]?.body ?? '{}')).toEqual({ pattern: '(' });
+});
+
+test('the machine list is passed on wrapped in the object the server sends', async () => {
+  fixture = await serveOnce((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ machines: ['alpha', 'beta'] }));
+  });
+  const client = createApiClient(fixture.baseUrl);
+
+  expect(await client.machineIndex()).toEqual(['alpha', 'beta']);
+  expect(fixture.requests[0]?.url).toBe('/api/machines');
+});

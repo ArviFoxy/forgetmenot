@@ -15,6 +15,15 @@ export function addTag(chosen: string[], text: string): string[] {
   return [...chosen, tag];
 }
 
+/**
+ * The one chosen id for a field that holds a single name: what is typed replaces
+ * what was there, and an empty text clears it.
+ */
+export function setSingleTag(text: string): string[] {
+  const tag = cleanTag(text);
+  return tag === '' ? [] : [tag];
+}
+
 export function removeTag(chosen: string[], tag: string): string[] {
   return chosen.filter((entry) => entry !== tag);
 }

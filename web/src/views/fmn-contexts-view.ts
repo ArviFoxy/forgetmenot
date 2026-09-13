@@ -59,7 +59,7 @@ export class FmnContextsView extends PageElement {
                     >
                   </td>
                   <td class="number">${row.delivered_count}</td>
-                  <td class="nowrap">${row.last_seen}</td>
+                  <td class="nowrap moment">${row.last_seen}</td>
                 </tr>`,
               )}
             </tbody>

@@ -1,0 +1,44 @@
+# The container the Playwright suite runs in, so the screenshots are recorded and
+# compared on one machine: locally with `npm run e2e:visual`, in CI with
+#   docker compose -f web/e2e/compose.yml run --rm playwright
+name: forgetmenot-e2e
+
+services:
+  playwright:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # The repository is mounted where it lives, so a path in a failure message means
+    # the same thing inside and outside.
+    # FMN_REPO is the checkout path; CI sets it to its workspace.
+    working_dir: ${FMN_REPO:-/home/arvi/forgetmenot}
+    volumes:
+      - ../..:${FMN_REPO:-/home/arvi/forgetmenot}
+      # Its own build output, so a run cannot disturb what the host has built. The
+      # packages are the repository's own: `npm ci` installs the same lock file the
+      # host does, on the same platform.
+      - cargo-target:/cargo-target
+      - cargo-registry:/opt/cargo/registry
+      - cargo-git:/opt/cargo/git
+    environment:
+      CI: "1"
+      # What to pass on to Playwright, e.g. --update-snapshots when re-recording.
+      FMN_PLAYWRIGHT_ARGS: ${FMN_PLAYWRIGHT_ARGS:-}
+    init: true
+    # A browser needs more than the default 64 MB of shared memory.
+    shm_size: 1gb
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+        cargo build --release -p forgetmenot-server
+        cd web
+        npm ci
+        npm run build
+        npx playwright test $${FMN_PLAYWRIGHT_ARGS:-}
+
+volumes:
+  cargo-target:
+  cargo-registry:
+  cargo-git:

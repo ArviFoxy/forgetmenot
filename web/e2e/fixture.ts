@@ -9,7 +9,9 @@ import path from 'node:path';
 /** The repository root, from this file's place in it. */
 export const repoRoot = path.resolve(import.meta.dirname, '../..');
 
-export const serverBinary = path.join(repoRoot, 'target', 'release', 'forgetmenot');
+/** Cargo writes where it is told; in the container that is outside the repository. */
+const targetDirectory = process.env.CARGO_TARGET_DIR ?? path.join(repoRoot, 'target');
+export const serverBinary = path.join(targetDirectory, 'release', 'forgetmenot');
 export const exampleStore = path.join(repoRoot, 'examples', 'store');
 export const webDist = path.join(repoRoot, 'web', 'dist');
 

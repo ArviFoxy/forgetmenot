@@ -4,7 +4,7 @@ import type { MemorySummary, ScopeDoc, Trigger, ValidationError } from '../api/t
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
 import { frontendAuthor } from '../model/author';
-import { parseIdList } from '../model/triggers';
+import { fieldOf, parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate, onStoreChange } from '../navigation';
 import { takeDeleteIntent } from '../intent';
 import { paths } from '../routes';
@@ -46,7 +46,7 @@ function scopeText(scope: { implies: string[]; triggers: Trigger[] }): string {
   const lines = [`implies: ${scope.implies.join(', ')}`];
   for (const trigger of scope.triggers) {
     lines.push(
-      `trigger: ${trigger.on} ${trigger.pattern}${trigger.machine ? ` @${trigger.machine}` : ''}`,
+      `trigger: ${fieldOf(trigger)} ${trigger.pattern}${trigger.machine ? ` @${trigger.machine}` : ''}`,
     );
   }
   return lines.join('\n');
@@ -81,6 +81,8 @@ export class FmnScopePage extends PageElement {
   private readonly memories = new Resource<MemorySummary[]>(() => this.requestUpdate());
   /** The scope ids the Implies field offers: the other scopes with a file. */
   private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
+  /** The machine names the trigger rows and the trigger test offer. */
+  private readonly machines = new Resource<string[]>(() => this.requestUpdate());
   private loadedOptions = false;
 
   private draft: ScopeDraft | null = null;
@@ -114,6 +116,7 @@ export class FmnScopePage extends PageElement {
       void this.scopeOptions.load(async () =>
         (await api.scopeIndex()).map((scope) => scope.id).filter((id) => id !== this.scopeId),
       );
+      void this.machines.load(() => api.machineIndex());
     }
     if (this.scopeId !== '' && this.loadedId !== this.scopeId) {
       this.loadedId = this.scopeId;
@@ -281,6 +284,7 @@ export class FmnScopePage extends PageElement {
       ${editing
         ? html`<fmn-trigger-rows
             .triggers=${draft.triggers}
+            .machines=${this.machines.value ?? []}
             @fmn-triggers-change=${(event: CustomEvent<{ triggers: Trigger[] }>) =>
               this.change({ triggers: event.detail.triggers })}
           ></fmn-trigger-rows>`
@@ -298,7 +302,7 @@ export class FmnScopePage extends PageElement {
                 <tbody>
                   ${draft.triggers.map(
                     (trigger) => html`<tr>
-                      <td class="nowrap">${trigger.on}</td>
+                      <td class="nowrap">${fieldOf(trigger)}</td>
                       <td><code>${trigger.pattern}</code></td>
                       <td>${trigger.machine ?? ''}</td>
                     </tr>`,
@@ -415,7 +419,11 @@ export class FmnScopePage extends PageElement {
       ${this.renderTriggers(scope, draft)}
       <h2>Memories</h2>
       ${this.renderMemories()}
-      <fmn-trigger-test heading="Trigger test" idPrefix="scope-test"></fmn-trigger-test>
+      <fmn-trigger-test
+        heading="Trigger test"
+        idPrefix="scope-test"
+        .machines=${this.machines.value ?? []}
+      ></fmn-trigger-test>
     `;
   }
 

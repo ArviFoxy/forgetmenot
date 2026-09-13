@@ -67,7 +67,7 @@ export class FmnStatsView extends PageElement {
               <td class="number">${row.shown_full_stale}</td>
               <td class="number">${row.fetched_full}</td>
               <td class="number">${row.retracted}</td>
-              <td class="nowrap">${row.last_shown ?? ''}</td>
+              <td class="nowrap moment">${row.last_shown ?? ''}</td>
             </tr>`,
           )}
         </tbody>
@@ -140,7 +140,7 @@ export class FmnStatsView extends PageElement {
         <tbody>
           ${FmnStatsView.sorted(rows, (row) => row.day).map(
             (row) => html`<tr>
-              <td>${row.day}</td>
+              <td class="moment">${row.day}</td>
               <td class="number">${row.denies}</td>
               <td class="number">${row.events}</td>
             </tr>`,

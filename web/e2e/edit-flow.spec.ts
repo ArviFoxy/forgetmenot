@@ -351,3 +351,66 @@ test('the statistics page reports one figure per memory instead of one per deliv
   ).toBeVisible();
   await expect(page.locator('table.stats').first().locator('tbody tr').first()).toBeVisible();
 });
+
+test('a trigger created in the UI is written with an on line it was never given', async ({ page }) => {
+  const id = `any-scope-${Date.now()}`;
+  await page.goto('/scopes/new');
+  await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+
+  const row = page.locator('fmn-trigger-rows .trigger-row').first();
+  await expect(row.locator('sl-select')).toHaveJSProperty('value', 'any');
+  await row.locator('sl-input.pattern input').fill('\\bprobe\\b');
+  await page.locator('.commit-bar input').fill(`add the ${id} scope`);
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/scopes/${id}$`));
+
+  const scope = (await (await page.request.get(`/api/scopes/${id}`)).json()) as {
+    triggers: Record<string, unknown>[];
+  };
+  expect(scope.triggers).toEqual([{ pattern: '\\bprobe\\b' }]);
+  await expect(page.locator('table.data')).toContainText('any');
+});
+
+test('a pattern that is not a regex is accepted without a word about it', async ({ page }) => {
+  await page.goto('/scopes/widgets');
+  await page.getByRole('button', { name: 'Edit Triggers' }).click();
+  const row = page.locator('fmn-trigger-rows .trigger-row').first();
+  await row.locator('sl-input.pattern input').fill('\\bwidget(s?\\b');
+
+  // The message is the regex crate's own, so only its first line is asserted on.
+  await expect(row.locator('.field-error')).toContainText('regex parse error');
+
+  await row.locator('sl-input.pattern input').fill('\\bwidgets?\\b');
+  await expect(row.locator('.field-error')).toHaveCount(0);
+});
+
+test('the machine field offers nothing and keeps nothing', async ({ page }) => {
+  const id = `machine-scope-${Date.now()}`;
+  await page.goto('/scopes/new');
+  await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+
+  const row = page.locator('fmn-trigger-rows .trigger-row').first();
+  await row.locator('sl-input.pattern input').fill('\\bprobe\\b');
+  const machine = row.locator('fmn-tag-field sl-input input');
+  await machine.click();
+  const offered = row.locator('fmn-tag-field sl-menu-item');
+  await expect(offered.first()).toBeVisible();
+  await expect(offered).toContainText(['alpha', 'beta']);
+  // The list is picked from with the keyboard, which is the path a mouse click ends
+  // in as well: the highlighted row is the one Enter takes.
+  await machine.fill('bet');
+  await expect(offered).toHaveCount(1);
+  await machine.press('Enter');
+  await expect(row.locator('fmn-tag-field sl-tag')).toHaveText('beta');
+
+  await page.locator('.commit-bar input').fill(`add the ${id} scope`);
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/scopes/${id}$`));
+
+  const scope = (await (await page.request.get(`/api/scopes/${id}`)).json()) as {
+    triggers: Record<string, unknown>[];
+  };
+  expect(scope.triggers).toEqual([{ pattern: '\\bprobe\\b', machine: 'beta' }]);
+});

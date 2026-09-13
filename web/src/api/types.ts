@@ -3,7 +3,12 @@
 
 export type MemoryKind = 'critical' | 'knowledge';
 export type MemorySource = 'user' | 'assistant';
+/**
+ * Which of the hook's texts a trigger matches. `any` is not one of the texts: it
+ * stands for every one of them, and is what a trigger without an `on` line means.
+ */
 export type TriggerField =
+  | 'any'
   | 'user_message'
   | 'assistant_message'
   | 'tool_name'
@@ -52,9 +57,21 @@ export interface MemoryDoc {
 }
 
 export interface Trigger {
-  on: TriggerField;
+  /** Absent means `any`: a file that says nothing about `on` is written back the same. */
+  on?: TriggerField;
   pattern: string;
+  /** Only a `working_directory` or `any` trigger may name a machine. */
   machine?: string;
+}
+
+/** Whether a pattern compiles, with the regex engine's own message when it does not. */
+export interface PatternValidity {
+  ok: boolean;
+  error?: string;
+}
+
+export interface MachineList {
+  machines: string[];
 }
 
 export interface ScopeDoc {

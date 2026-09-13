@@ -6,6 +6,7 @@ import {
   filterSuggestions,
   removeLastTag,
   removeTag,
+  setSingleTag,
   suggestScopes,
 } from '../src/model/tagField';
 
@@ -35,6 +36,11 @@ test('removing a chip takes the wrong one, and backspace takes none', () => {
   expect(removeTag(['a', 'b', 'c'], 'b')).toEqual(['a', 'c']);
   expect(removeLastTag(['a', 'b'])).toEqual(['a']);
   expect(removeLastTag([])).toEqual([]);
+});
+
+test('a single-value field keeps what was there when a new value is picked', () => {
+  expect(setSingleTag('beta')).toEqual(['beta']);
+  expect(setSingleTag('  ')).toEqual([]);
 });
 
 test('the list offers ids that are already chosen', () => {

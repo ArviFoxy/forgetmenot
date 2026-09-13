@@ -8,9 +8,11 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "e2e": "playwright test",
+    "e2e": "FMN_SKIP_SCREENSHOTS=1 playwright test",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e:visual": "docker compose -f e2e/compose.yml run --rm playwright",
+    "e2e:update": "FMN_PLAYWRIGHT_ARGS=--update-snapshots docker compose -f e2e/compose.yml run --rm playwright"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

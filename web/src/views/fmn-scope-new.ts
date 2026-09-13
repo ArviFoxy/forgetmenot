@@ -34,12 +34,15 @@ export class FmnScopeNew extends PageElement {
   private failure: string | null = null;
 
   private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
+  /** The machine names the trigger rows offer. */
+  private readonly machines = new Resource<string[]>(() => this.requestUpdate());
   private loadedOptions = false;
 
   override updated(): void {
     if (this.loadedOptions) return;
     this.loadedOptions = true;
     void this.scopeOptions.load(async () => (await api.scopeIndex()).map((scope) => scope.id));
+    void this.machines.load(() => api.machineIndex());
   }
 
   private async create(): Promise<void> {
@@ -99,6 +102,7 @@ export class FmnScopeNew extends PageElement {
       <h2>Triggers</h2>
       <fmn-trigger-rows
         .triggers=${this.triggers}
+        .machines=${this.machines.value ?? []}
         @fmn-triggers-change=${(event: CustomEvent<{ triggers: Trigger[] }>) => {
           this.triggers = event.detail.triggers;
         }}

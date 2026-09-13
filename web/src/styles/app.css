@@ -747,6 +747,14 @@ h3 {
   margin-bottom: var(--sl-spacing-medium);
 }
 
+/* Figures of one width in the cells that carry counts and times, so a column keeps
+   its place when a count grows a digit or a time ticks on. Names keep the ordinary
+   figures, which sit better in a word like session-1. */
+.data .number,
+.data .moment {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- Trigger rows ---------- */
 
 .trigger-rows {
@@ -770,6 +778,28 @@ h3 {
 .trigger-row sl-icon-button {
   margin-bottom: 2px;
   font-size: 1rem;
+}
+
+.trigger-row .pattern-field {
+  min-width: 0;
+}
+
+/* What the regex engine said about the pattern above, while it is typed. */
+.field-error {
+  margin: var(--sl-spacing-3x-small) 0 0;
+  color: var(--sl-color-danger-700);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.trigger-row .pattern[data-invalid]::part(base) {
+  border-color: var(--sl-color-danger-600);
+}
+
+/* The machine field of a trigger that cannot carry one: there, and not usable. */
+.trigger-row sl-tooltip {
+  min-width: 0;
 }
 
 @media (max-width: 700px) {

@@ -3,13 +3,16 @@ import { api } from '../api/client';
 import type { TriggerField, TriggerTestResult } from '../api/types';
 import { PageElement } from '../lib/element';
 import { paths } from '../routes';
-import { triggerFields } from '../model/triggers';
+import { triggerFieldChoices } from '../model/triggers';
+import './fmn-tag-field';
+import type { TagsChange } from './fmn-tag-field';
 
 /** Sends a field, a text and a machine to the trigger test endpoint and lists what fired. */
 export class FmnTriggerTest extends PageElement {
   static override properties: PropertyDeclarations = {
     heading: { type: String },
     idPrefix: { type: String },
+    machines: { attribute: false },
     field: { state: true },
     text: { state: true },
     machine: { state: true },
@@ -19,8 +22,12 @@ export class FmnTriggerTest extends PageElement {
 
   heading = 'Trigger test';
   idPrefix = 'test';
+  /** The machine names offered under the machine field. */
+  machines: string[] = [];
 
-  private field: TriggerField = 'user_message';
+  // `any` matches the text against every trigger in the store, which is what a
+  // reader trying a text out wants first; the six texts narrow it.
+  private field: TriggerField = 'any';
   private text = '';
   private machine = '';
   private result: TriggerTestResult | null = null;
@@ -50,16 +57,19 @@ export class FmnTriggerTest extends PageElement {
               this.field = (event.target as HTMLInputElement).value as TriggerField;
             }}
           >
-            ${triggerFields.map((name) => html`<sl-option value=${name}>${name}</sl-option>`)}
+            ${triggerFieldChoices.map((name) => html`<sl-option value=${name}>${name}</sl-option>`)}
           </sl-select>
-          <sl-input
-            size="small"
+          <fmn-tag-field
+            single
+            showLabel
             label="Machine"
-            value=${this.machine}
-            @sl-input=${(event: Event) => {
-              this.machine = (event.target as HTMLInputElement).value;
+            placeholder="Any machine"
+            .value=${this.machine === '' ? [] : [this.machine]}
+            .suggestions=${this.machines}
+            @fmn-tags-change=${(event: CustomEvent<TagsChange>) => {
+              this.machine = event.detail.value[0] ?? '';
             }}
-          ></sl-input>
+          ></fmn-tag-field>
           <sl-textarea
             size="small"
             label="Text"

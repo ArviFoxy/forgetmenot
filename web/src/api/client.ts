@@ -7,11 +7,13 @@ import type {
   DenyDayRow,
   HistoryEntry,
   LatencyRow,
+  MachineList,
   MemoryCreateRequest,
   MemoryDoc,
   MemoryIndexFilter,
   MemoryStatsRow,
   MemorySummary,
+  PatternValidity,
   ReviewReport,
   ScopeCreateRequest,
   ScopeDoc,
@@ -82,6 +84,10 @@ export interface ApiClient {
   deleteScope(id: string, request: DeleteRequest): Promise<WriteOutcome<ScopeDoc, DeleteResponse>>;
   scopeHistory(id: string): Promise<Commit[]>;
   testTriggers(request: TriggerTestRequest): Promise<TriggerTestResult>;
+  /** Whether one pattern is a regex the store would accept. */
+  validatePattern(pattern: string): Promise<PatternValidity>;
+  /** Every machine the server has heard from, for the fields that name one. */
+  machineIndex(): Promise<string[]>;
   contexts(): Promise<ContextRow[]>;
   review(): Promise<ReviewReport>;
   memoryStats(): Promise<MemoryStatsRow[]>;
@@ -187,6 +193,21 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
       }
       return (await response.json()) as TriggerTestResult;
     },
+
+    async validatePattern(pattern) {
+      const url = `${root}/api/triggers/validate`;
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ pattern }),
+      });
+      if (!response.ok) {
+        throw new RequestFailed('POST', url, response.status, await response.text());
+      }
+      return (await response.json()) as PatternValidity;
+    },
+
+    machineIndex: async () => (await read<MachineList>('/api/machines')).machines,
 
     contexts: () => read<ContextRow[]>('/api/contexts'),
     review: () => read<ReviewReport>('/api/review'),
