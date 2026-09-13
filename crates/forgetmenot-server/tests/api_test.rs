@@ -688,6 +688,41 @@ fn a_scope_write_with_a_pattern_that_does_not_compile_is_refused_and_makes_no_co
     );
 }
 
+/// Detects a write path that refuses `machine` on a trigger that names a text
+/// field: `machine` is a plain conjunct on every trigger, so a scope restricted
+/// to the tools of one machine must be savable through the API that the scope
+/// page writes with.
+#[test]
+fn a_scope_write_with_a_machine_on_a_tool_name_trigger_is_accepted_and_kept() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let (status, scope) = server.api("GET", "/api/scopes/widgets", None);
+    assert_eq!(status, 200, "the scope must be readable, got {scope}");
+
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/scopes/widgets",
+        Some(&json!({
+            "implies": scope["implies"],
+            "triggers": [{ "on": "tool_name", "pattern": "Bash", "machine": "alpha" }],
+            "base_version": scope["version"],
+            "author": AUTHOR,
+            "message": "restrict the tool trigger to alpha",
+        })),
+    );
+    assert_eq!(
+        status, 200,
+        "a machine on a tool_name trigger must be accepted, got {answer}"
+    );
+
+    let (status, saved) = server.api("GET", "/api/scopes/widgets", None);
+    assert_eq!(status, 200, "the scope must be readable again, got {saved}");
+    assert_eq!(
+        saved["triggers"],
+        json!([{ "on": "tool_name", "pattern": "Bash", "machine": "alpha" }]),
+        "the machine must survive the write, got {saved}"
+    );
+}
+
 /// Detects a reader that rejects the `type` label scope files used to carry,
 /// which would make every scope of a store written before the label was dropped
 /// unreadable, and a writer that puts the label back into the file it saves.

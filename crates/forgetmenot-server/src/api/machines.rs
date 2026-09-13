@@ -1,8 +1,8 @@
 //! `GET /api/machines`: every machine name this server knows.
 //!
 //! The frontend offers these wherever a machine is picked: the machine a trigger
-//! test pretends to run on, and the machine a `working_directory` or `any`
-//! trigger is qualified for. A name is worth offering as soon as the server has
+//! test pretends to run on, and the machine a trigger is qualified for. A name
+//! is worth offering as soon as the server has
 //! ever heard from the machine, so the list is the contexts it holds together
 //! with the machines the statistics log recorded.
 

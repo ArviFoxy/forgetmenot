@@ -1,30 +1,10 @@
-// Everywhere a machine name appears: the value as a reader sees it, and the field
-// that changes it. One module, so the word a machine is shown by and the list it is
-// picked from cannot differ between the trigger table, the trigger test and
-// whatever names a machine next.
+// The field a machine name is typed into or picked from, shared by everything that
+// names a machine, so the list it is picked from cannot differ between places.
 
 import { html, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { PageElement } from '../lib/element';
-import { machineDisplay } from '../model/triggers';
 import './fmn-tag-field';
 import type { TagsChange } from './fmn-tag-field';
-
-/** The machine a thing is limited to, or `Any` when it is limited to none. */
-export class FmnMachineValue extends PageElement {
-  static override properties: PropertyDeclarations = {
-    machine: { type: String },
-  };
-
-  machine = '';
-
-  override render(): TemplateResult {
-    const shown = machineDisplay(this.machine);
-    // `Any` is set apart from a name, because a machine could be called that.
-    return shown.any
-      ? html`<em class="machine-any muted">${shown.text}</em>`
-      : html`<span class="machine-name">${shown.text}</span>`;
-  }
-}
 
 /** One machine name, typed freely or picked from the ones the server knows. */
 export class FmnMachineField extends PageElement {
@@ -64,5 +44,4 @@ export interface MachineChange {
   machine: string;
 }
 
-customElements.define('fmn-machine-value', FmnMachineValue);
 customElements.define('fmn-machine-field', FmnMachineField);

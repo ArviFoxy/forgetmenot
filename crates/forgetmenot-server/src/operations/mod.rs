@@ -336,7 +336,7 @@ pub struct TriggerTestRequest {
     pub field: TriggerField,
     pub text: String,
     /// The machine the text is supposed to come from, which decides whether a
-    /// machine-qualified `working_directory` or `any` trigger applies.
+    /// machine-qualified trigger applies.
     pub machine: String,
 }
 

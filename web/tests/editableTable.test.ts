@@ -86,24 +86,3 @@ test('every remove control carries the same label, so one row cannot be told fro
   expect(labels).toEqual(['Remove row 1', 'Remove row 2']);
 });
 
-test('a machine with no name reads as a name', async () => {
-  const element = document.createElement('fmn-machine-value');
-  element.setAttribute('machine', '');
-  document.body.append(element);
-  await (element as unknown as { updateComplete: Promise<unknown> }).updateComplete;
-
-  const any = element.querySelector('.machine-any');
-  expect(any?.textContent?.trim()).toBe('Any');
-  expect(any?.tagName).toBe('EM');
-  expect(element.querySelector('.machine-name')).toBeNull();
-});
-
-test('a machine that has a name is shown as though it had none', async () => {
-  const element = document.createElement('fmn-machine-value');
-  element.setAttribute('machine', 'alpha');
-  document.body.append(element);
-  await (element as unknown as { updateComplete: Promise<unknown> }).updateComplete;
-
-  expect(element.querySelector('.machine-name')?.textContent?.trim()).toBe('alpha');
-  expect(element.querySelector('.machine-any')).toBeNull();
-});

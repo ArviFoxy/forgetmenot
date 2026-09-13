@@ -1,17 +1,11 @@
 import { expect, test, vi } from 'vitest';
 import type { Trigger } from '../src/api/types';
 import { PatternChecker } from '../src/model/patternCheck';
-import {
-  fieldOf,
-  takesMachine,
-  triggerFieldChoices,
-  withField,
-  withMachine,
-} from '../src/model/triggers';
+import { fieldOf, triggerFieldChoices, withField, withMachine } from '../src/model/triggers';
 
 // The source of these expectations is the store's own rule for triggers: a trigger
-// without `on` matches every text, only an `any` or `working_directory` trigger may
-// name a machine, and a pattern is a regex the server compiles.
+// without `on` matches every text, `machine` is a plain condition alongside the
+// pattern on every trigger, and a pattern is a regex the server compiles.
 
 test('the field list leaves out any, or offers it somewhere other than first', () => {
   expect(triggerFieldChoices[0]).toBe('any');
@@ -29,20 +23,15 @@ test('choosing any writes an on line anyway', () => {
   expect(Object.keys(withField(narrowed, 'any'))).not.toContain('on');
 });
 
-test('choosing a text field loses the pattern, or keeps a machine that field cannot carry', () => {
+test('choosing a field loses the pattern, or drops the machine the trigger names', () => {
   const anywhere: Trigger = { pattern: 'rocket', machine: 'alpha' };
-  expect(withField(anywhere, 'working_directory')).toEqual({
-    on: 'working_directory',
-    pattern: 'rocket',
-    machine: 'alpha',
-  });
-  expect(withField(anywhere, 'user_message')).toEqual({ on: 'user_message', pattern: 'rocket' });
+  for (const field of triggerFieldChoices.filter((name) => name !== 'any')) {
+    expect(withField(anywhere, field)).toEqual({ on: field, pattern: 'rocket', machine: 'alpha' });
+  }
+  expect(withField(anywhere, 'any')).toEqual({ pattern: 'rocket', machine: 'alpha' });
 });
 
-test('a machine is allowed on a text field, or cannot be cleared', () => {
-  expect(takesMachine('any')).toBe(true);
-  expect(takesMachine('working_directory')).toBe(true);
-  expect(takesMachine('tool_result')).toBe(false);
+test('a machine cannot be set from a padded name, or cleared', () => {
   expect(withMachine({ pattern: 'rocket' }, ' beta ')).toEqual({ pattern: 'rocket', machine: 'beta' });
   expect(withMachine({ pattern: 'rocket', machine: 'beta' }, '')).toEqual({ pattern: 'rocket' });
 });

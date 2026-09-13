@@ -25,8 +25,9 @@ use crate::store::scope::TriggerField;
 #[derive(Clone, Debug)]
 struct CompiledTrigger {
     scope: ScopeId,
-    /// Present only for `working_directory` and `any` triggers, where a path
-    /// means different things on different machines.
+    /// The machine the trigger is restricted to, absent when it fires on every
+    /// machine. A plain conjunct alongside the pattern, whatever field the
+    /// trigger names.
     machine: Option<String>,
     pattern: String,
 }

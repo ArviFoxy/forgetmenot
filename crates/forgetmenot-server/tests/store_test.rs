@@ -678,38 +678,39 @@ fn a_trigger_pattern_that_does_not_compile_is_reported_with_its_error() {
     );
 }
 
-/// Detects a machine qualifier accepted on a field where it means nothing: a
-/// message is the same text on every machine, so a qualifier there would make a
-/// trigger that never fires for anyone else and look deliberate.
+/// Detects a validation rule that refuses `machine` on some trigger fields:
+/// `machine` is a plain conjunct, so a trigger on any field carrying one is a
+/// scope that turns on where the pattern matches on that machine. A rule that
+/// refused it on, say, `tool_name` would make such a trigger unwritable and the
+/// scope unreachable.
 #[test]
-fn a_machine_qualifier_outside_working_directory_is_reported() {
-    let store = store_with(&[(
-        "scopes/widgets.yaml",
-        b"id: widgets\ntriggers:\n  - on: user_message\n    pattern: widget\n    machine: alpha\n",
-    )]);
-    assert_reports(
-        &validate(&store.catalog()),
-        "misplaced machine qualifier",
-        |error| matches!(error, ValidationError::MisplacedMachineQualifier { machine, .. } if machine == "alpha"),
-    );
-}
-
-/// Detects a machine qualifier refused on an `any` trigger: the texts an `any`
-/// trigger matches include the working directory and the paths the tools are
-/// called with, so restricting one to a machine is as meaningful there as on a
-/// directory trigger, and refusing it would make such a trigger unwritable.
-#[test]
-fn a_machine_qualifier_on_an_any_trigger_is_accepted() {
-    let store = store_with(&[(
-        "scopes/workshop.yaml",
-        b"id: workshop\ntriggers:\n  - pattern: '/workshop(/|$)'\n    machine: alpha\n",
-    )]);
-    let report = validate(&store.catalog());
-    assert!(
-        report.is_clean(),
-        "a machine-qualified any trigger was reported: {:#?}",
-        report.errors()
-    );
+fn a_machine_qualifier_is_accepted_on_a_trigger_of_every_field() {
+    for on in [
+        "",
+        "on: any\n    ",
+        "on: user_message\n    ",
+        "on: assistant_message\n    ",
+        "on: tool_name\n    ",
+        "on: tool_input\n    ",
+        "on: tool_result\n    ",
+        "on: working_directory\n    ",
+    ] {
+        let file =
+            format!("id: workshop\ntriggers:\n  - {on}pattern: workshop\n    machine: alpha\n");
+        let store = store_with(&[("scopes/workshop.yaml", file.as_bytes())]);
+        let catalog = store.catalog();
+        let report = validate(&catalog);
+        assert!(
+            report.is_clean(),
+            "a machine-qualified trigger with {on:?} was reported: {:#?}",
+            report.errors()
+        );
+        assert_eq!(
+            catalog.triggers().len(),
+            1,
+            "the machine-qualified trigger with {on:?} was not compiled into the index"
+        );
+    }
 }
 
 /// Detects a scope whose declared id differs from its file name, which would

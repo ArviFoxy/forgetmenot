@@ -6,7 +6,7 @@ import { api } from '../api/client';
 import type { Trigger, TriggerField } from '../api/types';
 import { PageElement } from '../lib/element';
 import { PatternChecker } from '../model/patternCheck';
-import { fieldOf, takesMachine, triggerFieldChoices, withField, withMachine } from '../model/triggers';
+import { fieldOf, triggerFieldChoices, withField, withMachine } from '../model/triggers';
 import './fmn-editable-table';
 import './fmn-machine';
 import type { EditableColumn, RowEvent } from './fmn-editable-table';
@@ -83,19 +83,15 @@ export class FmnTriggerTable extends PageElement {
         label: 'Machine',
         width: 'minmax(0, 1fr)',
         cell: (trigger, index) =>
-          takesMachine(fieldOf(trigger))
-            ? html`<fmn-machine-field
-                class="cell-control"
-                machine=${trigger.machine ?? ''}
-                .machines=${this.machines}
-                @fmn-machine-change=${(event: CustomEvent<MachineChange>) => {
-                  event.stopPropagation();
-                  this.replace(index, withMachine(trigger, event.detail.machine));
-                }}
-              ></fmn-machine-field>`
-            : html`<sl-tooltip content="Only an any or working_directory trigger names a machine">
-                <fmn-machine-value machine=""></fmn-machine-value>
-              </sl-tooltip>`,
+          html`<fmn-machine-field
+            class="cell-control"
+            machine=${trigger.machine ?? ''}
+            .machines=${this.machines}
+            @fmn-machine-change=${(event: CustomEvent<MachineChange>) => {
+              event.stopPropagation();
+              this.replace(index, withMachine(trigger, event.detail.machine));
+            }}
+          ></fmn-machine-field>`,
       },
     ];
   }

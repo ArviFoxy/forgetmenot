@@ -31,7 +31,7 @@ One server serves every machine on a network, and subagents receive the same mem
 
 **Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers.
 
-**Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its working directory; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
+**Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and the session's working directory; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
 
 **Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A subagent starts with the scopes its parent had active.
 
@@ -63,7 +63,7 @@ triggers:
     machine: alpha
 ```
 
-A trigger with no `on` is matched against every text of the session; `on` is one of `any`, `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result` or `working_directory`. `machine` restricts a trigger to one machine, and only a `working_directory` trigger or one matched against every text may carry it, because a path means different things on different machines while a message does not.
+A trigger with no `on` is matched against every text of the session; `on` is one of `any`, `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result` or `working_directory`. `working_directory` is the working directory of the Claude Code session as Claude Code reports it in every hook event: the directory Claude Code was started in, and after the agent changes directory in its shell, that directory. It is matched when the session starts, before every tool call, and when it changes. `machine` restricts a trigger to one machine: the trigger fires only when the session runs on that machine and the pattern matches.
 
 A memory file uses Claude Code's own memory format, with forgetmenot's fields inside `metadata`:
 

@@ -23,31 +23,14 @@ export function fieldOf(trigger: Trigger): TriggerField {
 }
 
 /**
- * A path means different things on different machines while a message does not, so
- * only these two fields may be narrowed to one machine.
- */
-export function takesMachine(field: TriggerField): boolean {
-  return field === 'any' || field === 'working_directory';
-}
-
-/**
  * The trigger with its field changed. `any` is written by leaving `on` out, so that
- * the file keeps the shape the server writes; a machine that the new field cannot
- * carry goes with it.
+ * the file keeps the shape the server writes; the machine is a condition of its own
+ * and survives the change of field.
  */
 export function withField(trigger: Trigger, field: TriggerField): Trigger {
   const { machine, pattern } = trigger;
-  const kept = takesMachine(field) && machine !== undefined && machine !== '' ? { machine } : {};
+  const kept = machine !== undefined && machine !== '' ? { machine } : {};
   return field === 'any' ? { pattern, ...kept } : { on: field, pattern, ...kept };
-}
-
-/**
- * How a machine is shown: the name, or `Any` for a trigger that names none. The two
- * are told apart by `any`, because a machine could itself be called Any.
- */
-export function machineDisplay(machine: string | undefined): { text: string; any: boolean } {
-  const named = (machine ?? '').trim();
-  return named === '' ? { text: 'Any', any: true } : { text: named, any: false };
 }
 
 /** The trigger with its machine changed; an empty name is no machine at all. */

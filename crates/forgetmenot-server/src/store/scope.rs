@@ -78,9 +78,9 @@ pub struct Trigger {
     pub on: Option<TriggerField>,
     /// A regex in the syntax of the `regex` crate.
     pub pattern: String,
-    /// Restricts the trigger to one machine. Valid with `on: working_directory`
-    /// and with `any`, because a path means different things on different
-    /// machines while a message does not.
+    /// Restricts the trigger to one machine: the trigger fires when the session
+    /// runs on that machine and the pattern matches. A plain conjunct, so it is
+    /// meaningful whatever `on` the trigger names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
 }
@@ -89,16 +89,6 @@ impl Trigger {
     /// The field this trigger matches on: `any` when the file does not say.
     pub fn field(&self) -> TriggerField {
         self.on.unwrap_or(TriggerField::Any)
-    }
-
-    /// Whether a machine qualifier means anything on this trigger's field: a
-    /// path and "every text the hook sees" are machine-specific, a message is
-    /// the same text everywhere.
-    pub fn takes_machine_qualifier(&self) -> bool {
-        matches!(
-            self.field(),
-            TriggerField::WorkingDirectory | TriggerField::Any
-        )
     }
 }
 

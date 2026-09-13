@@ -702,6 +702,62 @@ fn a_machine_qualified_directory_trigger_fires_only_on_its_machine() {
     );
 }
 
+/// A line that appears only in the body of the `lathe-safety` memory built
+/// below, so that "the scope turned on" can be told apart from anything the
+/// example store delivers on its own.
+const LATHE_SAFETY_BODY: &str = "The chuck key never stays in the chuck";
+
+/// The example store with one more scope, whose only trigger is a
+/// machine-qualified `user_message` one, and one critical memory in it.
+fn store_with_a_machine_qualified_message_trigger() -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = example_store_files();
+    files.push((
+        "scopes/lathe.yaml".to_string(),
+        Some(
+            b"id: lathe\ntriggers:\n- on: user_message\n  pattern: '\\blathe\\b'\n  machine: alpha\n"
+                .to_vec(),
+        ),
+    ));
+    files.push((
+        "memories/lathe-safety.md".to_string(),
+        Some(
+            format!(
+                "---\nname: lathe-safety\ndescription: The lathe is only started with the chuck key out\nmetadata:\n  kind: critical\n  scopes:\n  - lathe\n  source: user\n---\n# Lathe safety\n\n{LATHE_SAFETY_BODY}\n"
+            )
+            .into_bytes(),
+        ),
+    ));
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// Detects a machine qualifier ignored on a trigger that names a text field, and
+/// one refused there: `machine` is a plain conjunct on every trigger, so a
+/// message trigger written for one machine must fire on that machine and stay
+/// silent on every other one, for the same message.
+#[test]
+fn a_machine_qualified_message_trigger_fires_only_on_its_machine() {
+    let server = TestServer::start(store_with_a_machine_qualified_message_trigger(), |_| {});
+    let prompt = event_with(
+        "user_prompt_submit",
+        &[("prompt", json!("set up the lathe"))],
+    );
+
+    let (_, on_its_machine) = server.hook("alpha", SOME_TOKENS, &prompt);
+    let (_, on_another_machine) = server.hook("beta", SOME_TOKENS, &prompt);
+
+    assert!(
+        context_of(&on_its_machine).contains(LATHE_SAFETY_BODY),
+        "the message trigger must fire on the machine it names, got {:?}",
+        context_of(&on_its_machine)
+    );
+    assert!(
+        !context_of(&on_another_machine).contains(LATHE_SAFETY_BODY),
+        "the same message must not fire the trigger on another machine, got {:?}",
+        context_of(&on_another_machine)
+    );
+}
+
 /// Detects a delivery record that is lost on restart, which would repeat every
 /// memory the session already holds the next time the server starts.
 #[test]

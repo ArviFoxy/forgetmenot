@@ -60,7 +60,7 @@ export interface Trigger {
   /** Absent means `any`: a file that says nothing about `on` is written back the same. */
   on?: TriggerField;
   pattern: string;
-  /** Only a `working_directory` or `any` trigger may name a machine. */
+  /** The trigger fires only on this machine; absent means every machine. */
   machine?: string;
 }
 

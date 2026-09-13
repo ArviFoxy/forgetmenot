@@ -46,16 +46,6 @@ pub enum ValidationError {
         message: String,
     },
 
-    #[error(
-        "trigger on {field} carries the machine qualifier `{machine}`, which only a working_directory or any trigger may have"
-    )]
-    MisplacedMachineQualifier {
-        path: String,
-        scope: ScopeId,
-        field: TriggerField,
-        machine: String,
-    },
-
     #[error("declares the name `{declared}` but its file stem is `{expected}`")]
     MemoryNameMismatch {
         path: String,
@@ -119,7 +109,6 @@ impl ValidationError {
             | ValidationError::InvalidScopeId { path, .. }
             | ValidationError::UnknownImpliesTarget { path, .. }
             | ValidationError::InvalidTriggerPattern { path, .. }
-            | ValidationError::MisplacedMachineQualifier { path, .. }
             | ValidationError::MemoryNameMismatch { path, .. }
             | ValidationError::UnknownScope { path, .. }
             | ValidationError::DuplicateMemoryId { path, .. }
@@ -349,16 +338,6 @@ fn validate_scope_document(
         }
     }
     for trigger in &document.triggers {
-        if let Some(machine) = &trigger.machine
-            && !trigger.takes_machine_qualifier()
-        {
-            report.push(ValidationError::MisplacedMachineQualifier {
-                path: path.to_string(),
-                scope: id.clone(),
-                field: trigger.field(),
-                machine: machine.clone(),
-            });
-        }
         if let Err(error) = regex::Regex::new(&trigger.pattern) {
             report.push(ValidationError::InvalidTriggerPattern {
                 path: path.to_string(),
