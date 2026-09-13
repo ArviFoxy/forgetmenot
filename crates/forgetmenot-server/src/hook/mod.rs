@@ -77,7 +77,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         && settings.interrupts(plan.tool_name.as_deref())
         && outcome.needs.has_critical_arrival(&catalog);
     let response = if outcome.needs.is_empty() {
-        HookResponse::empty(plan.event_name)
+        HookResponse::empty()
     } else {
         let text = render::render(&Delivery {
             key: &plan.key,

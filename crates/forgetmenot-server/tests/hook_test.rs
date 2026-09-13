@@ -591,6 +591,33 @@ fn everything_due_is_delivered_again_after_a_compaction() {
     );
 }
 
+/// Detects an answer to a compaction that carries a `hookSpecificOutput`:
+/// Claude Code validates the object it reads and takes no payload for
+/// `PostCompact`, so the hook would be reported as failing after every
+/// compaction, whether or not anything was owed.
+///
+/// Expectation source: Claude Code 2.1.x refused
+/// `{"hookSpecificOutput": {"hookEventName": "PostCompact"}}` with
+/// `hookSpecificOutput.hookEventName: expected one of "PreToolUse" | …`, and
+/// leaves every top-level key optional, so `{}` is valid for every event
+/// (observed in a session on 2026-09-13).
+#[test]
+fn a_compaction_is_answered_with_the_empty_object_and_nothing_else() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    // A session start first, so that the compaction is answered with a context
+    // that has memories owed to it rather than an empty one.
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("post_compact"));
+
+    assert_eq!(status, 200, "a compaction must be acknowledged");
+    assert_eq!(
+        answer,
+        json!({}),
+        "a compaction must be answered with the empty object, got {answer}"
+    );
+}
+
 /// Detects a subagent that starts with only the implicit scopes: it would not
 /// see the memories the session it was spawned from is working with.
 #[test]

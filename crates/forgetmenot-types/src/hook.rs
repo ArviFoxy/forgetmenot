@@ -190,11 +190,25 @@ impl HookEvent {
 /// Claude Code reads `hookSpecificOutput` and ignores keys it does not know,
 /// so the camelCase spelling below is the whole contract: a misspelled key is
 /// silently dropped rather than reported.
+///
+/// Every top-level key is optional, so `{}` is a valid answer for every event
+/// and means "seen, nothing to do". It is the only valid answer for an event
+/// Claude Code accepts no `hookSpecificOutput` for: a `PostCompact` answered
+/// with `{"hookSpecificOutput": {"hookEventName": "PostCompact"}}` was rejected
+/// by Claude Code 2.1.x with `Hook JSON output validation failed —
+/// hookSpecificOutput.hookEventName: expected one of "PreToolUse" |
+/// "UserPromptSubmit" | …`, observed 2026-09-13. The full list of accepted
+/// names is not published, so `hookSpecificOutput` is sent only when there is
+/// something in it to send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookResponse {
-    /// The single field Claude Code reads.
-    #[serde(rename = "hookSpecificOutput")]
-    pub hook_specific_output: HookSpecificOutput,
+    /// The single field Claude Code reads, absent when nothing is asked of it.
+    #[serde(
+        rename = "hookSpecificOutput",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hook_specific_output: Option<HookSpecificOutput>,
 }
 
 /// The payload of a [`HookResponse`].
@@ -220,27 +234,24 @@ pub struct HookSpecificOutput {
 
 impl HookResponse {
     /// A response that asks Claude Code for nothing: the event was seen and
-    /// nothing is due.
-    pub fn empty(event_name: impl Into<String>) -> Self {
+    /// nothing is due. It carries no event name, because an answer with nothing
+    /// in it has no reason to name the event and Claude Code refuses the names
+    /// it takes no payload for.
+    pub fn empty() -> Self {
         HookResponse {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: event_name.into(),
-                additional_context: None,
-                permission_decision: None,
-                permission_decision_reason: None,
-            },
+            hook_specific_output: None,
         }
     }
 
     /// A response that injects `text` into the session's context.
     pub fn with_context(event_name: impl Into<String>, text: impl Into<String>) -> Self {
         HookResponse {
-            hook_specific_output: HookSpecificOutput {
+            hook_specific_output: Some(HookSpecificOutput {
                 hook_event_name: event_name.into(),
                 additional_context: Some(text.into()),
                 permission_decision: None,
                 permission_decision_reason: None,
-            },
+            }),
         }
     }
 
@@ -252,12 +263,12 @@ impl HookResponse {
         context: impl Into<String>,
     ) -> Self {
         HookResponse {
-            hook_specific_output: HookSpecificOutput {
+            hook_specific_output: Some(HookSpecificOutput {
                 hook_event_name: event_name.into(),
                 additional_context: Some(context.into()),
                 permission_decision: Some("deny".to_string()),
                 permission_decision_reason: Some(reason.into()),
-            },
+            }),
         }
     }
 }
@@ -367,17 +378,43 @@ mod tests {
         );
     }
 
-    // Detects a response that carries keys with null values: Claude Code
-    // treats a present permissionDecision as a decision, so an empty response
-    // must not mention it at all.
+    // Detects an empty response that still carries a hookSpecificOutput:
+    // Claude Code validates the object and refuses an event name it takes no
+    // payload for, so every event that delivers nothing would report a failing
+    // hook.
+    // Expectation source: Claude Code 2.1.x refused
+    // `{"hookSpecificOutput": {"hookEventName": "PostCompact"}}` with
+    // `hookSpecificOutput.hookEventName: expected one of "PreToolUse" | …` and
+    // leaves every top-level key optional, so `{}` is valid for every event
+    // (observed in a session on 2026-09-13).
     #[test]
-    fn empty_response_omits_the_optional_keys_rather_than_sending_null() {
-        let encoded = serde_json::to_value(HookResponse::empty("Stop")).expect("must serialise");
+    fn empty_response_is_the_bare_object_claude_code_accepts_for_every_event() {
+        let encoded = serde_json::to_value(HookResponse::empty()).expect("must serialise");
 
         assert_eq!(
             encoded,
-            json!({ "hookSpecificOutput": { "hookEventName": "Stop" } }),
-            "an empty response must carry the event name and nothing else"
+            json!({}),
+            "a response with nothing to deliver must be the empty object"
+        );
+    }
+
+    // Detects a response that carries keys with null values: Claude Code
+    // treats a present permissionDecision as a decision, so a response that
+    // only injects context must not mention it at all.
+    #[test]
+    fn context_response_omits_the_decision_keys_rather_than_sending_null() {
+        let encoded = serde_json::to_value(HookResponse::with_context("Stop", "the memory body"))
+            .expect("must serialise");
+
+        assert_eq!(
+            encoded,
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "Stop",
+                    "additionalContext": "the memory body"
+                }
+            }),
+            "a context response must name its event and carry no decision keys"
         );
     }
 
