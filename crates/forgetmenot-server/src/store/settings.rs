@@ -110,7 +110,7 @@ impl SettingKey {
         match self {
             SettingKey::ReminderTokens => {
                 "Deliver everything that applies again after this many context tokens, critical \
-                 memories in full and knowledge memories as their index line; null turns \
+                 memories in full and knowledge memories as their description; null turns \
                  reminders off"
             }
             SettingKey::InterruptOnCritical => {
@@ -124,8 +124,8 @@ impl SettingKey {
                  alone"
             }
             SettingKey::DeliverKnowledgeIndex => {
-                "Deliver knowledge memories as index lines; without it they are only fetched on \
-                 demand"
+                "Deliver the description of each knowledge memory that applies, so the agent \
+                 can ask for the full text; off, nothing is delivered about knowledge memories"
             }
             SettingKey::ToolResultMatchLimit => {
                 "Bytes of a tool result matched against triggers; the rest is not matched"
@@ -152,7 +152,7 @@ pub struct Settings {
     pub interrupt_exempt_tools: Vec<String>,
     /// Whether a subagent starts with its parent's active scopes.
     pub subagents_inherit_scopes: bool,
-    /// Whether knowledge memories are delivered as index lines.
+    /// Whether the descriptions of knowledge memories are delivered.
     pub deliver_knowledge_index: bool,
     /// Bytes of a tool result matched against triggers.
     pub tool_result_match_limit: u64,

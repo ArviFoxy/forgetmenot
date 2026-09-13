@@ -15,6 +15,7 @@ export type RouteName =
   | 'scopeNew'
   | 'contexts'
   | 'stats'
+  | 'settings'
   | 'unknown';
 
 /** The element that shows an address, and the properties it is given. */
@@ -52,6 +53,7 @@ export const paths = {
   scope: (id: string): string => `/scopes/${encodeId(id)}`,
   contexts: (): string => '/contexts',
   stats: (): string => '/stats',
+  settings: (): string => '/settings',
 };
 
 /** The id a wildcard matched, with its slashes back in place. */
@@ -70,8 +72,10 @@ function view(name: RouteName, tag: string, properties: Record<string, string> =
 // edit route: an item's own page is where it is edited.
 const router = new UniversalRouterSync<RouteView>([
   { path: '/', action: () => view('home', 'fmn-overview-view') },
-  { path: '/memories/new', action: () => view('memoryNew', 'fmn-memory-new') },
-  { path: '/scopes/new', action: () => view('scopeNew', 'fmn-scope-new') },
+  // The same views as an item that exists, in the state of one that does not: the
+  // fields and the commit bar are the item's own, starting from nothing.
+  { path: '/memories/new', action: () => view('memoryNew', 'fmn-memory-page', { mode: 'new' }) },
+  { path: '/scopes/new', action: () => view('scopeNew', 'fmn-scope-page', { mode: 'new' }) },
   {
     path: '/memories/*id/history/:oid',
     action: ({ params }) =>
@@ -97,6 +101,7 @@ const router = new UniversalRouterSync<RouteView>([
   },
   { path: '/contexts', action: () => view('contexts', 'fmn-contexts-view') },
   { path: '/stats', action: () => view('stats', 'fmn-stats-view') },
+  { path: '/settings', action: () => view('settings', 'fmn-settings-view') },
   { path: '/*rest', action: () => view('unknown', 'fmn-unknown-view') },
 ]);
 

@@ -44,6 +44,13 @@ export class Resource<Value> {
     this.notify();
   }
 
+  /** Forgets what was loaded, for a page that no longer has anything to show. */
+  reset(): void {
+    this.attempt += 1;
+    this.state = { status: 'idle' };
+    this.notify();
+  }
+
   /** The loaded value, or null while loading or after a failure. */
   get value(): Value | null {
     return this.state.status === 'ready' ? this.state.value : null;

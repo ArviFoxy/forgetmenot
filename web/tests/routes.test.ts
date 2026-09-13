@@ -20,6 +20,7 @@ const links: Record<keyof typeof paths, string> = {
   scope: paths.scope(sessionScope),
   contexts: paths.contexts(),
   stats: paths.stats(),
+  settings: paths.settings(),
 };
 
 test('a link the app shows opens no view when its address is loaded directly', () => {
@@ -71,12 +72,17 @@ test('the address for creating a memory is read as a memory whose id is "new"', 
   const view = resolve(paths.memoryNew());
   expect(view.name).toBe('memoryNew');
   expect(view.properties.memoryId).toBeUndefined();
+  // The same view as a memory that exists, told to start from nothing.
+  expect(view.tag).toBe('fmn-memory-page');
+  expect(view.properties.mode).toBe('new');
 });
 
 test('the address for creating a scope is read as a scope whose id is "new"', () => {
   const view = resolve(paths.scopeNew());
   expect(view.name).toBe('scopeNew');
   expect(view.properties.scopeId).toBeUndefined();
+  expect(view.tag).toBe('fmn-scope-page');
+  expect(view.properties.mode).toBe('new');
 });
 
 test('the scope a new memory starts in is lost between the link and the page', () => {

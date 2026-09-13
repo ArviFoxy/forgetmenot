@@ -12,10 +12,15 @@ import '../components/fmn-commit-bar';
 import '../components/fmn-kind-icon';
 import '../components/fmn-side-by-side';
 import '../components/fmn-tag-field';
-import '../components/fmn-trigger-rows';
+import '../components/fmn-trigger-table';
 import '../components/fmn-trigger-test';
 import '../components/fmn-validation-errors';
 import type { TagsChange } from '../components/fmn-tag-field';
+
+/** A scope that is being written and has no file yet. */
+export function blankScope(): ScopeDoc {
+  return { id: '', implies: [], triggers: [], version: '' };
+}
 
 interface ScopeDraft {
   baseVersion: string;
@@ -60,10 +65,18 @@ function missingStatus(error: Error): 'failed' | 'missing' {
   return error instanceof RequestFailed && error.status === 404 ? 'missing' : 'failed';
 }
 
-/** One scope: its type, what it implies, its triggers and its memories, edited in place. */
+export type ScopeMode = 'scope' | 'new';
+
+/**
+ * One scope: what it implies, its triggers and its memories, edited in place. A
+ * scope that does not exist yet is the same page with empty fields and an id to
+ * fill in, so there is one scope view rather than two that drift apart.
+ */
 export class FmnScopePage extends PageElement {
   static override properties: PropertyDeclarations = {
     scopeId: { type: String },
+    mode: { type: String },
+    newId: { state: true },
     draft: { state: true },
     editing: { state: true },
     deleteMessage: { state: true },
@@ -74,6 +87,7 @@ export class FmnScopePage extends PageElement {
   };
 
   scopeId = '';
+  mode: ScopeMode = 'scope';
 
   private readonly scope = new Resource<ScopeDoc>(() => this.requestUpdate(), {
     classify: missingStatus,
@@ -81,10 +95,12 @@ export class FmnScopePage extends PageElement {
   private readonly memories = new Resource<MemorySummary[]>(() => this.requestUpdate());
   /** The scope ids the Implies field offers: the other scopes with a file. */
   private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
-  /** The machine names the trigger rows and the trigger test offer. */
+  /** The machine names the trigger table and the trigger test offer. */
   private readonly machines = new Resource<string[]>(() => this.requestUpdate());
   private loadedOptions = false;
 
+  /** The id of the scope being created, which is the name of its file. */
+  private newId = '';
   private draft: ScopeDraft | null = null;
   private editing: string | null = null;
   private deleteMessage = '';
@@ -95,6 +111,10 @@ export class FmnScopePage extends PageElement {
 
   private loadedId = '';
   private stopListening: (() => void) | null = null;
+
+  private get creating(): boolean {
+    return this.mode === 'new';
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -118,17 +138,24 @@ export class FmnScopePage extends PageElement {
       );
       void this.machines.load(() => api.machineIndex());
     }
-    if (this.scopeId !== '' && this.loadedId !== this.scopeId) {
-      this.loadedId = this.scopeId;
+    // The key a load is remembered by: a new scope is loaded once, from nothing.
+    const wanted = this.creating ? 'new' : this.scopeId;
+    if (wanted !== '' && this.loadedId !== wanted) {
+      this.loadedId = wanted;
       this.draft = null;
-      void this.scope.load(() => api.scope(this.scopeId));
-      void this.memories.load(() => api.memoryIndex({ scope: this.scopeId }));
+      if (this.creating) {
+        void this.scope.load(() => Promise.resolve(blankScope()));
+        this.memories.reset();
+      } else {
+        void this.scope.load(() => api.scope(this.scopeId));
+        void this.memories.load(() => api.memoryIndex({ scope: this.scopeId }));
+      }
     }
     const scope = this.scope.value;
     if (scope !== null && (this.draft === null || this.draft.baseVersion !== scope.version)) {
       this.draft = draftOf(scope);
     }
-    if (this.scopeId !== '' && takeDeleteIntent('scope', this.scopeId)) {
+    if (!this.creating && this.scopeId !== '' && takeDeleteIntent('scope', this.scopeId)) {
       this.deleteOpen = true;
       void this.showDeletePanel();
     }
@@ -181,6 +208,9 @@ export class FmnScopePage extends PageElement {
   }
 
   private dirty(scope: ScopeDoc, draft: ScopeDraft): boolean {
+    // A scope that is being created is always ready to be written: what would be
+    // saved is the whole of it, including an id that is still empty.
+    if (this.creating) return true;
     if (parseIdList(draft.impliesText).join(',') !== scope.implies.join(',')) return true;
     return !triggersEqual(draft.triggers, scope.triggers);
   }
@@ -190,22 +220,36 @@ export class FmnScopePage extends PageElement {
     if (draft === null) return;
     this.change({ saving: true, errors: [], conflict: null, failure: null });
     try {
-      const outcome = await api.putScope(this.scopeId, {
-        implies: parseIdList(draft.impliesText),
-        triggers: draft.triggers,
-        base_version: draft.baseVersion,
-        author: frontendAuthor,
-        message: draft.message,
-      });
+      const outcome = this.creating
+        ? await api.createScope({
+            id: this.newId,
+            implies: parseIdList(draft.impliesText),
+            triggers: draft.triggers,
+            author: frontendAuthor,
+            message: draft.message,
+          })
+        : await api.putScope(this.scopeId, {
+            implies: parseIdList(draft.impliesText),
+            triggers: draft.triggers,
+            base_version: draft.baseVersion,
+            author: frontendAuthor,
+            message: draft.message,
+          });
       if (outcome.kind === 'written') {
+        announceStoreChange();
+        if (this.creating) {
+          navigate(paths.scope(this.newId));
+          return;
+        }
         this.draft = null;
         this.editing = null;
         this.loadedId = '';
-        announceStoreChange();
         return;
       }
-      if (outcome.kind === 'conflict') this.change({ conflict: outcome.conflict.current });
-      else this.change({ errors: outcome.failure.errors });
+      if (outcome.kind === 'conflict') {
+        if (this.creating) this.change({ failure: `a scope with the id ${this.newId} already exists` });
+        else this.change({ conflict: outcome.conflict.current });
+      } else this.change({ errors: outcome.failure.errors });
     } catch (caught) {
       this.change({ failure: caught instanceof Error ? caught.message : String(caught) });
     } finally {
@@ -269,56 +313,27 @@ export class FmnScopePage extends PageElement {
   }
 
   private renderTriggers(scope: ScopeDoc, draft: ScopeDraft): TemplateResult {
-    const editing = this.editing === 'triggers';
     return html`
-      <h2>
-        Triggers
-        <sl-icon-button
-          name=${editing ? 'x' : 'pencil'}
-          label=${editing ? 'Close Triggers' : 'Edit Triggers'}
-          @click=${() => {
-            this.editing = editing ? null : 'triggers';
-          }}
-        ></sl-icon-button>
-      </h2>
-      ${editing
-        ? html`<fmn-trigger-rows
-            .triggers=${draft.triggers}
-            .machines=${this.machines.value ?? []}
-            @fmn-triggers-change=${(event: CustomEvent<{ triggers: Trigger[] }>) =>
-              this.change({ triggers: event.detail.triggers })}
-          ></fmn-trigger-rows>`
-        : draft.triggers.length === 0
-          ? html`<p class="empty">No triggers</p>`
-          : html`<div class="table-wrap">
-              <table class="data">
-                <thead>
-                  <tr>
-                    <th scope="col">Field</th>
-                    <th scope="col">Pattern</th>
-                    <th scope="col">Machine</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${draft.triggers.map(
-                    (trigger) => html`<tr>
-                      <td class="nowrap">${fieldOf(trigger)}</td>
-                      <td><code>${trigger.pattern}</code></td>
-                      <td>${trigger.machine ?? ''}</td>
-                    </tr>`,
-                  )}
-                </tbody>
-              </table>
-            </div>`}
+      <h2>Triggers</h2>
+      <fmn-trigger-table
+        .triggers=${draft.triggers}
+        .machines=${this.machines.value ?? []}
+        @fmn-triggers-change=${(event: CustomEvent<{ triggers: Trigger[] }>) =>
+          this.change({ triggers: event.detail.triggers })}
+      ></fmn-trigger-table>
       ${this.dirty(scope, draft)
         ? html`<fmn-commit-bar
             .message=${draft.message}
             .saving=${draft.saving}
-            saveLabel="Save"
+            saveLabel=${this.creating ? 'Create' : 'Save'}
             @fmn-message-change=${(event: CustomEvent<{ message: string }>) =>
               this.change({ message: event.detail.message })}
             @fmn-save=${() => void this.save()}
             @fmn-discard=${() => {
+              if (this.creating) {
+                navigate(paths.home());
+                return;
+              }
               this.draft = draftOf(scope);
               this.editing = null;
             }}
@@ -359,6 +374,19 @@ export class FmnScopePage extends PageElement {
     const draft = this.draft ?? draftOf(scope);
     return html`
       <div class="infobox">
+        ${this.creating
+          ? html`<div class="field field-id">
+              <sl-input
+                size="small"
+                label="Id"
+                help-text="The name of the file under scopes/, without .yaml"
+                value=${this.newId}
+                @sl-input=${(event: Event) => {
+                  this.newId = (event.target as HTMLInputElement).value;
+                }}
+              ></sl-input>
+            </div>`
+          : nothing}
         ${this.renderField(
           'implies',
           'Implies',
@@ -381,49 +409,53 @@ export class FmnScopePage extends PageElement {
               this.change({ impliesText: event.detail.value.join(', ') })}
           ></fmn-tag-field>`,
         )}
-        <div class="field">
-          <span class="field-label">Version</span>
-          <div class="field-value"><code>${scope.version}</code></div>
-        </div>
-        <div class="field">
-          <sl-details summary="Delete" ?open=${this.deleteOpen}>
-            <p class="muted">
-              The file is removed in a commit; the history keeps it. A scope that a
-              memory still lists cannot be removed.
-            </p>
-            <sl-input
-              class="delete-message"
-              size="small"
-              label="Commit message"
-              maxlength="72"
-              value=${this.deleteMessage}
-              @sl-input=${(event: Event) => {
-                this.deleteMessage = (event.target as HTMLInputElement).value;
-              }}
-            ></sl-input>
-            <sl-button
-              size="small"
-              variant="danger"
-              ?disabled=${this.deleting || this.deleteMessage.trim() === ''}
-              ?loading=${this.deleting}
-              @click=${() => void this.deleteScope(scope)}
-              >Delete scope</sl-button
-            >
-            <fmn-validation-errors .errors=${this.deleteErrors}></fmn-validation-errors>
-            ${this.deleteFailure === null
-              ? nothing
-              : html`<p class="failure" role="alert">${this.deleteFailure}</p>`}
-          </sl-details>
-        </div>
+        ${this.creating
+          ? nothing
+          : html`<div class="field">
+                <span class="field-label">Version</span>
+                <div class="field-value"><code>${scope.version}</code></div>
+              </div>
+              <div class="field">
+                <sl-details summary="Delete" ?open=${this.deleteOpen}>
+                  <p class="muted">
+                    The file is removed in a commit; the history keeps it. A scope that a
+                    memory still lists cannot be removed.
+                  </p>
+                  <sl-input
+                    class="delete-message"
+                    size="small"
+                    label="Commit message"
+                    maxlength="72"
+                    value=${this.deleteMessage}
+                    @sl-input=${(event: Event) => {
+                      this.deleteMessage = (event.target as HTMLInputElement).value;
+                    }}
+                  ></sl-input>
+                  <sl-button
+                    size="small"
+                    variant="danger"
+                    ?disabled=${this.deleting || this.deleteMessage.trim() === ''}
+                    ?loading=${this.deleting}
+                    @click=${() => void this.deleteScope(scope)}
+                    >Delete scope</sl-button
+                  >
+                  <fmn-validation-errors .errors=${this.deleteErrors}></fmn-validation-errors>
+                  ${this.deleteFailure === null
+                    ? nothing
+                    : html`<p class="failure" role="alert">${this.deleteFailure}</p>`}
+                </sl-details>
+              </div>`}
       </div>
       ${this.renderTriggers(scope, draft)}
-      <h2>Memories</h2>
-      ${this.renderMemories()}
-      <fmn-trigger-test
-        heading="Trigger test"
-        idPrefix="scope-test"
-        .machines=${this.machines.value ?? []}
-      ></fmn-trigger-test>
+      ${this.creating
+        ? nothing
+        : html`<h2>Memories</h2>
+            ${this.renderMemories()}
+            <fmn-trigger-test
+              heading="Trigger test"
+              idPrefix="scope-test"
+              .machines=${this.machines.value ?? []}
+            ></fmn-trigger-test>`}
     `;
   }
 
@@ -446,9 +478,9 @@ export class FmnScopePage extends PageElement {
       <header class="page-header">
         <div class="page-name">
           <sl-icon name="folder"></sl-icon>
-          <span>scope</span>
+          <span>${this.creating ? 'new scope' : 'scope'}</span>
         </div>
-        <h1>${this.scopeId}</h1>
+        <h1>${this.creating ? (this.newId === '' ? 'New scope' : this.newId) : this.scopeId}</h1>
       </header>
       ${gate(
         this.scope.state,

@@ -4,8 +4,8 @@ import type { TriggerField, TriggerTestResult } from '../api/types';
 import { PageElement } from '../lib/element';
 import { paths } from '../routes';
 import { triggerFieldChoices } from '../model/triggers';
-import './fmn-tag-field';
-import type { TagsChange } from './fmn-tag-field';
+import './fmn-machine';
+import type { MachineChange } from './fmn-machine';
 
 /** Sends a field, a text and a machine to the trigger test endpoint and lists what fired. */
 export class FmnTriggerTest extends PageElement {
@@ -59,17 +59,15 @@ export class FmnTriggerTest extends PageElement {
           >
             ${triggerFieldChoices.map((name) => html`<sl-option value=${name}>${name}</sl-option>`)}
           </sl-select>
-          <fmn-tag-field
-            single
+          <fmn-machine-field
             showLabel
-            label="Machine"
-            placeholder="Any machine"
-            .value=${this.machine === '' ? [] : [this.machine]}
-            .suggestions=${this.machines}
-            @fmn-tags-change=${(event: CustomEvent<TagsChange>) => {
-              this.machine = event.detail.value[0] ?? '';
+            machine=${this.machine}
+            .machines=${this.machines}
+            @fmn-machine-change=${(event: CustomEvent<MachineChange>) => {
+              event.stopPropagation();
+              this.machine = event.detail.machine;
             }}
-          ></fmn-tag-field>
+          ></fmn-machine-field>
           <sl-textarea
             size="small"
             label="Text"

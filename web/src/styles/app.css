@@ -84,17 +84,18 @@ fmn-sidebar,
 fmn-markdown,
 fmn-markdown-editor,
 fmn-commit-bar,
-fmn-trigger-rows,
+fmn-trigger-table,
+fmn-editable-table,
 fmn-trigger-test,
 fmn-validation-errors,
 fmn-diff,
 fmn-side-by-side,
 fmn-overview-view,
 fmn-memory-page,
-fmn-memory-new,
 fmn-scope-page,
 fmn-contexts-view,
 fmn-stats-view,
+fmn-settings-view,
 fmn-unknown-view {
   display: block;
   min-width: 0;
@@ -133,6 +134,13 @@ fmn-kind-icon {
 
 .app-bar .brand:hover {
   text-decoration: none;
+}
+
+/* The mark next to the name, drawn from a larger asset so it stays sharp. */
+.app-bar .brand-mark {
+  display: block;
+  width: 20px;
+  height: 20px;
 }
 
 .app-menu {
@@ -755,56 +763,185 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------- Trigger rows ---------- */
+/* ---------- Tables that are edited in place ---------- */
 
-.trigger-rows {
+/* Idle it reads like a table in a document: lines, no boxes. The control in a cell
+   shows its edges when the pointer is on the row or the caret is in it, so what can
+   be changed is plain at the moment it matters and quiet the rest of the time. */
+
+.editable-table {
   display: flex;
   flex-direction: column;
-  gap: var(--sl-spacing-x-small);
-  margin-bottom: var(--sl-spacing-x-small);
-}
-
-.trigger-row {
-  display: grid;
-  gap: var(--sl-spacing-x-small);
-  align-items: end;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr) auto;
   max-width: 52rem;
-  padding: var(--sl-spacing-x-small);
+  margin-bottom: var(--sl-spacing-medium);
   border: 1px solid var(--fmn-border);
   border-radius: var(--sl-border-radius-medium);
 }
 
-.trigger-row sl-icon-button {
-  margin-bottom: 2px;
-  font-size: 1rem;
+.editable-row {
+  display: grid;
+  grid-template-columns: var(--fmn-table-columns);
+  gap: var(--sl-spacing-x-small);
+  align-items: center;
+  padding: 1px var(--sl-spacing-x-small);
+  border-top: 1px solid var(--fmn-border);
 }
 
-.trigger-row .pattern-field {
+.editable-row:first-child {
+  border-top: none;
+}
+
+.editable-head {
+  padding-block: var(--sl-spacing-3x-small);
+  border-radius: var(--sl-border-radius-medium) var(--sl-border-radius-medium) 0 0;
+  background-color: var(--fmn-raised);
+  color: var(--fmn-fg-muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+}
+
+.editable-row:not(.editable-head):hover {
+  background-color: var(--fmn-hover);
+}
+
+.editable-cell {
   min-width: 0;
+}
+
+.editable-actions {
+  justify-self: end;
+}
+
+.editable-table > .empty {
+  margin: 0;
+  padding: var(--sl-spacing-x-small);
+}
+
+.editable-add {
+  padding: 0;
+}
+
+/* The controls: flat until the row is under the pointer or holds the caret. The
+   parts differ by control, an input drawing its box as `base` and a select as
+   `combobox`. */
+.editable-table .cell-control::part(base),
+.editable-table .cell-control::part(combobox),
+.editable-table .cell-control sl-input::part(base) {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.editable-row:hover .cell-control::part(base),
+.editable-row:hover .cell-control::part(combobox),
+.editable-row:hover .cell-control sl-input::part(base),
+.editable-row:focus-within .cell-control::part(base),
+.editable-row:focus-within .cell-control::part(combobox),
+.editable-row:focus-within .cell-control sl-input::part(base) {
+  border-color: var(--fmn-border);
+  background-color: var(--fmn-bg);
+}
+
+/* The caret of a select belongs to the moment the row can be changed. */
+.editable-table .cell-control::part(expand-icon) {
+  opacity: 0;
+}
+
+.editable-row:hover .cell-control::part(expand-icon),
+.editable-row:focus-within .cell-control::part(expand-icon) {
+  opacity: 1;
+}
+
+.editable-table .cell-control::part(form-control-label) {
+  display: none;
+}
+
+/* The row's own controls follow the same rule: there when the row is. */
+.editable-actions sl-icon-button {
+  font-size: 0.95rem;
+  opacity: 0;
+}
+
+.editable-row:hover .editable-actions sl-icon-button,
+.editable-row:focus-within .editable-actions sl-icon-button {
+  opacity: 1;
+}
+
+.editable-table .tag-field {
+  gap: 0;
 }
 
 /* What the regex engine said about the pattern above, while it is typed. */
 .field-error {
-  margin: var(--sl-spacing-3x-small) 0 0;
+  margin: var(--sl-spacing-3x-small) 0 var(--sl-spacing-3x-small);
   color: var(--sl-color-danger-700);
   font-size: 0.8rem;
   line-height: 1.35;
   white-space: pre-wrap;
 }
 
-.trigger-row .pattern[data-invalid]::part(base) {
+.editable-table .pattern[data-invalid]::part(base) {
   border-color: var(--sl-color-danger-600);
 }
 
-/* The machine field of a trigger that cannot carry one: there, and not usable. */
-.trigger-row sl-tooltip {
-  min-width: 0;
+@media (max-width: 700px) {
+  .editable-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .editable-head {
+    display: none;
+  }
+}
+
+/* ---------- Settings ---------- */
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  max-width: 52rem;
+  margin-bottom: var(--sl-spacing-2x-large);
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 16rem);
+  gap: var(--sl-spacing-medium);
+  align-items: start;
+  padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+  border-top: 1px solid var(--fmn-border);
+}
+
+.setting-row:first-child {
+  border-top: none;
+}
+
+.setting-name p {
+  margin: var(--sl-spacing-3x-small) 0 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.setting-value {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-spacing-3x-small);
+  align-items: flex-start;
+}
+
+.setting-value .setting-control {
+  width: 100%;
+}
+
+.setting-type {
+  font-size: 0.75rem;
 }
 
 @media (max-width: 700px) {
-  .trigger-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+  .setting-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

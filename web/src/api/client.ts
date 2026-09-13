@@ -19,6 +19,8 @@ import type {
   ScopeDoc,
   ScopeStatsRow,
   ScopeWriteRequest,
+  SettingsDoc,
+  SettingsWriteRequest,
   SessionBytesRow,
   TriggerStatsRow,
   TriggerTestRequest,
@@ -88,6 +90,9 @@ export interface ApiClient {
   validatePattern(pattern: string): Promise<PatternValidity>;
   /** Every machine the server has heard from, for the fields that name one. */
   machineIndex(): Promise<string[]>;
+  settings(): Promise<SettingsDoc>;
+  /** One setting, written as one commit; a stale version comes back as a conflict. */
+  putSetting(key: string, request: SettingsWriteRequest): Promise<WriteOutcome<SettingsDoc>>;
   contexts(): Promise<ContextRow[]>;
   review(): Promise<ReviewReport>;
   memoryStats(): Promise<MemoryStatsRow[]>;
@@ -208,6 +213,13 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     },
 
     machineIndex: async () => (await read<MachineList>('/api/machines')).machines,
+
+    settings: () => read<SettingsDoc>('/api/settings'),
+
+    putSetting(key, request) {
+      requireMessage(`the setting ${key}`, request.message);
+      return write<SettingsDoc>('PUT', `/api/settings/${encodeURIComponent(key)}`, request);
+    },
 
     contexts: () => read<ContextRow[]>('/api/contexts'),
     review: () => read<ReviewReport>('/api/review'),

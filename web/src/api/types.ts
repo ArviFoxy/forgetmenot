@@ -74,6 +74,38 @@ export interface MachineList {
   machines: string[];
 }
 
+/** The types the settings schema uses, spelled as the server spells them. */
+export type SettingType = 'integer or null' | 'integer' | 'bool' | 'list of strings';
+
+export type SettingValue = number | boolean | string[] | null;
+
+export interface SettingSchemaRow {
+  key: string;
+  type: SettingType;
+  /** The value in force when the store's file sets nothing. */
+  default: SettingValue;
+  description: string;
+}
+
+/**
+ * Every setting with the value in force, the version of the file they were read
+ * at, and what each key means. The version is null when the store has no file
+ * yet, which the first write sends back as no base version at all.
+ */
+export interface SettingsDoc {
+  settings: Record<string, SettingValue>;
+  version: string | null;
+  schema: SettingSchemaRow[];
+}
+
+/** A change to one setting, which is one commit. */
+export interface SettingsWriteRequest {
+  value: SettingValue;
+  base_version?: string;
+  author: string;
+  message: string;
+}
+
 export interface ScopeDoc {
   id: string;
   implies: string[];

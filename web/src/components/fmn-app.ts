@@ -6,11 +6,10 @@ import './fmn-sidebar';
 import './fmn-theme-toggle';
 import '../views/fmn-overview-view';
 import '../views/fmn-memory-page';
-import '../views/fmn-memory-new';
-import '../views/fmn-scope-new';
 import '../views/fmn-scope-page';
 import '../views/fmn-contexts-view';
 import '../views/fmn-stats-view';
+import '../views/fmn-settings-view';
 import '../views/fmn-unknown-view';
 
 interface Section {
@@ -24,10 +23,11 @@ const sections: Section[] = [
   { name: 'home', href: paths.home(), label: 'Overview', icon: 'file-text' },
   { name: 'contexts', href: paths.contexts(), label: 'Contexts', icon: 'activity' },
   { name: 'stats', href: paths.stats(), label: 'Statistics', icon: 'chart-bar' },
+  { name: 'settings', href: paths.settings(), label: 'Settings', icon: 'settings' },
 ];
 
 /** Every property any view takes, so a reused element never keeps a stale one. */
-const viewProperties = ['memoryId', 'scopeId', 'mode', 'oid'];
+const viewProperties = ['memoryId', 'scopeId', 'mode', 'oid', 'newId'];
 
 const narrowQuery = '(max-width: 900px)';
 
@@ -92,7 +92,10 @@ export class FmnApp extends PageElement {
               }}
             ></sl-icon-button>`
           : nothing}
-        <a class="brand" href=${paths.home()}>forgetmenot</a>
+        <a class="brand" href=${paths.home()}>
+          <img class="brand-mark" src="/logo-48.png" width="20" height="20" alt="" />
+          <span>forgetmenot</span>
+        </a>
         <nav class="app-menu" aria-label="Sections">
           ${sections.map(
             (section) => html`<a

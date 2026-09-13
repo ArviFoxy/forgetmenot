@@ -161,8 +161,7 @@ test('a deep link to one commit of a memory opens the memory instead of the comm
 test('a scope trigger is not editable on the scope page itself', async ({ page }) => {
   await page.goto('/scopes/rocketry');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('rocketry');
-  await page.getByRole('button', { name: 'Edit Triggers' }).click();
-  const pattern = page.locator('fmn-trigger-rows sl-input.pattern input').first();
+  const pattern = page.locator('fmn-trigger-table sl-input.pattern input').first();
   await expect(pattern).toBeVisible();
   // A pattern that is new on every run, so the page has something to save.
   const added = `thrust${Date.now()}`;
@@ -173,7 +172,9 @@ test('a scope trigger is not editable on the scope page itself', async ({ page }
   await bar.locator('input').fill('widen the rocketry trigger');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(bar).toBeHidden();
-  await expect(page.locator('table.data')).toContainText(added);
+  await expect(page.locator('fmn-trigger-table sl-input.pattern input').first()).toHaveValue(
+    new RegExp(added),
+  );
 });
 
 test('a scope created from the tree is missing from the tree and from the API', async ({ page }) => {
@@ -185,7 +186,7 @@ test('a scope created from the tree is missing from the tree and from the API', 
 
   await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
   await page.getByRole('button', { name: 'Add trigger' }).click();
-  await page.locator('fmn-trigger-rows sl-input.pattern input').first().fill('\\bprobe\\b');
+  await page.locator('fmn-trigger-table sl-input.pattern input').first().fill('\\bprobe\\b');
   await page.locator('.commit-bar input').fill(`add the ${id} scope`);
   await page.getByRole('button', { name: 'Create', exact: true }).click();
 
@@ -202,14 +203,13 @@ test('a memory created from a scope context menu is created outside that scope',
     .locator('sl-tree-item[data-target="/scopes/widgets"] > .tree-row')
     .click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'New memory in this scope' }).click();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('New memory');
+  await expect(page.locator('.page-name')).toContainText('new memory');
 
-  // The scope the menu came from is already a chip in the Scopes field.
-  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['widgets']);
+  // The scope the menu came from is already in the Scopes field.
+  await expect(page.locator('.infobox .chips sl-badge')).toHaveText(['widgets']);
   await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
-  await page
-    .getByRole('textbox', { name: 'Description', exact: true })
-    .fill('a memory made from the tree');
+  await page.getByRole('button', { name: 'Edit Description' }).click();
+  await page.locator('.page-header sl-input input').fill('a memory made from the tree');
   await page.locator('.milkdown .ProseMirror').click();
   await page.keyboard.insertText('Made from the context menu.');
   await page.locator('.commit-bar input').fill(`add ${id}`);
@@ -358,7 +358,7 @@ test('a trigger created in the UI is written with an on line it was never given'
   await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
   await page.getByRole('button', { name: 'Add trigger' }).click();
 
-  const row = page.locator('fmn-trigger-rows .trigger-row').first();
+  const row = page.locator('fmn-trigger-table .editable-row:not(.editable-head):not(.editable-add)').first();
   await expect(row.locator('sl-select')).toHaveJSProperty('value', 'any');
   await row.locator('sl-input.pattern input').fill('\\bprobe\\b');
   await page.locator('.commit-bar input').fill(`add the ${id} scope`);
@@ -369,13 +369,14 @@ test('a trigger created in the UI is written with an on line it was never given'
     triggers: Record<string, unknown>[];
   };
   expect(scope.triggers).toEqual([{ pattern: '\\bprobe\\b' }]);
-  await expect(page.locator('table.data')).toContainText('any');
+  await expect(
+    page.locator('fmn-trigger-table .editable-row sl-select').first(),
+  ).toHaveJSProperty('value', 'any');
 });
 
 test('a pattern that is not a regex is accepted without a word about it', async ({ page }) => {
   await page.goto('/scopes/widgets');
-  await page.getByRole('button', { name: 'Edit Triggers' }).click();
-  const row = page.locator('fmn-trigger-rows .trigger-row').first();
+  const row = page.locator('fmn-trigger-table .editable-row:not(.editable-head):not(.editable-add)').first();
   await row.locator('sl-input.pattern input').fill('\\bwidget(s?\\b');
 
   // The message is the regex crate's own, so only its first line is asserted on.
@@ -391,7 +392,7 @@ test('the machine field offers nothing and keeps nothing', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
   await page.getByRole('button', { name: 'Add trigger' }).click();
 
-  const row = page.locator('fmn-trigger-rows .trigger-row').first();
+  const row = page.locator('fmn-trigger-table .editable-row:not(.editable-head):not(.editable-add)').first();
   await row.locator('sl-input.pattern input').fill('\\bprobe\\b');
   const machine = row.locator('fmn-tag-field sl-input input');
   await machine.click();
@@ -413,4 +414,101 @@ test('the machine field offers nothing and keeps nothing', async ({ page }) => {
     triggers: Record<string, unknown>[];
   };
   expect(scope.triggers).toEqual([{ pattern: '\\bprobe\\b', machine: 'beta' }]);
+});
+
+test('a trigger added in the table is not written, or the table leaves edit mode to add it', async ({
+  page,
+}) => {
+  const added = `bracket${Date.now()}`;
+  await page.goto('/scopes/workshop');
+  const rows = page.locator('fmn-trigger-table .editable-row:not(.editable-head):not(.editable-add)');
+  const before = await rows.count();
+
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+  await expect(rows).toHaveCount(before + 1);
+  await rows.last().locator('sl-input.pattern input').fill(`\\b${added}\\b`);
+  await page.locator('.commit-bar input').fill(`add the ${added} trigger`);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.commit-bar')).toBeHidden();
+
+  const scope = (await (await page.request.get('/api/scopes/workshop')).json()) as {
+    triggers: Record<string, unknown>[];
+  };
+  expect(scope.triggers).toContainEqual({ pattern: `\\b${added}\\b` });
+  // The row is still there to read, in the same table it was written in.
+  await expect(rows).toHaveCount(before + 1);
+});
+
+test('creating a memory happens on a page of its own rather than the memory page', async ({
+  page,
+}) => {
+  const id = `merged-memory-${Date.now()}`;
+  await page.goto('/memories/new?scope=widgets');
+
+  // The same parts as a memory that exists: the document editor and the infobox.
+  await expect(page.locator('.milkdown .ProseMirror')).toBeVisible();
+  await expect(page.locator('.infobox')).toBeVisible();
+  await expect(page.locator('.infobox .chips sl-badge')).toHaveText(['widgets']);
+
+  await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
+  await page.getByRole('button', { name: 'Edit Description' }).click();
+  await page.locator('.page-header sl-input input').fill('a memory made on the memory page');
+  await typeAtEnd(page, 'The merged page writes the body.');
+  await page.locator('.commit-bar input').fill(`add ${id}`);
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/memories/${id}$`));
+  const doc = (await (await page.request.get(`/api/memories/${id}`)).json()) as {
+    description: string;
+    scopes: string[];
+    body: string;
+  };
+  expect(doc.description).toBe('a memory made on the memory page');
+  expect(doc.scopes).toEqual(['widgets']);
+  expect(doc.body).toContain('The merged page writes the body.');
+});
+
+test('creating a scope happens on a page of its own rather than the scope page', async ({ page }) => {
+  const id = `merged-scope-${Date.now()}`;
+  await page.goto('/scopes/new');
+
+  // The same parts as a scope that exists: the infobox and the trigger table.
+  await expect(page.locator('.infobox')).toBeVisible();
+  await expect(page.locator('fmn-trigger-table')).toBeVisible();
+  // What only a scope with a file has is not offered.
+  await expect(page.getByRole('button', { name: 'Delete scope' })).toHaveCount(0);
+
+  await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+  await page.locator('fmn-trigger-table sl-input.pattern input').first().fill('\\bmerged\\b');
+  await page.locator('.commit-bar input').fill(`add the ${id} scope`);
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/scopes/${id}$`));
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(id);
+  const scope = (await (await page.request.get(`/api/scopes/${id}`)).json()) as {
+    triggers: Record<string, unknown>[];
+  };
+  expect(scope.triggers).toEqual([{ pattern: '\\bmerged\\b' }]);
+});
+
+test('a setting changed on the page is not written to the store', async ({ page }) => {
+  await page.goto('/settings');
+  await expect(page.locator('.settings-list')).toBeVisible();
+
+  const row = page.locator('.setting-row').filter({ hasText: 'reminder_tokens' });
+  const wanted = 12000 + (Date.now() % 1000);
+  await row.locator('sl-input input').fill(String(wanted));
+  await page.locator('.commit-bar input').fill('change how often memories are repeated');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.commit-bar')).toBeHidden();
+
+  const settings = (await (await page.request.get('/api/settings')).json()) as {
+    settings: Record<string, unknown>;
+    version: string | null;
+  };
+  expect(settings.settings.reminder_tokens).toBe(wanted);
+  expect(settings.version).not.toBeNull();
+  // The page shows what was written, not what was typed into a field that is gone.
+  await expect(row.locator('sl-input input')).toHaveValue(String(wanted));
 });

@@ -15,7 +15,7 @@ import {
 import { memoryKinds, memorySources, parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate, onStoreChange } from '../navigation';
 import { takeDeleteIntent } from '../intent';
-import { paths } from '../routes';
+import { paths, scopeFromSearch } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-diff';
 import '../components/fmn-kind-icon';
@@ -26,18 +26,44 @@ import '../components/fmn-validation-errors';
 import type { BodyChange, FmnMarkdownEditor } from '../components/fmn-markdown-editor';
 import type { TagsChange } from '../components/fmn-tag-field';
 
-export type MemoryMode = 'document' | 'history' | 'commit';
+export type MemoryMode = 'document' | 'history' | 'commit' | 'new';
+
+/** A memory that is being written and has no file yet, in the scope it was started from. */
+export function blankMemory(scope: string): MemoryDoc {
+  return {
+    id: '',
+    name: '',
+    title: '',
+    description: '',
+    kind: 'knowledge',
+    scopes: scope === '' ? [] : [scope],
+    source: 'user',
+    created: null,
+    modified: null,
+    author: null,
+    body: '',
+    version: '',
+    links: [],
+    backlinks: [],
+    last_commit: null,
+  };
+}
 
 function missingStatus(error: Error): 'failed' | 'missing' {
   return error instanceof RequestFailed && error.status === 404 ? 'missing' : 'failed';
 }
 
-/** One memory: its document and fields, edited in place, with its history. */
+/**
+ * One memory: its document and fields, edited in place, with its history. A memory
+ * that does not exist yet is the same page with empty fields and an id to fill in,
+ * so there is one memory view rather than two that drift apart.
+ */
 export class FmnMemoryPage extends PageElement {
   static override properties: PropertyDeclarations = {
     memoryId: { type: String },
     mode: { type: String },
     oid: { type: String },
+    newId: { state: true },
     draft: { state: true },
     editing: { state: true },
     deleteMessage: { state: true },
@@ -59,6 +85,8 @@ export class FmnMemoryPage extends PageElement {
   private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
   private loadedOptions = false;
 
+  /** The id of the memory being created, which is its path under memories/. */
+  private newId = '';
   private draft: MemoryDraft | null = null;
   /** The field whose control is open, if any. */
   private editing: string | null = null;
@@ -71,6 +99,10 @@ export class FmnMemoryPage extends PageElement {
   private loadedHistoryId = '';
   private loadedEntry = '';
   private stopListening: (() => void) | null = null;
+
+  private get creating(): boolean {
+    return this.mode === 'new';
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -96,10 +128,14 @@ export class FmnMemoryPage extends PageElement {
         return suggestScopes(scopes, contexts, this.doc.value?.scopes ?? []);
       });
     }
-    if (this.memoryId !== '' && this.loadedId !== this.memoryId) {
-      this.loadedId = this.memoryId;
+    // The key a load is remembered by: a new memory is loaded once, from nothing.
+    const wanted = this.creating ? 'new' : this.memoryId;
+    if (wanted !== '' && this.loadedId !== wanted) {
+      this.loadedId = wanted;
       this.draft = null;
-      void this.doc.load(() => api.memory(this.memoryId));
+      void this.doc.load(() =>
+        this.creating ? Promise.resolve(blankMemory(scopeFromSearch())) : api.memory(this.memoryId),
+      );
     }
     const wantsHistory = this.mode === 'history' || this.mode === 'commit';
     if (wantsHistory && this.loadedHistoryId !== this.memoryId) {
@@ -115,7 +151,7 @@ export class FmnMemoryPage extends PageElement {
     if (doc !== null && (this.draft === null || this.draft.baseVersion !== doc.version)) {
       this.draft = draftOf(doc);
     }
-    if (this.memoryId !== '' && takeDeleteIntent('memory', this.memoryId)) {
+    if (!this.creating && this.memoryId !== '' && takeDeleteIntent('memory', this.memoryId)) {
       this.deleteOpen = true;
       void this.showDeletePanel();
     }
@@ -145,26 +181,36 @@ export class FmnMemoryPage extends PageElement {
     const draft = this.draft;
     if (draft === null) return;
     this.change({ saving: true, errors: [], conflict: null, failure: null });
+    const fields = {
+      description: draft.description,
+      kind: draft.kind,
+      scopes: parseIdList(draft.scopesText),
+      source: draft.source,
+      // Straight from the editor when it has been typed in, because its own report
+      // of the text arrives a moment after the keystroke that caused it.
+      body: this.editor?.touched === true ? this.editor.markdown() : bodyToSave(draft),
+      author: frontendAuthor,
+      message: draft.message,
+    };
     try {
-      const outcome = await api.putMemory(this.memoryId, {
-        description: draft.description,
-        kind: draft.kind,
-        scopes: parseIdList(draft.scopesText),
-        source: draft.source,
-        body: bodyToSave(draft),
-        base_version: draft.baseVersion,
-        author: frontendAuthor,
-        message: draft.message,
-      });
+      const outcome = this.creating
+        ? await api.createMemory({ id: this.newId, ...fields })
+        : await api.putMemory(this.memoryId, { ...fields, base_version: draft.baseVersion });
       if (outcome.kind === 'written') {
+        announceStoreChange();
+        if (this.creating) {
+          navigate(paths.memory(this.newId));
+          return;
+        }
         this.draft = null;
         this.editing = null;
         this.loadedId = '';
-        announceStoreChange();
         return;
       }
-      if (outcome.kind === 'conflict') this.change({ conflict: outcome.conflict.current });
-      else this.change({ errors: outcome.failure.errors });
+      if (outcome.kind === 'conflict') {
+        if (this.creating) this.change({ failure: `a memory with the id ${this.newId} already exists` });
+        else this.change({ conflict: outcome.conflict.current });
+      } else this.change({ errors: outcome.failure.errors });
     } catch (caught) {
       this.change({ failure: caught instanceof Error ? caught.message : String(caught) });
     } finally {
@@ -269,8 +315,20 @@ export class FmnMemoryPage extends PageElement {
 
   private renderInfobox(doc: MemoryDoc, draft: MemoryDraft): TemplateResult {
     return html`<aside class="infobox">
-      ${this.renderStatic('Name', html`<span class="value-text">${doc.name}</span>`)}
-      ${this.renderStatic('Id', html`<code>${doc.id}</code>`)}
+      ${this.creating
+        ? html`<div class="field field-id">
+            <sl-input
+              size="small"
+              label="Id"
+              help-text="The path under memories/, without .md"
+              value=${this.newId}
+              @sl-input=${(event: Event) => {
+                this.newId = (event.target as HTMLInputElement).value;
+              }}
+            ></sl-input>
+          </div>`
+        : html`${this.renderStatic('Name', html`<span class="value-text">${doc.name}</span>`)}
+            ${this.renderStatic('Id', html`<code>${doc.id}</code>`)}`}
       ${this.renderField(
         'kind',
         'Kind',
@@ -289,7 +347,9 @@ export class FmnMemoryPage extends PageElement {
       ${this.renderField(
         'scopes',
         'Scopes',
-        html`<span class="chips"
+        parseIdList(draft.scopesText).length === 0
+          ? html`<span class="empty">none</span>`
+          : html`<span class="chips"
           >${parseIdList(draft.scopesText).map(
             (scope) =>
               html`<a href=${paths.scope(scope)}
@@ -320,9 +380,14 @@ export class FmnMemoryPage extends PageElement {
           ${memorySources.map((source) => html`<sl-option value=${source}>${source}</sl-option>`)}
         </sl-select>`,
       )}
-      ${this.renderStatic('Modified', html`<span class="value-mono">${doc.modified ?? '—'}</span>`)}
-      ${this.renderStatic('Version', html`<code>${doc.version}</code>`)}
-      ${this.renderStatic(
+      ${this.creating
+        ? nothing
+        : html`${this.renderStatic(
+            'Modified',
+            html`<span class="value-mono">${doc.modified ?? '—'}</span>`,
+          )}
+            ${this.renderStatic('Version', html`<code>${doc.version}</code>`)}
+            ${this.renderStatic(
         'Links',
         doc.links.length === 0
           ? html`<span class="empty">none</span>`
@@ -348,7 +413,7 @@ export class FmnMemoryPage extends PageElement {
               )}</span
             >`,
       )}
-      <div class="field">
+            <div class="field">
         <sl-details summary="Delete" ?open=${this.deleteOpen}>
           <p class="muted">The file is removed in a commit; the history keeps it.</p>
           <sl-input
@@ -373,7 +438,7 @@ export class FmnMemoryPage extends PageElement {
             ? nothing
             : html`<p class="failure" role="alert">${this.deleteFailure}</p>`}
         </sl-details>
-      </div>
+      </div>`}
     </aside>`;
   }
 
@@ -395,15 +460,20 @@ export class FmnMemoryPage extends PageElement {
   }
 
   private renderCommitBar(doc: MemoryDoc, draft: MemoryDraft): TemplateResult | typeof nothing {
-    if (!isDirty(draft, doc)) return nothing;
+    // A memory that is being created is always ready to be written: what would be
+    // saved is the whole of it, including an id that is still empty.
+    if (!this.creating && !isDirty(draft, doc)) return nothing;
     return html`<fmn-commit-bar
       .message=${draft.message}
       .saving=${draft.saving}
-      saveLabel="Save"
+      saveLabel=${this.creating ? 'Create' : 'Save'}
       @fmn-message-change=${(event: CustomEvent<{ message: string }>) =>
         this.change({ message: event.detail.message })}
       @fmn-save=${() => void this.save()}
-      @fmn-discard=${() => this.discard()}
+      @fmn-discard=${() => {
+        if (this.creating) navigate(paths.home());
+        else this.discard();
+      }}
     ></fmn-commit-bar>`;
   }
 
@@ -514,7 +584,7 @@ export class FmnMemoryPage extends PageElement {
           <header class="page-header">
             <div class="page-name">
               <fmn-kind-icon kind=${draft.kind}></fmn-kind-icon>
-              <span>${doc.id}</span>
+              <span>${this.creating ? (this.newId === '' ? 'new memory' : this.newId) : doc.id}</span>
             </div>
             ${this.editing === 'description'
               ? html`<div class="inline-edit">
@@ -534,7 +604,9 @@ export class FmnMemoryPage extends PageElement {
                   ></sl-icon-button>
                 </div>`
               : html`<p class="description">
-                  ${draft.description}
+                  ${draft.description === ''
+                    ? html`<span class="empty">The line the agent sees in an index</span>`
+                    : draft.description}
                   <sl-icon-button
                     name="pencil"
                     label="Edit Description"
@@ -544,7 +616,7 @@ export class FmnMemoryPage extends PageElement {
                   ></sl-icon-button>
                 </p>`}
           </header>
-          ${this.renderTabs()}
+          ${this.creating ? nothing : this.renderTabs()}
           ${this.mode === 'history'
             ? this.renderHistory()
             : this.mode === 'commit'

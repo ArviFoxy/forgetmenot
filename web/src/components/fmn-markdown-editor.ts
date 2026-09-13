@@ -27,6 +27,8 @@ export class FmnMarkdownEditor extends PageElement {
 
   private crepe: Crepe | null = null;
   private live = false;
+  /** Whether anybody has edited this document since it was built. */
+  private edited = false;
   private building: Promise<void> | null = null;
 
   override render(): TemplateResult {
@@ -65,6 +67,7 @@ export class FmnMarkdownEditor extends PageElement {
     crepe.on((api) => {
       api.markdownUpdated(() => {
         if (!this.live) return;
+        this.edited = true;
         this.dispatchEvent(
           new CustomEvent<BodyChange>('fmn-body-change', {
             detail: { value: this.markdown() },
@@ -79,18 +82,34 @@ export class FmnMarkdownEditor extends PageElement {
       window.setTimeout(() => {
         this.live = true;
       }, 0);
+      // The editor reports its markdown a moment after the change; a keystroke is
+      // known at once, and a save happening in between has to know the document was
+      // touched. Every way of putting text in, typing or pasting, is one of these.
+      root.addEventListener('beforeinput', () => {
+        if (this.live) this.edited = true;
+      });
     });
     await this.building;
   }
 
   private async rebuild(): Promise<void> {
     this.live = false;
+    this.edited = false;
     await this.building;
     await this.crepe?.destroy();
     this.crepe = null;
     const host = this.querySelector('.editor-host');
     if (host !== null) host.replaceChildren();
     await this.build();
+  }
+
+  /**
+   * Whether the document was edited. The editor reports its text a moment after a
+   * keystroke, so a page that is about to write asks this and then reads the text
+   * itself, rather than saving the last report it happened to receive.
+   */
+  get touched(): boolean {
+    return this.edited;
   }
 
   /** The markdown the editor holds, with `[[name]]` links left as they were typed. */

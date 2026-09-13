@@ -226,15 +226,17 @@ for (const scheme of ['light', 'dark'] as const) {
 
     test('a scope page looks as reviewed', async ({ page }) => {
       await page.goto('/scopes/widgets');
-      await expect(page.locator('table.data')).toBeVisible();
+      await expect(page.locator('fmn-trigger-table')).toBeVisible();
       await settle(page);
       await expect(page).toHaveScreenshot(`scope-laptop-${scheme}.png`);
     });
 
-    test('a scope with its triggers open looks as reviewed', async ({ page }) => {
+    test('a trigger row under the pointer looks as reviewed', async ({ page }) => {
+      // The table is the same table read or written; this is what it shows when the
+      // pointer is on a row, which is when its controls are drawn.
       await page.goto('/scopes/widgets');
-      await page.getByRole('button', { name: 'Edit Triggers' }).click();
-      await expect(page.locator('fmn-trigger-rows')).toBeVisible();
+      await expect(page.locator('fmn-trigger-table')).toBeVisible();
+      await page.locator('fmn-trigger-table .editable-row').nth(1).hover();
       await settle(page);
       await expect(page).toHaveScreenshot(`scope-editing-laptop-${scheme}.png`);
     });
@@ -273,6 +275,13 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page).toHaveScreenshot(`contexts-laptop-${scheme}.png`, {
         mask: clockValues(page),
       });
+    });
+
+    test('the settings page looks as reviewed', async ({ page }) => {
+      await page.goto('/settings');
+      await expect(page.locator('.settings-list')).toBeVisible();
+      await settle(page);
+      await expect(page).toHaveScreenshot(`settings-laptop-${scheme}.png`);
     });
 
     test('the new memory page looks as reviewed', async ({ page }) => {

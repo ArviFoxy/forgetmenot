@@ -64,6 +64,8 @@ vi.mock('../src/api/client', () => ({
     scopeHistory: () => Promise.resolve([]),
     testTriggers: () => Promise.resolve({ fired: [] }),
     validatePattern: () => Promise.resolve({ ok: true }),
+    settings: () => Promise.resolve({ settings: {}, version: null, schema: [] }),
+    putSetting: () => Promise.resolve({ kind: 'written' }),
     machineIndex: () => Promise.resolve(['alpha', 'beta']),
     contexts: () => Promise.resolve([]),
     review: () => Promise.resolve({ errors: [], global_only_critical: [] }),
@@ -103,6 +105,7 @@ test('an address the app links to has no element registered to show it', () => {
     paths.scope('session:alpha/session-1'),
     paths.contexts(),
     paths.stats(),
+    paths.settings(),
     '/no/such/address',
   ];
   for (const address of addresses) {

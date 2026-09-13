@@ -41,6 +41,15 @@ export function withField(trigger: Trigger, field: TriggerField): Trigger {
   return field === 'any' ? { pattern, ...kept } : { on: field, pattern, ...kept };
 }
 
+/**
+ * How a machine is shown: the name, or `Any` for a trigger that names none. The two
+ * are told apart by `any`, because a machine could itself be called Any.
+ */
+export function machineDisplay(machine: string | undefined): { text: string; any: boolean } {
+  const named = (machine ?? '').trim();
+  return named === '' ? { text: 'Any', any: true } : { text: named, any: false };
+}
+
 /** The trigger with its machine changed; an empty name is no machine at all. */
 export function withMachine(trigger: Trigger, machine: string): Trigger {
   const { on, pattern } = trigger;

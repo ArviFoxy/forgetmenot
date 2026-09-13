@@ -20,6 +20,7 @@ import plus from '@tabler/icons/outline/plus.svg?url';
 import refresh from '@tabler/icons/outline/refresh.svg?url';
 import rotate from '@tabler/icons/outline/rotate.svg?url';
 import search from '@tabler/icons/outline/search.svg?url';
+import settings from '@tabler/icons/outline/settings.svg?url';
 import sun from '@tabler/icons/outline/sun.svg?url';
 import terminal from '@tabler/icons/outline/terminal-2.svg?url';
 import trash from '@tabler/icons/outline/trash.svg?url';
@@ -44,6 +45,7 @@ const files: Record<string, string> = {
   refresh,
   rotate,
   search,
+  settings,
   sun,
   terminal,
   trash,
