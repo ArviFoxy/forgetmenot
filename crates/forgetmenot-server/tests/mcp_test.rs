@@ -530,7 +530,7 @@ fn a_scope_turned_off_through_mcp_is_reported_as_scope_off_at_the_next_hook_even
     assert_eq!(status, 200, "the next event must be answered");
     let text = context_of(&withdrawn);
     assert!(
-        has_retracted_line(text, "widget-naming", "scope off"),
+        has_retracted_line(text, "widget-naming", "no longer in an active scope"),
         "the memory must be reported as withdrawn because the scope was turned off, got {text:?}"
     );
 }

@@ -164,15 +164,17 @@ pub fn initial_active(machine: &str, session_id: &str) -> BTreeSet<ScopeId> {
 pub enum RetractReason {
     /// The memory is no longer in the store: its file was deleted.
     Deleted,
-    /// No scope this context works in covers the memory any more.
-    ScopeOff,
+    /// No scope this context works in covers the memory any more, whether
+    /// because a scope was turned off or because the memory was moved out of
+    /// every scope this context works in.
+    NoActiveScope,
 }
 
 impl RetractReason {
     pub fn as_str(self) -> &'static str {
         match self {
             RetractReason::Deleted => "deleted",
-            RetractReason::ScopeOff => "scope off",
+            RetractReason::NoActiveScope => "no longer in an active scope",
         }
     }
 }
@@ -274,7 +276,7 @@ pub fn compute_needs(catalog: &Catalog, state: &ContextState, tokens_now: Option
             // Gone from the store: the model must stop acting on it, and the
             // store no longer says why it was ever due.
             None => RetractReason::Deleted,
-            Some(_) => RetractReason::ScopeOff,
+            Some(_) => RetractReason::NoActiveScope,
         };
         needs.retracted.push((id.clone(), reason));
     }

@@ -894,7 +894,7 @@ mod state_machine {
     /// the store: the model would be told a rule was retired when the session
     /// merely stopped working in its scope.
     #[test]
-    fn a_memory_whose_scope_is_no_longer_active_is_withdrawn_as_scope_off() {
+    fn a_memory_no_active_scope_covers_is_withdrawn_as_out_of_scope_not_as_deleted() {
         let store = example_store();
         let catalog = store.catalog();
         let id = MemoryId::new("widget-naming");
@@ -910,8 +910,8 @@ mod state_machine {
 
         assert_eq!(
             needs.retracted,
-            vec![(id, RetractReason::ScopeOff)],
-            "a memory no scope covers must be withdrawn as a scope that went off"
+            vec![(id, RetractReason::NoActiveScope)],
+            "a memory no active scope covers must be withdrawn as one no active scope covers"
         );
     }
 

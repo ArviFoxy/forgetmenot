@@ -17,7 +17,7 @@ reasoning: >
   Step 3 turns widgets off again, and only widgets: rocketry stays on.
 
   Step 4, the next event: no active scope covers widget-naming any more, so it is
-  withdrawn, with `scope off` as the reason, because the memory is still in the
+  withdrawn, with `no longer in an active scope` as the reason, because the memory is still in the
   store and in force everywhere else. rocket-stages is still due and still
   delivered, so it is neither sent again nor withdrawn.
 steps:
@@ -75,4 +75,4 @@ steps:
       decision: context
       retracted:
         - id: widget-naming
-          reason: scope off
+          reason: no longer in an active scope

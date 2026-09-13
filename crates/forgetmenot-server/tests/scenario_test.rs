@@ -145,7 +145,7 @@ struct Expect {
 #[serde(deny_unknown_fields)]
 struct RetractedExpectation {
     id: String,
-    /// `deleted` or `scope off`.
+    /// `deleted` or `no longer in an active scope`.
     reason: String,
 }
 
@@ -349,7 +349,7 @@ struct Seen {
 
 /// The two reasons a delivery is withdrawn. Source: the plan's MCP section,
 /// where the retracted line says which of the two happened.
-const RETRACT_REASONS: [&str; 2] = ["deleted", "scope off"];
+const RETRACT_REASONS: [&str; 2] = ["deleted", "no longer in an active scope"];
 
 /// What the text says about the memory `entry`.
 fn seen_in(text: &str, entry: &forgetmenot_server::store::catalog::MemoryEntry) -> Seen {

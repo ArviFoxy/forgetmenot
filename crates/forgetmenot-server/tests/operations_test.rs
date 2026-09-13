@@ -146,7 +146,7 @@ fn a_scope_turned_off_is_reported_as_withdrawn_at_the_next_event() {
     assert_eq!(status, 200, "the next event must be answered");
     let text = context_of(&answer);
     assert!(
-        has_retracted_line(text, "widget-naming", "scope off"),
+        has_retracted_line(text, "widget-naming", "no longer in an active scope"),
         "the memory must be reported as withdrawn because the scope was turned off, got {text:?}"
     );
     assert!(
@@ -181,7 +181,11 @@ fn turning_off_a_scope_that_is_always_on_is_refused() {
     let (status, answer) = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
     assert_eq!(status, 200, "the next event must be answered");
     assert!(
-        !has_retracted_line(context_of(&answer), "bench-power", "scope off"),
+        !has_retracted_line(
+            context_of(&answer),
+            "bench-power",
+            "no longer in an active scope"
+        ),
         "nothing may be withdrawn by a refused request, got {answer}"
     );
 }
