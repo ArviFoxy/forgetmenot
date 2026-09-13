@@ -32,7 +32,7 @@ jobs:
           cp README.md LICENSE-MIT LICENSE-APACHE "$out"/
           tar -czf "$out.tar.gz" "$out"
           sha256sum "$out.tar.gz" > "$out.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: forgetmenot-*.tar.gz*
@@ -54,7 +54,7 @@ jobs:
           out=forgetmenot-web-${GITHUB_REF_NAME}
           tar -czf "$out.tar.gz" -C web dist
           sha256sum "$out.tar.gz" > "$out.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web
           path: forgetmenot-web-*.tar.gz*
