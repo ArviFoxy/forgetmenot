@@ -312,6 +312,19 @@ pub fn api_request(base_url: &str, method: &str, path: &str, body: Option<&Value
             .header("content-type", "application/json")
             .send(serde_json::to_string(body).expect("the body serialises")),
         ("POST", None) => agent.post(&url).send_empty(),
+        // A delete carries a body: it says which version it removes, so it is
+        // refused when the store has moved on, like every other write. The
+        // client's builder has no body for a delete, so the request is built as
+        // an `http::Request` and run as it is.
+        ("DELETE", Some(body)) => agent.run(
+            ureq::http::Request::builder()
+                .method("DELETE")
+                .uri(&url)
+                .header("content-type", "application/json")
+                .body(serde_json::to_string(body).expect("the body serialises"))
+                .expect("the delete request builds"),
+        ),
+        ("DELETE", None) => agent.delete(&url).call(),
         (other, _) => panic!("{other} is not a method these tests send"),
     }
     .unwrap_or_else(|error| panic!("{method} {url} did not reach the server: {error}"));

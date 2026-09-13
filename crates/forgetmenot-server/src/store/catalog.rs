@@ -46,10 +46,6 @@ impl MemoryEntry {
         self.document.kind()
     }
 
-    pub fn is_archived(&self) -> bool {
-        self.document.archived()
-    }
-
     pub fn scopes(&self) -> &[ScopeId] {
         self.document.scopes()
     }
@@ -205,7 +201,6 @@ impl Catalog {
         let mut due: Vec<&MemoryEntry> = self
             .memories
             .values()
-            .filter(|memory| !memory.is_archived())
             .filter(|memory| memory.scopes().iter().any(|scope| active.contains(scope)))
             .collect();
         due.sort_by(|left, right| left.kind().cmp(&right.kind()).then(left.id.cmp(&right.id)));

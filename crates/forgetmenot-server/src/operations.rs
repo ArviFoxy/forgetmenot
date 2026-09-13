@@ -145,7 +145,6 @@ pub struct MemorySummary {
     pub source: MemorySource,
     /// ISO 8601, or absent when the file carries no `modified` stamp.
     pub modified: Option<String>,
-    pub archived: bool,
     /// The blob id of the file, which a write sends back as `base_version`.
     pub version: String,
 }
@@ -186,7 +185,6 @@ pub struct MemoryDoc {
     pub created: Option<String>,
     pub modified: Option<String>,
     pub author: Option<String>,
-    pub archived: bool,
     pub body: String,
     pub version: String,
     /// The memories this one links to, resolved against the store.
@@ -252,8 +250,10 @@ pub struct ReviewReport {
 pub struct WriteOutcome {
     pub commit_oid: String,
     /// The new version of the document, which the editor keeps as its
-    /// `base_version` for the next write.
-    pub version: String,
+    /// `base_version` for the next write; absent when the write removed the
+    /// file, which leaves no version to write against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// One trigger that matched in a trigger test.
@@ -298,17 +298,10 @@ pub struct SessionScopes {
 pub struct MemoryFilter {
     pub scope: Option<ScopeId>,
     pub kind: Option<MemoryKind>,
-    /// `Some(true)` lists archived memories as well; absent lists only the
-    /// memories still in force, because an archived memory is not delivered
-    /// anywhere and would otherwise crowd the index it left.
-    pub archived: Option<bool>,
 }
 
 impl MemoryFilter {
     fn matches(&self, entry: &MemoryEntry) -> bool {
-        if self.archived != Some(true) && entry.is_archived() {
-            return false;
-        }
         if let Some(kind) = self.kind
             && entry.kind() != kind
         {
@@ -350,9 +343,9 @@ pub struct MemoryCreateRequest {
     pub write: MemoryWriteRequest,
 }
 
-/// An archival, which changes one flag and so carries no content.
+/// A deletion, which removes the file and so carries no content.
 #[derive(Clone, Debug, Deserialize)]
-pub struct ArchiveRequest {
+pub struct MemoryDeleteRequest {
     pub base_version: String,
     pub author: String,
     pub message: String,
@@ -520,40 +513,60 @@ pub async fn memory_put(
     .await
 }
 
-/// Mark one memory archived: it stops being delivered, and its file and history
-/// stay so that links and commits still resolve.
-pub async fn memory_archive(
+/// Delete one memory: the file leaves the store in one commit, so it stops
+/// being delivered anywhere, and the history keeps every version it had.
+///
+/// A memory other memories link to may be deleted: the links that no longer
+/// resolve are what the review report lists, and refusing the deletion would
+/// only keep a memory nobody wants in force.
+pub async fn memory_delete(
     state: &AppState,
     id: &MemoryId,
-    request: &ArchiveRequest,
+    request: &MemoryDeleteRequest,
 ) -> Result<WriteOutcome, OperationError> {
     let catalog = state.store.snapshot().await?;
     let path = id.repository_path();
     let Some(entry) = catalog.memory(id) else {
         return Err(OperationError::missing_memory(id));
     };
-    match Oid::from_str(&request.base_version) {
-        Ok(version) if version == entry.version => {}
+    let expected = match Oid::from_str(&request.base_version) {
+        Ok(version) if version == entry.version => version,
         Ok(_) => return Err(memory_conflict(state, &catalog, entry).await),
         Err(_) => return Err(OperationError::invalid(&path, UNREADABLE_BASE_VERSION)),
+    };
+
+    if !is_valid_message_title(&request.message) {
+        return Err(OperationError::invalid(
+            &path,
+            &WriteError::BadMessage.to_string(),
+        ));
     }
 
-    let expected = entry.version;
-    let mut document = entry.document.clone();
-    document.set_archived(true);
-    document.frontmatter.modified = Some(state.clock.now().trunc_subsecs(0));
-    document.frontmatter.metadata.author = Some(request.author.clone());
+    let outcome = state
+        .store
+        .commit_documents(
+            &request.author,
+            &request.message,
+            &commit_body("memory", id.as_str(), &request.author),
+            // No content: the commit removes the file.
+            vec![(path.clone(), None)],
+            vec![(path.clone(), Some(expected))],
+        )
+        .await;
 
-    commit_memory(
-        state,
-        &catalog,
-        document,
-        WriteMode::Update,
-        Some(expected),
-        &request.author,
-        &request.message,
-    )
-    .await
+    match outcome {
+        Ok(outcome) => Ok(write_outcome(&outcome, &path)),
+        Err(WriteError::VersionMismatch { .. }) => {
+            // The store moved between the version check above and the commit,
+            // so the answer is the document as it is now.
+            let catalog = state.store.snapshot().await?;
+            match catalog.memory(id) {
+                Some(entry) => Err(memory_conflict(state, &catalog, entry).await),
+                None => Err(OperationError::missing_memory(id)),
+            }
+        }
+        Err(error) => Err(write_error(&path, error)),
+    }
 }
 
 /// Validate one memory and commit it, which is the part every memory write
@@ -643,7 +656,6 @@ fn memory_summary(entry: &MemoryEntry) -> MemorySummary {
         scopes: entry.scopes().to_vec(),
         source: entry.document.source(),
         modified: entry.document.modified().map(iso8601),
-        archived: entry.is_archived(),
         version: entry.version.to_string(),
     }
 }
@@ -665,7 +677,6 @@ async fn memory_doc(
         created: entry.document.created().map(iso8601),
         modified: entry.document.modified().map(iso8601),
         author: entry.document.author().map(str::to_string),
-        archived: entry.is_archived(),
         body: entry.document.body.clone(),
         version: entry.version.to_string(),
         links: resolved_links(catalog, entry),
@@ -971,7 +982,7 @@ pub fn review(catalog: &Catalog) -> ReviewReport {
     let report = validate::validate(catalog);
     let global_only_critical = catalog
         .memories()
-        .filter(|entry| entry.kind() == MemoryKind::Critical && !entry.is_archived())
+        .filter(|entry| entry.kind() == MemoryKind::Critical)
         .filter(|entry| entry.scopes() == [ScopeId::global()])
         .map(|entry| entry.id.clone())
         .collect();
@@ -1143,11 +1154,7 @@ fn commit_body(kind: &str, id: &str, author: &str) -> String {
 fn write_outcome(outcome: &crate::service::WriteOutcome, path: &str) -> WriteOutcome {
     WriteOutcome {
         commit_oid: outcome.commit_oid.to_string(),
-        version: outcome
-            .blob_oids
-            .get(path)
-            .map(Oid::to_string)
-            .unwrap_or_default(),
+        version: outcome.blob_oids.get(path).map(Oid::to_string),
     }
 }
 

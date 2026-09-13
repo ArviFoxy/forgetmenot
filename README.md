@@ -30,16 +30,16 @@ One server serves every machine on a network, and subagents get the same memorie
 
 **Trigger.** A regular expression over one of six strings the harness supplies: `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result`, `working_directory`. A match turns the trigger's scope on in the context where the text appeared. Triggers never turn scopes off. A trigger on `working_directory` may be qualified with a machine name.
 
-**Memory.** A markdown file with YAML frontmatter that belongs to one or more scopes. `kind: critical` memories are delivered in full; `kind: knowledge` memories are delivered as one index line and fetched on demand by id. Bodies may link to other memories with `[[name]]`. Memories in a session scope are a silo: nothing outside the session may link into them.
+**Memory.** A markdown file with YAML frontmatter that belongs to one or more scopes. `kind: critical` memories are delivered in full; `kind: knowledge` memories are delivered as one index line and fetched on demand by id. Bodies may link to other memories with `[[name]]`. Memories in a session scope are a silo: nothing outside the session may link into them. A memory is retired by deleting its file, which is one commit like any other write: it stops being delivered everywhere, and every version it ever had stays in the history.
 
 **Context.** One model conversation: a session, or one subagent inside it. Each context has a set of active scopes and a record of what it has been shown. The server delivers, at every hook event, whatever is due and not yet shown:
 
 ```
-Due    = memories with any active scope, not archived
+Due    = memories with any active scope
 Needs  = new        due and never shown here
        ∪ changed    shown, but the file has changed since
        ∪ stale      critical, shown more than K context tokens ago
-       ∪ retracted  shown, but archived or its scope turned off
+       ∪ retracted  shown, but deleted or its scope turned off
 ```
 
 At `PreToolUse`, if a critical memory is new or changed, the call is denied with a fixed explanation and the memory is delivered; the agent reissues the call, which then passes. This is a delivery mechanism, not a review of the call. Parallel calls produce exactly one interrupt.
@@ -77,14 +77,14 @@ Cut releases from `main` only, and only after `cargo test --workspace` is green.
 See [[rocketry-notes]].
 ```
 
-The file format is Claude Code's own auto-memory format: `name` (equal to the file name), `description` (the line the agent sees in an index), and a `metadata` map. forgetmenot keeps its fields inside `metadata` (`kind`, `scopes`, `source`, and server-maintained `archived`, `created`, `author`) and preserves every other key untouched. An existing Claude Code memory directory is therefore a valid store as soon as it is a git repository: files without forgetmenot keys are `knowledge` memories in the `global` scope, and files without frontmatter such as `MEMORY.md` are skipped.
+The file format is Claude Code's own auto-memory format: `name` (equal to the file name), `description` (the line the agent sees in an index), and a `metadata` map. forgetmenot keeps its fields inside `metadata` (`kind`, `scopes`, `source`, and server-maintained `created`, `author`) and preserves every other key untouched, except the `archived` key earlier versions of this server wrote to retire a memory, which is dropped when the file is read and never written back. An existing Claude Code memory directory is therefore a valid store as soon as it is a git repository: files without forgetmenot keys are `knowledge` memories in the `global` scope, and files without frontmatter such as `MEMORY.md` are skipped.
 
 Every write through the API or MCP carries a `message` that becomes the commit title and a `base_version`, the blob hash the editor loaded. A write against a stale version is rejected with the current document.
 
 ## Interfaces
 
 - `POST /hook`: the hook endpoint, called by `forgetmenot-hook`.
-- `/mcp`: MCP over streamable HTTP. Memory management tools (`memory_index`, `memory_get`, `memory_put`, `memory_archive`) change the store and are git commits. Session management tools (`session_scopes`, `session_scope_on`, `session_scope_off`, `session_inherit`) change only the calling context and never touch the store.
+- `/mcp`: MCP over streamable HTTP. Memory management tools (`memory_index`, `memory_get`, `memory_put`, `memory_delete`) change the store and are git commits. Session management tools (`session_scopes`, `session_scope_on`, `session_scope_off`, `session_inherit`) change only the calling context and never touch the store.
 - `/api/*`: the JSON API the frontend uses.
 - `/`: the frontend, served from `web/dist`.
 

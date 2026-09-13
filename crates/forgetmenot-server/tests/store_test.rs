@@ -497,8 +497,8 @@ fn an_implies_cycle_terminates_and_keeps_both_scopes() {
     );
 }
 
-/// A store with one critical, one knowledge and one archived critical memory,
-/// all in the global scope, plus one memory in a scope of its own.
+/// A store with one critical and one knowledge memory in the global scope, plus
+/// one memory in a scope of its own.
 fn store_for_due() -> TempStore {
     store_with(&[
         ("scopes/widgets.yaml", b"id: widgets\n"),
@@ -519,14 +519,6 @@ fn store_for_due() -> TempStore {
             ),
         ),
         (
-            "memories/c-archived.md",
-            &memory_with_metadata(
-                "c-archived",
-                &["kind: critical", "scopes: [global]", "archived: true"],
-                "# C\n\nC.\n",
-            ),
-        ),
-        (
             "memories/d-widgets.md",
             &memory_with_metadata(
                 "d-widgets",
@@ -544,18 +536,6 @@ fn due_ids(store: &TempStore, active: &[ScopeId]) -> Vec<String> {
         .into_iter()
         .map(|memory| memory.id.as_str().to_string())
         .collect()
-}
-
-/// Detects an archived memory still being delivered, which would keep pushing a
-/// rule its author retired.
-#[test]
-fn due_never_includes_an_archived_memory() {
-    let store = store_for_due();
-    let due = due_ids(&store, &[ScopeId::global()]);
-    assert!(
-        !due.contains(&"c-archived".to_string()),
-        "an archived memory is due: {due:?}"
-    );
 }
 
 /// Detects an order that puts index lines before the memories delivered in

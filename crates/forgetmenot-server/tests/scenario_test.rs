@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use forgetmenot_server::context::ContextKey;
-use forgetmenot_server::operations::{self, ArchiveRequest};
+use forgetmenot_server::operations;
 use forgetmenot_server::store::catalog::Catalog;
 use forgetmenot_server::store::{MemoryId, ScopeId};
 use serde::Deserialize;
@@ -107,22 +107,17 @@ enum OperationName {
     MemoryGet,
 }
 
-/// A write to the store made outside the context under test: either a file
-/// committed by hand, or an archival through the store's own write path.
+/// A write to the store made outside the context under test, as a person with a
+/// shell makes it: one file written, or one file removed when `content` is
+/// absent.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommitStep {
-    /// The repository path, with `content`.
-    #[serde(default)]
-    path: Option<String>,
-    /// The file's new text.
+    /// The repository path the commit touches.
+    path: String,
+    /// The file's new text; absent removes the file.
     #[serde(default)]
     content: Option<String>,
-    /// The memory to archive, with `archive: true`.
-    #[serde(default)]
-    memory: Option<String>,
-    #[serde(default)]
-    archive: bool,
 }
 
 /// What the answer to a step must be.
@@ -149,7 +144,7 @@ struct Expect {
 #[serde(deny_unknown_fields)]
 struct RetractedExpectation {
     id: String,
-    /// `archived` or `scope off`.
+    /// `deleted` or `scope off`.
     reason: String,
 }
 
@@ -199,10 +194,9 @@ impl Step {
             );
         }
         if let Some(commit) = &self.commit {
-            return match (&commit.path, &commit.memory) {
-                (Some(path), _) => format!("commit {path}"),
-                (_, Some(memory)) => format!("archive {memory}"),
-                _ => "commit".to_string(),
+            return match commit.content {
+                Some(_) => format!("commit {}", commit.path),
+                None => format!("remove {}", commit.path),
             };
         }
         "an empty step".to_string()
@@ -309,44 +303,18 @@ fn run_operation(server: &TestServer, operation: &OperationStep) -> Result<(), S
 
 /// Put one write into the store for a step.
 fn run_commit(server: &TestServer, commit: &CommitStep) -> Result<(), String> {
-    match (
-        &commit.path,
-        &commit.content,
-        &commit.memory,
-        commit.archive,
-    ) {
-        (Some(path), Some(content), None, false) => {
-            server.commit(
-                &format!("scenario: write {path}"),
-                vec![(path.clone(), Some(content.clone().into_bytes()))],
-            );
-            Ok(())
-        }
-        (None, None, Some(memory), true) => {
-            let id = MemoryId::new(memory.clone());
-            let catalog = server.store().catalog();
-            let entry = catalog
-                .memory(&id)
-                .ok_or_else(|| format!("{memory} is not in the store"))?;
-            let state = server.state();
-            server
-                .run(operations::memory_archive(
-                    &state,
-                    &id,
-                    &ArchiveRequest {
-                        base_version: entry.version.to_string(),
-                        author: "wiki".to_string(),
-                        message: format!("scenario: archive {memory}"),
-                    },
-                ))
-                .map(|_| ())
-                .map_err(|error| format!("the archival was refused: {error}"))
-        }
-        _ => Err(
-            "a commit step is either a path with content or a memory with archive: true"
-                .to_string(),
+    let path = commit.path.clone();
+    match &commit.content {
+        Some(content) => server.commit(
+            &format!("scenario: write {path}"),
+            vec![(path.clone(), Some(content.clone().into_bytes()))],
+        ),
+        None => server.commit(
+            &format!("scenario: remove {path}"),
+            vec![(path.clone(), None)],
         ),
     }
+    Ok(())
 }
 
 /// A context key from the form the MCP tools take.
@@ -379,21 +347,31 @@ struct Seen {
 
 /// The two reasons a delivery is withdrawn. Source: the plan's MCP section,
 /// where the retracted line says which of the two happened.
-const RETRACT_REASONS: [&str; 2] = ["archived", "scope off"];
+const RETRACT_REASONS: [&str; 2] = ["deleted", "scope off"];
 
 /// What the text says about the memory `entry`.
 fn seen_in(text: &str, entry: &forgetmenot_server::store::catalog::MemoryEntry) -> Seen {
+    seen_for(
+        text,
+        entry.id.as_str(),
+        entry.document.description(),
+        &entry.document.body,
+    )
+}
+
+/// What the text says about a memory with this id, description and body.
+///
+/// Taken apart from the catalog entry because a deleted memory has none: it can
+/// still be named in a withdrawal, and that is the one thing left to read about
+/// it.
+fn seen_for(text: &str, id: &str, description: &str, body: &str) -> Seen {
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let body_lines: Vec<&str> = entry
-        .document
-        .body
+    let body_lines: Vec<&str> = body
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
     let full = !body_lines.is_empty() && body_lines.iter().all(|line| lines.contains(line));
-    let id = entry.id.as_str();
-    let description = entry.document.description();
     let index = !description.is_empty()
         && lines
             .iter()
@@ -442,13 +420,11 @@ fn check(catalog: &Catalog, expectation: &Expect, answer: &Value) -> Result<(), 
         ));
     }
 
-    // A named memory that is not in the store would make the expectation below
-    // vacuous, so it is a failure of the scenario rather than of the server.
-    let named = expectation
-        .full
-        .iter()
-        .chain(expectation.index.iter())
-        .chain(expectation.retracted.iter().map(|entry| &entry.id));
+    // A memory expected to be delivered that is not in the store would make the
+    // expectations below vacuous, so it is a failure of the scenario rather than
+    // of the server. A withdrawal is the one expectation that may name a memory
+    // the store no longer has, because that is what a deletion leaves.
+    let named = expectation.full.iter().chain(expectation.index.iter());
     for id in named {
         if catalog.memory(&MemoryId::new(id.clone())).is_none() {
             return Err(format!(
@@ -462,6 +438,17 @@ fn check(catalog: &Catalog, expectation: &Expect, answer: &Value) -> Result<(), 
                 "the scenario gives the reason {:?}, which is not one of {RETRACT_REASONS:?}",
                 entry.reason
             ));
+        }
+        // Checked here for a memory the store no longer has; one still in the
+        // store is checked with everything else below.
+        if catalog.memory(&MemoryId::new(entry.id.clone())).is_none() {
+            let seen = seen_for(text, &entry.id, "", "");
+            if seen.retracted.as_deref() != Some(entry.reason.as_str()) {
+                return Err(format!(
+                    "retracted: {} is reported as {:?}, expected {:?}; the text was {text:?}",
+                    entry.id, seen.retracted, entry.reason
+                ));
+            }
         }
     }
 
@@ -790,7 +777,7 @@ fn the_harness_reads_deliveries_whatever_the_section_labels_say() {
         "forgetmenot for alpha/session-1\n\
          >>> rule {} <<<\n{}\n\
          >>> worth knowing <<<\n* {}. {}\n\
-         >>> no longer in force <<<\n* {} -- archived\n\
+         >>> no longer in force <<<\n* {} -- deleted\n\
          >>> you may also work in <<<\nwidgets\n",
         delivered_in_full.id,
         delivered_in_full.document.body.trim_end(),
@@ -822,7 +809,7 @@ fn the_harness_reads_deliveries_whatever_the_section_labels_say() {
         Seen {
             full: false,
             index: false,
-            retracted: Some("archived".to_string())
+            retracted: Some("deleted".to_string())
         },
         "a withdrawal under another label is still a withdrawal"
     );

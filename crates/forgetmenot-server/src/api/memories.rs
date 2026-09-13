@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::operations::{
-    self, ArchiveRequest, DocumentKind, MemoryCreateRequest, MemoryFilter, MemoryWriteRequest,
+    self, DocumentKind, MemoryCreateRequest, MemoryDeleteRequest, MemoryFilter, MemoryWriteRequest,
     OperationError,
 };
 use crate::store::MemoryId;
@@ -28,7 +28,7 @@ use super::{Rejection, answer, history, parse_body, resource};
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/memories", get(index).post(create))
-        .route("/memories/{*rest}", get(read).put(replace).post(archive))
+        .route("/memories/{*rest}", get(read).put(replace).delete(remove))
 }
 
 /// The index filter, as the query string carries it.
@@ -39,7 +39,6 @@ pub fn router() -> Router<Arc<AppState>> {
 struct IndexQuery {
     scope: Option<String>,
     kind: Option<String>,
-    archived: Option<String>,
 }
 
 impl IndexQuery {
@@ -54,23 +53,12 @@ impl IndexQuery {
                 )));
             }
         };
-        let archived = match self.archived.as_deref() {
-            None | Some("") => None,
-            Some("true" | "1") => Some(true),
-            Some("false" | "0") => Some(false),
-            Some(other) => {
-                return Err(Rejection::bad_request(format!(
-                    "archived must be `true` or `false`, not `{other}`"
-                )));
-            }
-        };
         Ok(MemoryFilter {
             scope: self
                 .scope
                 .filter(|scope| !scope.is_empty())
                 .map(crate::store::ScopeId::new),
             kind,
-            archived,
         })
     }
 }
@@ -109,7 +97,7 @@ async fn read(State(state): State<Arc<AppState>>, Path(rest): Path<String>) -> R
         MemoryRoute::HistoryEntry { id, oid } => {
             history::entry(&state, DocumentKind::Memory, &id, &oid).await
         }
-        MemoryRoute::Archive(_) | MemoryRoute::Unknown => unknown_path(&rest),
+        MemoryRoute::Unknown => unknown_path(&rest),
     }
 }
 
@@ -129,20 +117,20 @@ async fn replace(
     answer(operations::memory_put(&state, &MemoryId::new(id), &request, WriteMode::Update).await)
 }
 
-/// `POST /api/memories/{*id}/archive`
-async fn archive(
+/// `DELETE /api/memories/{*id}`: remove the version the caller read.
+async fn remove(
     State(state): State<Arc<AppState>>,
     Path(rest): Path<String>,
     body: Bytes,
 ) -> Response {
-    let MemoryRoute::Archive(id) = MemoryRoute::of(&rest) else {
+    let MemoryRoute::Document(id) = MemoryRoute::of(&rest) else {
         return unknown_path(&rest);
     };
-    let request: ArchiveRequest = match parse_body(&body) {
+    let request: MemoryDeleteRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    answer(operations::memory_archive(&state, &MemoryId::new(id), &request).await)
+    answer(operations::memory_delete(&state, &MemoryId::new(id), &request).await)
 }
 
 /// What the path after `/api/memories/` names.
@@ -154,7 +142,6 @@ enum MemoryRoute {
         id: String,
         oid: String,
     },
-    Archive(String),
     /// Nothing this API answers: no id at all.
     Unknown,
 }
@@ -171,9 +158,6 @@ impl MemoryRoute {
             },
             [.., "history"] if segments.len() >= 2 => {
                 MemoryRoute::History(join(segments.len() - 1))
-            }
-            [.., "archive"] if segments.len() >= 2 => {
-                MemoryRoute::Archive(join(segments.len() - 1))
             }
             _ => MemoryRoute::Document(segments.join("/")),
         }
@@ -192,9 +176,9 @@ fn unknown_path(rest: &str) -> Response {
 mod tests {
     use super::*;
 
-    /// Detects a split that takes the trailing `history` or `archive` segment as
-    /// part of the id, which would make the history of every memory a 404, and
-    /// one that takes a session memory's slashes as sub-resources.
+    /// Detects a split that takes the trailing `history` segment as part of the
+    /// id, which would make the history of every memory a 404, and one that
+    /// takes a session memory's slashes as sub-resources.
     #[test]
     fn the_trailing_segments_select_the_sub_resource_and_the_rest_is_the_id() {
         assert_eq!(
@@ -215,10 +199,6 @@ mod tests {
                 id: "bench-power".to_string(),
                 oid: "abc123".to_string()
             }
-        );
-        assert_eq!(
-            MemoryRoute::of("bench-power/archive"),
-            MemoryRoute::Archive("bench-power".to_string())
         );
         assert_eq!(MemoryRoute::of(""), MemoryRoute::Unknown);
     }

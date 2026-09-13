@@ -6,6 +6,10 @@
 //! everything this server adds inside `metadata`, and every key either tool
 //! does not know preserved untouched at whichever level it appeared.
 //!
+//! The one key this server drops rather than preserves is the legacy
+//! `metadata.archived`, which a memory used to be retired with before retiring
+//! one meant deleting its file.
+//!
 //! `kind`, `scopes` and `source` are optional because a file Claude Code wrote
 //! has none of them. Each is read through an accessor that applies its
 //! documented default, and an absent key is never written back, so reading a
@@ -29,6 +33,11 @@ pub const DEFAULT_SOURCE: MemorySource = MemorySource::Assistant;
 
 /// The scopes of a memory with no `metadata.scopes`.
 static DEFAULT_SCOPES: LazyLock<[ScopeId; 1]> = LazyLock::new(|| [ScopeId::global()]);
+
+/// A `metadata` key earlier versions of this server maintained, when a memory
+/// could be retired by a flag instead of being deleted. It means nothing now:
+/// it is dropped when a file is read, and never written.
+const LEGACY_ARCHIVED_KEY: &str = "archived";
 
 /// How a memory is delivered to a context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -60,10 +69,6 @@ pub struct MemoryMetadata {
     pub scopes: Option<Vec<ScopeId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<MemorySource>,
-    /// An archived memory stops being delivered; the file and its history stay
-    /// so that links and commits still resolve.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub archived: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,7 +88,6 @@ impl MemoryMetadata {
         self.kind.is_none()
             && self.scopes.is_none()
             && self.source.is_none()
-            && self.archived.is_none()
             && self.created.is_none()
             && self.author.is_none()
             && self.extra.is_empty()
@@ -125,8 +129,13 @@ pub struct MemoryDocument {
 
 impl MemoryDocument {
     /// Parse the memory stored at the path `id` names.
+    ///
+    /// The legacy `metadata.archived` key is dropped here rather than kept as
+    /// an unknown key, so that a file that carries it is read like any other
+    /// and writing the file back does not put the key in again.
     pub fn parse(id: MemoryId, bytes: &[u8]) -> Result<Self, FrontmatterError> {
-        let (frontmatter, body) = frontmatter::parse(bytes)?;
+        let (mut frontmatter, body): (MemoryFrontmatter, String) = frontmatter::parse(bytes)?;
+        frontmatter.metadata.extra.shift_remove(LEGACY_ARCHIVED_KEY);
         Ok(Self {
             id,
             frontmatter,
@@ -176,19 +185,6 @@ impl MemoryDocument {
 
     pub fn source(&self) -> MemorySource {
         self.frontmatter.metadata.source.unwrap_or(DEFAULT_SOURCE)
-    }
-
-    pub fn archived(&self) -> bool {
-        self.frontmatter.metadata.archived.unwrap_or(false)
-    }
-
-    /// Archive or unarchive the memory.
-    ///
-    /// Unarchiving removes the key rather than writing `archived: false`, so a
-    /// file that never mentioned archiving does not gain a line saying it is
-    /// not archived.
-    pub fn set_archived(&mut self, archived: bool) {
-        self.frontmatter.metadata.archived = if archived { Some(true) } else { None };
     }
 
     pub fn created(&self) -> Option<DateTime<Utc>> {
@@ -400,10 +396,6 @@ mod tests {
             MemorySource::Assistant,
             "the default source is wrong"
         );
-        assert!(
-            !document.archived(),
-            "a file with no archived key is archived"
-        );
         assert_eq!(document.description(), "Releases are cut from main only");
     }
 
@@ -513,27 +505,38 @@ mod tests {
         assert_eq!(document.title(), "Real title");
     }
 
-    /// Detects `archived: false` being written into a file that never had the
-    /// key, and an archived memory losing the flag on a write.
+    /// Detects a legacy `archived` key kept as an unknown key, which would put
+    /// it back into the file on the next write and leave a memory carrying a
+    /// flag nothing acts on; and a reader that drops the neighbouring keys with
+    /// it, which would delete parts of a file its author wrote.
     #[test]
-    fn archiving_writes_the_key_and_unarchiving_removes_it() {
-        let mut document = parse(CLAUDE_PLAIN);
-        document.set_archived(true);
-        let archived = document.render().expect("the memory renders");
-        assert!(
-            archived.contains("archived: true"),
-            "archiving was not recorded:\n{archived}"
+    fn a_legacy_archived_key_is_dropped_and_its_neighbours_are_kept() {
+        let text = concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: Releases are cut from main only\n",
+            "metadata:\n",
+            "  kind: critical\n",
+            "  archived: true\n",
+            "  type: feedback\n",
+            "---\n",
+            "Body.\n",
         );
-        assert!(
-            document.archived(),
-            "the document does not read back as archived"
-        );
+        let document = parse(text);
 
-        document.set_archived(false);
-        let unarchived = document.render().expect("the memory renders");
+        let rendered = document.render().expect("the memory renders");
         assert!(
-            !unarchived.contains("archived"),
-            "unarchiving wrote an archived key:\n{unarchived}"
+            !rendered.contains("archived"),
+            "the legacy key was written back:\n{rendered}"
+        );
+        assert_eq!(
+            document.kind(),
+            MemoryKind::Critical,
+            "the key next to the legacy one was lost"
+        );
+        assert!(
+            document.frontmatter.metadata.extra.contains_key("type"),
+            "an unknown key next to the legacy one was dropped:\n{rendered}"
         );
     }
 

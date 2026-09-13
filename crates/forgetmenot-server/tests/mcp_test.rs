@@ -32,7 +32,7 @@ const MACHINE: &str = "alpha";
 const SOME_TOKENS: Option<u64> = Some(10_000);
 
 /// The memory management tools, which change the store.
-const MEMORY_TOOLS: [&str; 4] = ["memory_index", "memory_get", "memory_put", "memory_archive"];
+const MEMORY_TOOLS: [&str; 4] = ["memory_index", "memory_get", "memory_put", "memory_delete"];
 
 /// The session management tools, which change only the calling context.
 const SESSION_TOOLS: [&str; 4] = [
@@ -439,12 +439,12 @@ fn a_scope_turned_off_through_mcp_is_reported_as_scope_off_at_the_next_hook_even
     );
 }
 
-/// Detects an archival that does not reach the contexts the memory was delivered
-/// to, and one reported as a scope being turned off: a memory taken out of force
-/// everywhere and a session stepping out of a scope are different events, and the
+/// Detects a deletion that does not reach the contexts the memory was delivered
+/// to, and one reported as a scope being turned off: a memory taken out of the
+/// store and a session stepping out of a scope are different events, and the
 /// model decides what to do next by which one it was told.
 #[test]
-fn a_memory_archived_through_mcp_is_reported_as_archived_at_the_next_hook_event() {
+fn a_memory_deleted_through_mcp_is_reported_as_deleted_at_the_next_hook_event() {
     let server = TestServer::start(example_store_files(), |_| {});
     let session = server.mcp();
     let delivered = server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
@@ -453,10 +453,10 @@ fn a_memory_archived_through_mcp_is_reported_as_archived_at_the_next_hook_event(
         "the memory has to have been delivered before it can be withdrawn, got {delivered:?}"
     );
 
-    // No base_version: the tool archives the version the store holds now, which
+    // No base_version: the tool deletes the version the store holds now, which
     // is what a model that has only read the index can do.
     let answer = session.call(
-        "memory_archive",
+        "memory_delete",
         json!({
             "session_key": "alpha/session-1",
             "id": "bench-power",
@@ -467,15 +467,84 @@ fn a_memory_archived_through_mcp_is_reported_as_archived_at_the_next_hook_event(
     assert_ne!(
         answer.is_error,
         Some(true),
-        "archiving a memory of the store must be answered as done, got {}",
+        "deleting a memory of the store must be answered as done, got {}",
         tool_text(&answer)
+    );
+    let gone = session.call("memory_get", json!({ "id": "bench-power" }));
+    assert_eq!(
+        gone.is_error,
+        Some(true),
+        "a deleted memory must no longer be readable, got {}",
+        tool_text(&gone)
     );
     let (status, withdrawn) = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
     assert_eq!(status, 200, "the next event must be answered");
     let text = context_of(&withdrawn);
     assert!(
-        has_retracted_line(text, "bench-power", "archived"),
-        "the memory must be reported as withdrawn because it was archived, got {text:?}"
+        has_retracted_line(text, "bench-power", "deleted"),
+        "the memory must be reported as withdrawn because it was deleted, got {text:?}"
+    );
+}
+
+/// Detects a deletion that removes a version it never read: a model holding a
+/// memory as it was before someone else rewrote it would take away text it never
+/// saw. The current version has to be in the answer, because that is what the
+/// model needs to read and decide again.
+#[test]
+fn a_deletion_from_a_version_that_is_no_longer_current_is_refused_and_keeps_the_memory() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let stale = tool_json(&session.call("memory_get", json!({ "id": "bench-power" })))["version"]
+        .as_str()
+        .expect("the document names the version it was read at")
+        .to_string();
+    // Changed by hand, the way a person with a shell does, so the version the
+    // session holds is no longer the one the store has.
+    server.commit(
+        "add the charger bench to the rule",
+        vec![(
+            "memories/bench-power.md".to_string(),
+            Some(
+                b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scopes:\n  - global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
+                    .to_vec(),
+            ),
+        )],
+    );
+    let current = tool_json(&session.call("memory_get", json!({ "id": "bench-power" })))["version"]
+        .as_str()
+        .expect("the document names the version it was read at")
+        .to_string();
+    let revision_before = store_revision(&server);
+
+    let refused = session.call(
+        "memory_delete",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "bench-power",
+            "message": "the bench was removed",
+            "base_version": stale
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a deletion from a stale version must be refused, got {}",
+        tool_text(&refused)
+    );
+    let text = tool_text(&refused);
+    assert!(
+        text.contains(&current),
+        "the refusal must name the current version {current}, got {text:?}"
+    );
+    assert_eq!(
+        store_revision(&server),
+        revision_before,
+        "a refused deletion must not move the store"
+    );
+    assert!(
+        tool_json(&session.call("memory_get", json!({ "id": "bench-power" })))["body"].is_string(),
+        "a refused deletion must leave the memory readable"
     );
 }
 

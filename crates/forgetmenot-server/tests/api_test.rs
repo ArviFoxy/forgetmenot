@@ -32,6 +32,10 @@ const MAX_MESSAGE_TITLE: usize = 72;
 /// landed" can be told apart from "the old text is still there".
 const NEW_LINE: &str = "The binder lives on the shelf by the door.";
 
+/// A line of `bench-power`'s body and of no other memory of the example store,
+/// so that "delivered in full" can be told apart from "named in an index line".
+const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -77,6 +81,24 @@ fn commits_touching(server: &TestServer, path: &str) -> Vec<(String, String)> {
         .into_iter()
         .map(|summary| (summary.author, summary.title))
         .collect()
+}
+
+/// The file at one commit, read through the test's own handle: `None` when that
+/// commit's tree has no such path.
+fn file_at(server: &TestServer, commit_oid: &str, path: &str) -> Option<String> {
+    let oid = commit_oid.parse().expect("the answer names a commit");
+    server
+        .store()
+        .repository()
+        .blob_at(oid, path)
+        .expect("the commit is readable")
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Whether `text` carries a line saying `id` was withdrawn for `reason`.
+fn has_retracted_line(text: &str, id: &str, reason: &str) -> bool {
+    text.lines()
+        .any(|line| line.contains(id) && line.contains(reason))
 }
 
 /// The ids the index reports for a query.
@@ -382,44 +404,127 @@ fn a_created_memory_is_stamped_and_listed_only_under_its_own_scope() {
     );
 }
 
-/// Detects an archive that does not take the memory out of the index, or one
-/// that hides it so well that it can no longer be found at all: an archived
-/// memory stays in the store and must be listable on request.
+/// Detects a delete that answers 200 without taking the file out of the store,
+/// one that removes it in more than one commit, and one that never reaches the
+/// contexts the memory was delivered to: a session that was given a rule in full
+/// has to be told the rule is gone, because nothing else in its context says so.
 #[test]
-fn an_archived_memory_leaves_the_index_and_is_listed_only_when_asked_for() {
+fn deleting_a_memory_removes_the_file_in_one_commit_and_withdraws_it_where_it_was_delivered() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let document = document(&server, "rocket-stages");
+    // bench-power is the example store's global critical memory, so it arrives in
+    // full at a session start, before anything is deleted.
+    let (_, delivered) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    assert!(
+        context_of(&delivered).contains(BENCH_POWER_BODY),
+        "the memory has to have been delivered before it can be withdrawn, got {delivered}"
+    );
+    let path = "memories/bench-power.md";
+    let before = commits_touching(&server, path).len();
+    let message = "the bench was taken out of the workshop";
 
     let (status, answer) = server.api(
-        "POST",
-        "/api/memories/rocket-stages/archive",
+        "DELETE",
+        "/api/memories/bench-power",
         Some(&json!({
-            "base_version": document["version"],
+            "base_version": document(&server, "bench-power")["version"],
             "author": AUTHOR,
-            "message": "archive the stage numbering note",
+            "message": message,
         })),
     );
-    assert_eq!(status, 200, "the archive must be accepted, got {answer}");
 
+    assert_eq!(status, 200, "the delete must be accepted, got {answer}");
+    let commits = commits_touching(&server, path);
+    assert_eq!(
+        commits.len(),
+        before + 1,
+        "the delete must make exactly one commit, got {commits:?}"
+    );
+    assert_eq!(
+        commits[0],
+        (AUTHOR.to_string(), message.to_string()),
+        "the commit must carry the author and the message the delete gave"
+    );
+    assert_eq!(
+        file_at(
+            &server,
+            answer["commit_oid"]
+                .as_str()
+                .unwrap_or_else(|| panic!("the answer must name the commit, got {answer}")),
+            path,
+        ),
+        None,
+        "the commit the delete reports must be one whose tree has no file for the memory"
+    );
     assert!(
-        !index_ids(&server, "").contains(&"rocket-stages".to_string()),
-        "an archived memory must not be in the index"
+        !index_ids(&server, "").contains(&"bench-power".to_string()),
+        "a deleted memory must not be in the index"
     );
-    let (status, listed) = server.api("GET", "/api/memories?archived=true", None);
+    let (status, gone) = server.api("GET", "/api/memories/bench-power", None);
     assert_eq!(
-        status, 200,
-        "the index with archived memories must be readable"
+        status, 404,
+        "a deleted memory must no longer be readable, got {gone}"
     );
-    let archived = listed
-        .as_array()
-        .expect("the index is a list")
-        .iter()
-        .find(|entry| entry["id"] == json!("rocket-stages"))
-        .unwrap_or_else(|| panic!("an archived memory must be listed on request, got {listed}"));
+
+    let (status, withdrawn) = server.hook("alpha", SOME_TOKENS, &hook_fixture("stop"));
+    assert_eq!(status, 200, "the next event must be answered");
+    let text = context_of(&withdrawn);
+    assert!(
+        has_retracted_line(text, "bench-power", "deleted"),
+        "the deleted memory must be reported as withdrawn because it was deleted, got {text:?}"
+    );
+    assert!(
+        !text.contains(BENCH_POWER_BODY),
+        "a deleted memory must not be delivered again, got {text:?}"
+    );
+}
+
+/// Detects a delete that ignores the version it was made from: an editor holding
+/// a memory as it was before someone else rewrote it would remove text it never
+/// saw, and the person who wrote it would have no way to find out.
+#[test]
+fn a_delete_from_a_stale_version_is_refused_and_leaves_the_memory_in_the_store() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let stale = document(&server, "reading-list");
+    let (status, _) = server.api(
+        "PUT",
+        "/api/memories/reading-list",
+        Some(&write_of(
+            &stale,
+            "The workshop references are all on paper in the binder, nothing online",
+            &format!("# Where the workshop references live\n\n{NEW_LINE}\n"),
+            "write from the other editor",
+        )),
+    );
+    assert_eq!(status, 200, "the other editor's write must land");
+    let after_write = head(&server);
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/memories/reading-list",
+        Some(&json!({
+            "base_version": stale["version"],
+            "author": AUTHOR,
+            "message": "the reading list is not needed any more",
+        })),
+    );
+
     assert_eq!(
-        archived["archived"],
-        json!(true),
-        "the archived memory must be reported as archived, got {archived}"
+        status, 409,
+        "a delete from a stale version must be refused, got {answer}"
+    );
+    assert_ne!(
+        answer["current"]["version"].as_str(),
+        stale["version"].as_str(),
+        "the refusal must carry the document as the store has it, got {answer}"
+    );
+    assert_eq!(
+        head(&server),
+        after_write,
+        "a refused delete must leave the store as it was"
+    );
+    assert!(
+        index_ids(&server, "").contains(&"reading-list".to_string()),
+        "a refused delete must leave the memory in the index"
     );
 }
 

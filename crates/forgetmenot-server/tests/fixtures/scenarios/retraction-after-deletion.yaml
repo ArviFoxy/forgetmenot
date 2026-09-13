@@ -1,20 +1,20 @@
-name: retraction-after-archive
+name: retraction-after-deletion
 reasoning: >
-  Detects an archived memory that goes on being delivered, and one that is
-  dropped silently: a session that was given a rule in full has to be told the
-  rule is retired, because nothing else in its context says so.
+  Detects a deleted memory that goes on being delivered, and one that is dropped
+  silently: a session that was given a rule in full has to be told the rule is
+  gone, because nothing else in its context says so.
 
   Steps 0 and 1 put the session into widgets and give it widget-naming in full
   and rocket-stages as an index line.
 
-  Step 2 archives widget-naming. Archiving is a write to the store like any
-  other, so it changes nothing in the session until its next event.
+  Step 2 deletes widget-naming's file. A deletion is a write to the store like
+  any other, so it changes nothing in the session until its next event.
 
-  Step 3, the next event: widget-naming is no longer due because it is archived,
-  and it is in the delivery record, so it is withdrawn, with `archived` as the
-  reason, which tells the rule apart from one the session merely stopped working
-  under. Its body must not arrive again. rocket-stages is untouched: archiving one
-  memory says nothing about any other.
+  Step 3, the next event: widget-naming is no longer due because it is no longer
+  in the store, and it is in the delivery record, so it is withdrawn, with
+  `deleted` as the reason, which tells a retired rule apart from one the session
+  merely stopped working under. Its body must not arrive again. rocket-stages is
+  untouched: deleting one memory says nothing about any other.
 steps:
   - hook:
       machine: alpha
@@ -45,8 +45,7 @@ steps:
       index: [rocket-stages]
 
   - commit:
-      memory: widget-naming
-      archive: true
+      path: memories/widget-naming.md
 
   - hook:
       machine: alpha
@@ -61,4 +60,4 @@ steps:
       decision: context
       retracted:
         - id: widget-naming
-          reason: archived
+          reason: deleted

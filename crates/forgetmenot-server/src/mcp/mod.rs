@@ -29,13 +29,13 @@ use serde::Serialize;
 
 use crate::app::AppState;
 use crate::operations::{
-    self, ArchiveRequest, CurrentDocument, MemoryFilter, MemoryWriteRequest, OperationError,
+    self, CurrentDocument, MemoryDeleteRequest, MemoryFilter, MemoryWriteRequest, OperationError,
 };
 use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord};
 use crate::store::validate::WriteMode;
 use crate::store::{MemoryId, ScopeId};
 use params::{
-    MemoryArchiveParams, MemoryGetParams, MemoryIndexParams, MemoryPutParams, SessionInheritParams,
+    MemoryDeleteParams, MemoryGetParams, MemoryIndexParams, MemoryPutParams, SessionInheritParams,
     SessionParams, SessionScopeParams, parse_session_key,
 };
 
@@ -45,7 +45,7 @@ use params::{
 /// commits to the store when it meant to change its own scopes, or expects a
 /// scope change to reach everyone.
 const INSTRUCTIONS: &str = "\
-The memory management tools (memory_index, memory_get, memory_put, memory_archive) read and \
+The memory management tools (memory_index, memory_get, memory_put, memory_delete) read and \
 change the shared store of memories, where every write is one git commit and takes effect in \
 every session the memory's scopes cover. The session management tools (session_scopes, \
 session_scope_on, session_scope_off, session_inherit) change only the calling session's own \
@@ -88,7 +88,6 @@ impl ToolServer {
         let filter = MemoryFilter {
             scope: None,
             kind: params.kind.map(Into::into),
-            archived: params.include_archived,
         };
         let mut summaries = operations::memory_index(&catalog, &filter);
         if let Some(scopes) = params.scopes {
@@ -180,15 +179,16 @@ impl ToolServer {
     }
 
     #[tool(
-        description = "Memory management family: mark one memory archived in the shared store, as \
-                       one git commit authored by session_key. It stops being delivered \
-                       anywhere, to every session, and the file and its whole history stay in the \
-                       store. This is not how this session stops working in a scope: for that use \
-                       session_scope_off, which leaves every memory as it is."
+        description = "Memory management family: remove one memory's file from the shared store, \
+                       as one git commit authored by session_key. It stops being delivered \
+                       anywhere, to every session, and the history keeps it, so every version it \
+                       ever had is still readable. This is not how this session stops working in \
+                       a scope: for that use session_scope_off, which leaves every memory as it \
+                       is."
     )]
-    async fn memory_archive(
+    async fn memory_delete(
         &self,
-        Parameters(params): Parameters<MemoryArchiveParams>,
+        Parameters(params): Parameters<MemoryDeleteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let author = parse_session_key(&params.session_key)?;
         let id = MemoryId::new(params.id);
@@ -209,12 +209,12 @@ impl ToolServer {
                 }
             }
         };
-        let request = ArchiveRequest {
+        let request = MemoryDeleteRequest {
             base_version,
             author: author.to_string(),
             message: params.message,
         };
-        match operations::memory_archive(&self.state, &id, &request).await {
+        match operations::memory_delete(&self.state, &id, &request).await {
             Ok(outcome) => json_text(&outcome),
             Err(error) => Ok(tool_failure(&error)),
         }

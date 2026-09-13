@@ -275,31 +275,30 @@ fn a_changed_critical_memory_stops_the_next_tool_call() {
     );
 }
 
-/// Detects an archived memory that keeps being delivered, or is dropped
-/// silently: a session that was given a rule has to be told the rule is gone.
+/// Detects a reader that still acts on the legacy `archived` key, which earlier
+/// versions of this server wrote to retire a memory. A store written by one of
+/// those versions must not have memories silently withheld, or withdrawn from a
+/// session that was given them, over a key this server does not interpret.
 #[test]
-fn archiving_a_delivered_memory_withdraws_it_at_the_next_event() {
+fn a_memory_carrying_the_legacy_archived_key_is_delivered_like_any_other() {
     let server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &widget_prompt());
-
+    let marker = "The rule covers prototypes as well.";
     server.commit(
-        "archive the widget rule",
-        vec![widget_naming_file(
-            &["archived: true"],
-            "The rule is no longer in force.",
-        )],
+        "restore the store as an older server left it",
+        vec![widget_naming_file(&["archived: true"], marker)],
     );
-    let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("stop"));
 
-    assert_eq!(status, 200, "the next event must be answered");
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &widget_prompt());
+
+    assert_eq!(status, 200, "the event must be answered");
     let text = context_of(&answer);
     assert!(
-        has_retracted_line(text, "widget-naming", "archived"),
-        "the archived memory must be reported as withdrawn, got {text:?}"
+        text.contains(marker),
+        "a memory carrying the legacy key must be delivered in full, got {text:?}"
     );
     assert!(
-        !text.contains("The rule is no longer in force."),
-        "an archived memory must not be delivered, got {text:?}"
+        !has_retracted_line(text, "widget-naming", "deleted"),
+        "a memory carrying the legacy key must not be withdrawn, got {text:?}"
     );
 }
 
@@ -597,7 +596,7 @@ mod state_machine {
         }
     }
 
-    /// Detects a withdrawal reported as an archival when the memory is still in
+    /// Detects a withdrawal reported as a deletion when the memory is still in
     /// the store: the model would be told a rule was retired when the session
     /// merely stopped working in its scope.
     #[test]

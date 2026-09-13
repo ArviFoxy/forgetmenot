@@ -63,10 +63,6 @@ pub struct MemoryIndexParams {
     /// Only memories of this kind; both kinds when this is absent.
     #[serde(default)]
     pub kind: Option<RequestedKind>,
-    /// List archived memories as well. They are left out by default because an
-    /// archived memory is delivered nowhere.
-    #[serde(default)]
-    pub include_archived: Option<bool>,
 }
 
 /// Which memory to read, and for whom.
@@ -108,18 +104,18 @@ pub struct MemoryPutParams {
     pub base_version: Option<String>,
 }
 
-/// One memory to archive.
+/// One memory to delete.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct MemoryArchiveParams {
+pub struct MemoryDeleteParams {
     /// The calling session's key, recorded as the commit's author.
     pub session_key: String,
-    /// The memory id to archive.
+    /// The memory id to delete.
     pub id: String,
     /// The commit's title line: one line, at most 72 characters, saying why the
     /// memory is no longer in force.
     pub message: String,
-    /// The version this write replaces, as `memory_get` reported it. Absent
-    /// archives whatever version the store holds now.
+    /// The version this write removes, as `memory_get` reported it. Absent
+    /// deletes whatever version the store holds now.
     #[serde(default)]
     pub base_version: Option<String>,
 }

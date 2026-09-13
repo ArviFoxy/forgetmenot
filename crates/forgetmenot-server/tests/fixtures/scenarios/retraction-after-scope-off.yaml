@@ -1,9 +1,9 @@
 name: retraction-after-scope-off
 reasoning: >
-  Detects a scope that cannot be turned off, a withdrawal reported as an
-  archival, and an implied scope turned off with the scope that implied it. The
+  Detects a scope that cannot be turned off, a withdrawal reported as a
+  deletion, and an implied scope turned off with the scope that implied it. The
   first two would leave the model acting on a rule it was told to stop working
-  under, or tell it a rule was retired from the store when it was not. The third
+  under, or tell it a rule was taken out of the store when it was not. The third
   would silently withdraw memories nobody asked to stop working with: a scope is
   a flag, and the state does not record which trigger or implication set it.
 

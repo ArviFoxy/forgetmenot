@@ -162,8 +162,8 @@ pub fn initial_active(machine: &str, session_id: &str) -> BTreeSet<ScopeId> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetractReason {
-    /// The memory was archived, or is no longer in the store at all.
-    Archived,
+    /// The memory is no longer in the store: its file was deleted.
+    Deleted,
     /// No scope this context works in covers the memory any more.
     ScopeOff,
 }
@@ -171,7 +171,7 @@ pub enum RetractReason {
 impl RetractReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            RetractReason::Archived => "archived",
+            RetractReason::Deleted => "deleted",
             RetractReason::ScopeOff => "scope off",
         }
     }
@@ -261,10 +261,9 @@ pub fn compute_needs(
             continue;
         }
         let reason = match catalog.memory(id) {
-            // Archived, or gone from the store: either way the model must stop
-            // acting on it, and the store no longer says why it was due.
-            None => RetractReason::Archived,
-            Some(memory) if memory.is_archived() => RetractReason::Archived,
+            // Gone from the store: the model must stop acting on it, and the
+            // store no longer says why it was ever due.
+            None => RetractReason::Deleted,
             Some(_) => RetractReason::ScopeOff,
         };
         needs.retracted.push((id.clone(), reason));
