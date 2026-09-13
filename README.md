@@ -10,6 +10,7 @@ forgetmenot is a memory server for LLM coding agents, for people who work on man
 - **Interception.** A tool call that brings a critical memory into play is held until the agent has been given that memory.
 - **Reminders.** Optionally, everything that applies is delivered again after a set number of context tokens: critical memories in full, the rest as the index.
 - **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one. Several agents and people can write at the same time: their changes are merged, and only edits to the same lines conflict.
+- **Claude Code's memory format.** Memory files use Claude Code's own auto-memory format, so an existing Claude Code memory directory can be used as a store, and Claude Code can read a forgetmenot store.
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
 - **Statistics.** Every trigger match, delivery and fetch is recorded, so unused memories are visible.
 
@@ -34,7 +35,7 @@ One server serves every machine on a network, and subagents receive the same mem
 
 **Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A subagent starts with the scopes its parent had active.
 
-**Delivery.** At every hook event the server compares what is due, the memories of the active scopes, with what the context has already seen, and sends the difference: memories never shown, memories changed since they were shown, critical memories shown more than a configurable number of context tokens ago, and notices for memories that were deleted or whose scope was turned off. If a tool call is about to run while a critical memory is due that the context has not seen, the call is held, the memory is delivered, and the agent reissues the call.
+**Delivery.** At every hook event the server compares what is due, the memories of the active scopes, with what the context has already seen, and sends the difference: memories never shown, memories changed since they were shown, memories shown more than a configurable number of context tokens ago, and notices for memories that were deleted or whose scope was turned off. If a tool call is about to run while a critical memory is due that the context has not seen, the call is held, the memory is delivered, and the agent reissues the call.
 
 **Branch.** Several changes to the store can be made on a git branch and landed as one commit. Nothing on a branch is delivered until it lands. See [Branches](#branches).
 
@@ -89,7 +90,7 @@ Everything that changes what the agent experiences lives in `config.yml` at the 
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `reminder_tokens` | integer or null | `null` (off) | Re-deliver critical memories after this many context tokens |
+| `reminder_tokens` | integer or null | `null` (off) | Deliver everything that applies again this many context tokens after it was last shown: critical memories in full, knowledge memories as their index line |
 | `interrupt_on_critical` | bool | `true` | Hold a tool call when a critical memory is due and unseen |
 | `interrupt_exempt_tools` | list of strings | `[]` | Tool names never held, by exact match on the tool name |
 | `subagents_inherit_scopes` | bool | `true` | A subagent starts with its parent's active scopes |
