@@ -8,7 +8,10 @@ reasoning: >
   Steps 0 and 1, a session start on each of two machines: both are owed
   bench-power in full and reading-list as an index line, because both are in
   global. Only alpha/session-1 is owed the notes, whose single scope is
-  session:alpha/session-1, so the session on beta must not be given them.
+  session:alpha/session-1, so the session on beta must not be given them. The
+  session on beta starts in a directory that names a rocket, and rocketry's
+  trigger is on every text, so rocketry is on there and rocket-stages is owed as
+  an index line as well.
 
   Step 2 is the write the session on beta makes: a commit to the store, which
   changes nothing in any context until each one's next event.
@@ -44,7 +47,7 @@ steps:
     expect:
       decision: context
       full: [bench-power]
-      index: [reading-list]
+      index: [reading-list, rocket-stages]
 
   - commit:
       path: memories/bench-power.md

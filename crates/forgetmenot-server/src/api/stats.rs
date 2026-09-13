@@ -80,7 +80,7 @@ async fn active_scope_sets(state: &Arc<AppState>) -> Vec<BTreeSet<ScopeId>> {
 /// statistics are written off the hot path, so without it a reader can miss the
 /// event it was opened to look at. sqlite is a blocking API, so the query
 /// itself does not run on an async worker.
-async fn read<T: Send + 'static>(
+pub(crate) async fn read<T: Send + 'static>(
     state: &Arc<AppState>,
     query: impl FnOnce(&StatsReader) -> Result<T, StatsError> + Send + 'static,
 ) -> Result<T, StatsError> {
@@ -100,19 +100,22 @@ async fn read<T: Send + 'static>(
     }
 }
 
-/// The rows as JSON, or a 500 in the shape every other failure of the API takes:
-/// a log that cannot be read is a server fault, not a request the client got
-/// wrong, so the detail goes to the log and the answer says only that.
+/// The rows as JSON, or a 500 in the shape every other failure of the API takes.
 fn answer<T: Serialize>(result: Result<T, StatsError>) -> Response {
     match result {
         Ok(rows) => super::resource(rows),
-        Err(error) => {
-            tracing::error!("the statistics could not be read: {error}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({ "error": "the statistics could not be read" })),
-            )
-                .into_response()
-        }
+        Err(error) => unreadable(error),
     }
+}
+
+/// What a caller is told when the log itself cannot be read: a log that is not
+/// there is a server fault, not a request the client got wrong, so the detail
+/// goes to the server's log and the answer says only that.
+pub(crate) fn unreadable(error: StatsError) -> Response {
+    tracing::error!("the statistics could not be read: {error}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        axum::Json(serde_json::json!({ "error": "the statistics could not be read" })),
+    )
+        .into_response()
 }

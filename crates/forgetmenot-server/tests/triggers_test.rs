@@ -138,6 +138,61 @@ fn a_pattern_registered_for_one_field_does_not_fire_for_another() {
     }
 }
 
+/// Detects an `any` trigger compiled into one field instead of all of them,
+/// which would leave most of what flows through a session unmatched while the
+/// scope file says the trigger is about every text of it.
+#[test]
+fn an_any_trigger_fires_for_every_text_the_hook_matches() {
+    let index = index_with(&[("widgets", TriggerField::Any, r"\bwidget\b", None)]);
+    for field in TriggerField::ALL {
+        assert_eq!(
+            fired_scopes(&index, field, "the widget on the bench", "alpha"),
+            vec!["widgets".to_string()],
+            "an any trigger did not fire for {field}"
+        );
+    }
+}
+
+/// Detects an `any` trigger that has stopped being a pattern and become a match
+/// on everything: a text none of its words appear in must leave it alone, on
+/// every field, or every session would turn the scope on at its first event.
+#[test]
+fn an_any_trigger_leaves_a_text_its_pattern_does_not_match_alone() {
+    let index = index_with(&[("widgets", TriggerField::Any, r"\bwidget\b", None)]);
+    for field in TriggerField::ALL {
+        assert!(
+            index
+                .fire(field, "the bracket on the bench", "alpha")
+                .is_empty(),
+            "an any trigger fired on {field} for a text its pattern does not match"
+        );
+    }
+}
+
+/// Detects a machine qualifier dropped on an `any` trigger, which is where it
+/// costs the most: the trigger is matched against every text of the session, so
+/// one written for the paths of one machine would turn its scope on everywhere.
+#[test]
+fn a_machine_qualified_any_trigger_fires_only_for_its_machine() {
+    let index = index_with(&[(
+        "workshop",
+        TriggerField::Any,
+        "/workshop(/|$)",
+        Some("alpha"),
+    )]);
+    for field in TriggerField::ALL {
+        assert_eq!(
+            fired_scopes(&index, field, "/home/user/workshop", "alpha"),
+            vec!["workshop".to_string()],
+            "the trigger did not fire on {field} on its own machine"
+        );
+        assert!(
+            index.fire(field, "/home/user/workshop", "beta").is_empty(),
+            "a trigger qualified for alpha fired on {field} for beta"
+        );
+    }
+}
+
 /// Detects a machine qualifier that is ignored: the same path means different
 /// things on different machines, so a directory trigger firing everywhere would
 /// activate a scope for work that has nothing to do with it.

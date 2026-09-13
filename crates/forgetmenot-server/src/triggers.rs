@@ -7,6 +7,12 @@
 //! rather than adding passes over the text. That is the property that lets a
 //! hook match a 256 KiB tool result against every trigger in the store on the
 //! hot path.
+//!
+//! A trigger on [`TriggerField::Any`] belongs to every field, so it is compiled
+//! into every field's automaton: matching a text still costs the one pass,
+//! whatever mixture of fields the store's triggers name. One further automaton
+//! holds every trigger once, whatever field it names, which is what a trigger
+//! test asks about when it asks about `any`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,8 +25,8 @@ use crate::store::scope::TriggerField;
 #[derive(Clone, Debug)]
 struct CompiledTrigger {
     scope: ScopeId,
-    /// Present only for `working_directory` triggers, where a path means
-    /// different things on different machines.
+    /// Present only for `working_directory` and `any` triggers, where a path
+    /// means different things on different machines.
     machine: Option<String>,
     pattern: String,
 }
@@ -53,7 +59,12 @@ impl FieldIndex {
 
 /// Every trigger in the store, ready to match.
 pub struct TriggerIndex {
+    /// One automaton per text a hook event carries, each holding that field's
+    /// own triggers and every `any` trigger.
     fields: [FieldIndex; TriggerField::COUNT],
+    /// Every trigger once, whatever field it names: what `any` matches against
+    /// when it is asked about as a field of its own.
+    every: FieldIndex,
     /// The transitive `implies` closure, applied by [`TriggerIndex::fire_closed`].
     implied: BTreeMap<ScopeId, BTreeSet<ScopeId>>,
 }
@@ -63,13 +74,17 @@ impl TriggerIndex {
     pub fn empty() -> Self {
         Self {
             fields: std::array::from_fn(|_| FieldIndex::empty()),
+            every: FieldIndex::empty(),
             implied: BTreeMap::new(),
         }
     }
 
-    /// The number of compiled triggers across all fields.
+    /// The number of compiled triggers.
+    ///
+    /// Counted over the one automaton that holds each trigger once, since an
+    /// `any` trigger sits in every field's automaton as well.
     pub fn len(&self) -> usize {
-        self.fields.iter().map(|field| field.entries.len()).sum()
+        self.every.entries.len()
     }
 
     /// Whether the store has no triggers at all.
@@ -79,8 +94,15 @@ impl TriggerIndex {
 
     /// The triggers on `field` whose pattern matches `text` and whose machine
     /// qualifier is absent or equal to `machine`.
+    ///
+    /// A trigger on `any` fires for every field. Asking about `any` itself asks
+    /// about every trigger in the store, which is what the trigger test page
+    /// offers when a person does not want to pick a field.
     pub fn fire(&self, field: TriggerField, text: &str, machine: &str) -> Vec<TriggerHit> {
-        let index = &self.fields[field.index()];
+        let index = match field.index() {
+            Some(position) => &self.fields[position],
+            None => &self.every,
+        };
         index
             .set
             .matches(text)
@@ -116,6 +138,8 @@ impl TriggerIndex {
 pub struct TriggerIndexBuilder {
     /// One slot per field, so that a field can never index a missing slot.
     per_field: [Vec<CompiledTrigger>; TriggerField::COUNT],
+    /// Every trigger once, in the order it was pushed.
+    every: Vec<CompiledTrigger>,
 }
 
 impl Default for TriggerIndexBuilder {
@@ -128,10 +152,14 @@ impl TriggerIndexBuilder {
     pub fn new() -> Self {
         Self {
             per_field: std::array::from_fn(|_| Vec::new()),
+            every: Vec::new(),
         }
     }
 
     /// Add one trigger, or return the compile error of its pattern.
+    ///
+    /// A trigger on `any` is added to every field, so that the cost of matching
+    /// one text stays the one pass over it.
     pub fn push(
         &mut self,
         scope: ScopeId,
@@ -140,15 +168,25 @@ impl TriggerIndexBuilder {
         machine: Option<String>,
     ) -> Result<(), regex::Error> {
         regex::Regex::new(pattern)?;
-        self.per_field[field.index()].push(CompiledTrigger {
+        let compiled = CompiledTrigger {
             scope,
             machine,
             pattern: pattern.to_string(),
-        });
+        };
+        match field.index() {
+            Some(position) => self.per_field[position].push(compiled.clone()),
+            None => {
+                for slot in &mut self.per_field {
+                    slot.push(compiled.clone());
+                }
+            }
+        }
+        self.every.push(compiled);
         Ok(())
     }
 
-    /// Compile the collected triggers into one automaton per field.
+    /// Compile the collected triggers into one automaton per field, and one
+    /// holding all of them.
     pub fn build(
         self,
         implied: BTreeMap<ScopeId, BTreeSet<ScopeId>>,
@@ -156,9 +194,18 @@ impl TriggerIndexBuilder {
         let mut fields: [FieldIndex; TriggerField::COUNT] =
             std::array::from_fn(|_| FieldIndex::empty());
         for (position, entries) in self.per_field.into_iter().enumerate() {
-            let set = RegexSet::new(entries.iter().map(|entry| &entry.pattern))?;
-            fields[position] = FieldIndex { set, entries };
+            fields[position] = compile(entries)?;
         }
-        Ok(TriggerIndex { fields, implied })
+        Ok(TriggerIndex {
+            fields,
+            every: compile(self.every)?,
+            implied,
+        })
     }
+}
+
+/// One automaton over the patterns of `entries`, which keeps its parallel order.
+fn compile(entries: Vec<CompiledTrigger>) -> Result<FieldIndex, regex::Error> {
+    let set = RegexSet::new(entries.iter().map(|entry| &entry.pattern))?;
+    Ok(FieldIndex { set, entries })
 }

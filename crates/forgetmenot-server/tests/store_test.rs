@@ -694,6 +694,24 @@ fn a_machine_qualifier_outside_working_directory_is_reported() {
     );
 }
 
+/// Detects a machine qualifier refused on an `any` trigger: the texts an `any`
+/// trigger matches include the working directory and the paths the tools are
+/// called with, so restricting one to a machine is as meaningful there as on a
+/// directory trigger, and refusing it would make such a trigger unwritable.
+#[test]
+fn a_machine_qualifier_on_an_any_trigger_is_accepted() {
+    let store = store_with(&[(
+        "scopes/workshop.yaml",
+        b"id: workshop\ntriggers:\n  - pattern: '/workshop(/|$)'\n    machine: alpha\n",
+    )]);
+    let report = validate(&store.catalog());
+    assert!(
+        report.is_clean(),
+        "a machine-qualified any trigger was reported: {:#?}",
+        report.errors()
+    );
+}
+
 /// Detects a scope whose declared id differs from its file name, which would
 /// make every reference to it resolve to one or the other unpredictably.
 #[test]

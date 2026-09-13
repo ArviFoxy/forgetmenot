@@ -506,6 +506,19 @@ impl StatsReader {
             .collect())
     }
 
+    /// Every machine that sent an event, sorted.
+    ///
+    /// The log is the only record of a machine whose sessions the running server
+    /// no longer holds, which is why the machine list is not read from the
+    /// context registry alone.
+    pub fn machines(&self) -> Result<Vec<String>, StatsError> {
+        self.rows(
+            "SELECT DISTINCT machine FROM hook_events ORDER BY machine",
+            params![],
+            |row| row.get::<_, String>(0),
+        )
+    }
+
     /// Delivered bytes per session, with full bodies and index lines apart,
     /// sorted by session key.
     pub fn session_bytes(&self) -> Result<Vec<SessionBytesRow>, StatsError> {

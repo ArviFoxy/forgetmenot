@@ -1,4 +1,3 @@
 id: rocketry
 triggers:
-- on: user_message
-  pattern: '\brocket(s|ry)?\b'
+- pattern: '\brocket(s|ry)?\b'

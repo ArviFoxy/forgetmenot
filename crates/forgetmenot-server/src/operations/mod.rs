@@ -329,11 +329,34 @@ pub struct TriggerTestResult {
 /// A text to match against the store's triggers.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TriggerTestRequest {
+    /// Which of the hook's texts the text stands for, or `any` to match it
+    /// against every trigger in the store.
     pub field: TriggerField,
     pub text: String,
     /// The machine the text is supposed to come from, which decides whether a
-    /// machine-qualified `working_directory` trigger applies.
+    /// machine-qualified `working_directory` or `any` trigger applies.
     pub machine: String,
+}
+
+/// A pattern to check on its own, before it is saved anywhere.
+#[derive(Clone, Debug, Deserialize)]
+pub struct PatternRequest {
+    pub pattern: String,
+}
+
+/// Whether a pattern compiles, with the reason it does not when it does not.
+#[derive(Clone, Debug, Serialize)]
+pub struct PatternValidity {
+    pub ok: bool,
+    /// The `regex` crate's own message, absent when the pattern compiles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// The machines the server knows of.
+#[derive(Clone, Debug, Serialize)]
+pub struct MachineList {
+    pub machines: Vec<String>,
 }
 
 /// The scopes of one context, and the ones it could turn on.
@@ -1446,8 +1469,32 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Contexts, triggers and review
+// Contexts, machines, triggers and review
 // ---------------------------------------------------------------------------
+
+/// Every machine the server knows of, sorted and without repeats.
+///
+/// Two sources, because neither covers the other: a machine whose sessions are
+/// all over is only in the statistics log, and a context restored from the
+/// state file is in the registry before it sends its next event.
+pub async fn machines(
+    registry: &ContextRegistry,
+    now: DateTime<Utc>,
+    recorded: impl IntoIterator<Item = String>,
+) -> MachineList {
+    let mut machines: BTreeSet<String> = recorded.into_iter().collect();
+    machines.extend(
+        registry
+            .snapshot(now)
+            .await
+            .contexts
+            .into_iter()
+            .map(|record| record.key.machine),
+    );
+    MachineList {
+        machines: machines.into_iter().collect(),
+    }
+}
 
 /// Every context the server knows about, ordered by key.
 pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<ContextRow> {
@@ -1463,6 +1510,25 @@ pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<Con
             last_seen: iso8601(record.state.last_seen),
         })
         .collect()
+}
+
+/// Whether a pattern is a regex that compiles, and what is wrong with it when
+/// it is not.
+///
+/// The same `regex::Regex::new` the store's validation and the trigger index
+/// use, so a pattern this reports as good is one a scope file may carry, and the
+/// message is the one a refused write would carry.
+pub fn validate_pattern(request: &PatternRequest) -> PatternValidity {
+    match regex::Regex::new(&request.pattern) {
+        Ok(_) => PatternValidity {
+            ok: true,
+            error: None,
+        },
+        Err(error) => PatternValidity {
+            ok: false,
+            error: Some(error.to_string()),
+        },
+    }
 }
 
 /// Which triggers a text fires, without turning anything on.

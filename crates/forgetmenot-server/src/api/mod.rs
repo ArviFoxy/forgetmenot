@@ -12,6 +12,7 @@
 pub mod branches;
 pub mod contexts;
 pub mod history;
+pub mod machines;
 pub mod memories;
 pub mod review;
 pub mod scopes;
@@ -40,6 +41,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(branches::router())
         .merge(triggers::router())
         .merge(contexts::router())
+        .merge(machines::router())
         .merge(review::router())
         .merge(stats::router())
 }

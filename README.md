@@ -5,7 +5,7 @@ Trigger-based, scoped LLM memory.
 forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
 
 - **Scoped memories.** Every memory belongs to scopes: a project, a domain, a machine, a session. A session only sees what applies to it, so the context stays small and relevant.
-- **Triggers turn scopes on.** Regular expressions over the user's messages, the agent's commands and tool calls, its output and its working directory activate scopes automatically. Nobody has to remember to load the right memory.
+- **Triggers turn scopes on.** Regular expressions over the user's messages, the agent's commands and tool calls, its output and its working directory activate scopes automatically. A trigger matches all of them unless it names one. Nobody has to remember to load the right memory.
 - **Critical memories are always delivered in full.** Rules the agent must not break are never reduced to an index line the agent might skip.
 - **A command that surfaces a critical memory is intercepted.** The call is held, the memory is delivered, and the agent reissues the call after reading it. The rule arrives before the action, not after.
 - **Periodic reminders.** Critical memories are delivered again after a configurable number of context tokens, because attention to early context fades in long sessions.
@@ -30,7 +30,7 @@ One server serves every machine on a network, and subagents get the same memorie
 
 **Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers.
 
-**Trigger.** A regular expression attached to a scope. It is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its working directory. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
+**Trigger.** A regular expression attached to a scope. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its working directory. A trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
 
 **Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A subagent starts with the scopes its parent had active.
 
@@ -55,12 +55,13 @@ A scope file names the scopes it implies and its triggers:
 id: widgets
 implies: [rocketry]
 triggers:
-  - on: tool_input
-    pattern: '\bwidgets?\b'
+  - pattern: '\bwidgets?\b'
   - on: working_directory
     pattern: '/widgets(/|$)'
     machine: alpha
 ```
+
+A trigger with no `on` is matched against every text of the session; `on` is one of `any`, `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result` or `working_directory`. `machine` restricts a trigger to one machine, and only a `working_directory` trigger or one matched against every text may carry it, because a path means different things on different machines while a message does not.
 
 A memory file uses Claude Code's own memory format, with forgetmenot's fields inside `metadata`:
 

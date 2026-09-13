@@ -1046,6 +1046,173 @@ fn the_trigger_test_applies_the_machine_qualifier_of_a_directory_trigger() {
     );
 }
 
+/// Detects an `any` trigger that the page cannot show anything about: the
+/// example store's `rocketry` trigger names no field, so it is about every text
+/// a session produces, and a test of a tool input must report it as firing there
+/// like any trigger written for that field.
+#[test]
+fn the_trigger_test_reports_an_any_trigger_for_the_field_it_was_asked_about() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/triggers/test",
+        Some(&json!({
+            "field": "tool_input",
+            "text": "cargo test -p rocketry",
+            "machine": "beta",
+        })),
+    );
+
+    assert_eq!(status, 200, "a trigger test must be answered, got {answer}");
+    let hit = answer["fired"]
+        .as_array()
+        .expect("the answer lists what fired")
+        .iter()
+        .find(|hit| hit["scope_id"] == json!("rocketry"))
+        .unwrap_or_else(|| panic!("the any trigger must fire on a tool input, got {answer}"));
+    assert_eq!(
+        hit["field"],
+        json!("tool_input"),
+        "the hit must name the field the text was matched as, got {hit}"
+    );
+    assert!(
+        hit["pattern"]
+            .as_str()
+            .is_some_and(|pattern| pattern.contains("rocket")),
+        "the hit must name the pattern that matched, got {hit}"
+    );
+}
+
+/// Detects a trigger test that refuses `any` as the field it is asked about, or
+/// answers it from one field's patterns: `any` is what a person picks when they
+/// do not know which text their pattern will meet, so it must report every
+/// trigger the text fires, whatever field each trigger's own file names.
+#[test]
+fn the_trigger_test_accepts_any_as_the_field_and_reports_every_trigger_the_text_fires() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/triggers/test",
+        Some(&json!({
+            "field": "any",
+            "text": "the widget on the rocket",
+            "machine": "beta",
+        })),
+    );
+
+    assert_eq!(status, 200, "a trigger test must be answered, got {answer}");
+    let scopes: BTreeSet<&str> = answer["fired"]
+        .as_array()
+        .expect("the answer lists what fired")
+        .iter()
+        .map(|hit| hit["scope_id"].as_str().expect("a scope id is text"))
+        .collect();
+    assert!(
+        scopes.contains("widgets"),
+        "a trigger written for one field must be reported when the field is any, got {answer}"
+    );
+    assert!(
+        scopes.contains("rocketry"),
+        "an any trigger must be reported when the field is any, got {answer}"
+    );
+}
+
+/// Detects a pattern check that calls a pattern the store would refuse good,
+/// which would let an editor save a trigger that can never fire, and one that
+/// reports the refusal without the compiler's message, which leaves the author
+/// with nothing to fix.
+#[test]
+fn the_pattern_check_refuses_a_pattern_that_does_not_compile_and_says_why() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/triggers/validate",
+        Some(&json!({ "pattern": "[unclosed" })),
+    );
+
+    assert_eq!(
+        status, 200,
+        "a pattern check must be answered, got {answer}"
+    );
+    assert_eq!(
+        answer["ok"],
+        json!(false),
+        "a pattern that does not compile must not be reported as good, got {answer}"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "the answer must carry what was wrong with the pattern, got {answer}"
+    );
+}
+
+/// Detects a pattern check that refuses a pattern the store carries, which
+/// would stop an editor saving a trigger that works: the pattern here is one of
+/// the example store's own.
+#[test]
+fn the_pattern_check_accepts_a_pattern_the_store_already_carries() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/triggers/validate",
+        Some(&json!({ "pattern": r"\brocket(s|ry)?\b" })),
+    );
+
+    assert_eq!(
+        status, 200,
+        "a pattern check must be answered, got {answer}"
+    );
+    assert_eq!(
+        answer["ok"],
+        json!(true),
+        "a pattern that compiles must be reported as good, got {answer}"
+    );
+    assert!(
+        answer.get("error").is_none(),
+        "a pattern that compiles must carry no error, got {answer}"
+    );
+}
+
+/// Detects a machine list read from the live contexts alone, or from the log
+/// alone: a restart empties neither, but a machine whose sessions are over is
+/// only in the log, and the list is what the frontend offers wherever a machine
+/// is picked, so a name missing from it cannot be chosen at all.
+#[test]
+fn the_machines_page_lists_every_machine_that_has_sent_an_event_across_a_restart() {
+    let mut server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    server.hook("beta", SOME_TOKENS, &hook_fixture("session_start"));
+    server.restart();
+
+    let (status, answer) = server.api("GET", "/api/machines", None);
+
+    assert_eq!(status, 200, "the machines must be readable, got {answer}");
+    let machines: Vec<&str> = answer["machines"]
+        .as_array()
+        .expect("the answer lists the machines")
+        .iter()
+        .map(|machine| machine.as_str().expect("a machine name is text"))
+        .collect();
+    for expected in ["alpha", "beta"] {
+        assert!(
+            machines.contains(&expected),
+            "{expected} sent an event, so it must be listed, got {answer}"
+        );
+    }
+    let mut sorted_without_repeats = machines.clone();
+    sorted_without_repeats.sort_unstable();
+    sorted_without_repeats.dedup();
+    assert_eq!(
+        machines, sorted_without_repeats,
+        "the machines must be sorted and named once each, got {answer}"
+    );
+}
+
 /// Detects a contexts page that cannot see the live state: after a session has
 /// been delivered to, it must be listed with the scopes it works in, or nobody
 /// can tell what a session is currently working under.

@@ -46,7 +46,7 @@ pub enum ValidationError {
     },
 
     #[error(
-        "trigger on {field} carries the machine qualifier `{machine}`, which only a working_directory trigger may have"
+        "trigger on {field} carries the machine qualifier `{machine}`, which only a working_directory or any trigger may have"
     )]
     MisplacedMachineQualifier {
         path: String,
@@ -296,12 +296,12 @@ fn validate_scope_document(
     }
     for trigger in &document.triggers {
         if let Some(machine) = &trigger.machine
-            && trigger.on != TriggerField::WorkingDirectory
+            && !trigger.takes_machine_qualifier()
         {
             report.push(ValidationError::MisplacedMachineQualifier {
                 path: path.to_string(),
                 scope: id.clone(),
-                field: trigger.on,
+                field: trigger.field(),
                 machine: machine.clone(),
             });
         }
@@ -309,7 +309,7 @@ fn validate_scope_document(
             report.push(ValidationError::InvalidTriggerPattern {
                 path: path.to_string(),
                 scope: id.clone(),
-                field: trigger.on,
+                field: trigger.field(),
                 pattern: trigger.pattern.clone(),
                 message: error.to_string(),
             });

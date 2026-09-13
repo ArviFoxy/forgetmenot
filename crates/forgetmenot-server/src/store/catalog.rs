@@ -255,14 +255,14 @@ fn compile_triggers(
         for trigger in &entry.document.triggers {
             if let Err(error) = builder.push(
                 entry.id.clone(),
-                trigger.on,
+                trigger.field(),
                 &trigger.pattern,
                 trigger.machine.clone(),
             ) {
                 load_errors.push(ValidationError::InvalidTriggerPattern {
                     path: entry.path.clone(),
                     scope: entry.id.clone(),
-                    field: trigger.on,
+                    field: trigger.field(),
                     pattern: trigger.pattern.clone(),
                     message: error.to_string(),
                 });
