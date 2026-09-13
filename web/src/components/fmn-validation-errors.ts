@@ -13,7 +13,7 @@ export class FmnValidationErrors extends PageElement {
   override render(): TemplateResult | typeof nothing {
     if (this.errors.length === 0) return nothing;
     return html`<sl-alert variant="danger" open>
-      <sl-icon slot="icon" name="circle-alert"></sl-icon>
+      <sl-icon slot="icon" name="exclamation-mark"></sl-icon>
       <strong>The write was refused</strong>
       <ul>
         ${this.errors.map((error) => html`<li><code>${error.path}</code> ${error.message}</li>`)}

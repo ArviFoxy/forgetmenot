@@ -6,7 +6,7 @@ import { PageElement } from '../lib/element';
 // ordinary kinds of memory, so both icons are drawn in the same muted colour at the
 // same size: the kind is a fact about the memory, not a warning.
 const iconName: Record<MemoryKind, string> = {
-  critical: 'circle-alert',
+  critical: 'exclamation-mark',
   knowledge: 'book',
 };
 

@@ -242,6 +242,24 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page).toHaveScreenshot(`scope-editing-laptop-${scheme}.png`);
     });
 
+    test('the menu the tree opens looks as reviewed', async ({ page }) => {
+      // On a memory page, so nothing the server counts is behind the menu.
+      await page.goto('/memories/rocket-stages');
+      await expect(page.locator('.milkdown .ProseMirror')).toBeVisible();
+      await page
+        .locator('sl-tree-item[data-target="/scopes/widgets"] > .tree-row')
+        .click({ button: 'right' });
+      await expect(page.getByRole('menuitem', { name: 'New memory in this scope' })).toBeVisible();
+      await settle(page);
+      // The menu itself, rather than the page: a page capture of an overlay that is
+      // still animating catches it half drawn.
+      await page.waitForTimeout(400);
+      await expect(page.locator('.context-menu sl-menu')).toHaveScreenshot(
+        `tree-menu-laptop-${scheme}.png`,
+        { animations: 'allow' },
+      );
+    });
+
     test('the statistics look as reviewed', async ({ page }) => {
       await page.goto('/stats');
       await expect(page.locator('table.stats').first()).toBeVisible();

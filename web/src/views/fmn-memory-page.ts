@@ -13,6 +13,7 @@ import {
 } from '../model/memoryDraft';
 import { memoryKinds, memorySources, parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate, onStoreChange } from '../navigation';
+import { takeDeleteIntent } from '../intent';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-diff';
@@ -36,9 +37,10 @@ export class FmnMemoryPage extends PageElement {
     oid: { type: String },
     draft: { state: true },
     editing: { state: true },
-    archiveMessage: { state: true },
-    archiving: { state: true },
-    archiveFailure: { state: true },
+    deleteMessage: { state: true },
+    deleting: { state: true },
+    deleteOpen: { state: true },
+    deleteFailure: { state: true },
   };
 
   memoryId = '';
@@ -54,9 +56,10 @@ export class FmnMemoryPage extends PageElement {
   private draft: MemoryDraft | null = null;
   /** The field whose control is open, if any. */
   private editing: string | null = null;
-  private archiveMessage = '';
-  private archiving = false;
-  private archiveFailure: string | null = null;
+  private deleteMessage = '';
+  private deleting = false;
+  private deleteOpen = false;
+  private deleteFailure: string | null = null;
 
   private loadedId = '';
   private loadedHistoryId = '';
@@ -99,6 +102,18 @@ export class FmnMemoryPage extends PageElement {
     if (doc !== null && (this.draft === null || this.draft.baseVersion !== doc.version)) {
       this.draft = draftOf(doc);
     }
+    if (this.memoryId !== '' && takeDeleteIntent(this.memoryId)) {
+      this.deleteOpen = true;
+      void this.showDeletePanel();
+    }
+  }
+
+  /** The panel the tree asked for, brought on screen with its field ready. */
+  private async showDeletePanel(): Promise<void> {
+    await this.updateComplete;
+    const panel = this.querySelector('sl-details[open] .delete-message');
+    panel?.scrollIntoView?.({ block: 'center' });
+    (panel as HTMLElement | null)?.focus?.();
   }
 
   private change(change: Partial<MemoryDraft>): void {
@@ -152,29 +167,30 @@ export class FmnMemoryPage extends PageElement {
     reported?.scrollIntoView?.({ block: 'center' });
   }
 
-  private async archive(doc: MemoryDoc): Promise<void> {
-    this.archiving = true;
-    this.archiveFailure = null;
+  private async deleteMemory(doc: MemoryDoc): Promise<void> {
+    this.deleting = true;
+    this.deleteFailure = null;
     try {
-      const outcome = await api.archiveMemory(this.memoryId, {
+      const outcome = await api.deleteMemory(this.memoryId, {
         base_version: doc.version,
         author: frontendAuthor,
-        message: this.archiveMessage,
+        message: this.deleteMessage,
       });
       if (outcome.kind === 'written') {
-        this.archiveMessage = '';
-        this.loadedId = '';
+        this.deleteMessage = '';
+        this.deleteOpen = false;
         announceStoreChange();
+        navigate(paths.home());
         return;
       }
-      this.archiveFailure =
+      this.deleteFailure =
         outcome.kind === 'conflict'
           ? `the memory changed on the server; its version is now ${outcome.conflict.current.version}`
           : outcome.failure.errors.map((error) => `${error.path}: ${error.message}`).join('; ');
     } catch (caught) {
-      this.archiveFailure = caught instanceof Error ? caught.message : String(caught);
+      this.deleteFailure = caught instanceof Error ? caught.message : String(caught);
     } finally {
-      this.archiving = false;
+      this.deleting = false;
     }
   }
 
@@ -291,10 +307,6 @@ export class FmnMemoryPage extends PageElement {
         </sl-select>`,
       )}
       ${this.renderStatic('Modified', html`<span class="value-mono">${doc.modified ?? '—'}</span>`)}
-      ${this.renderStatic(
-        'Archived',
-        html`<span class="value-text">${doc.archived ? 'yes' : 'no'}</span>`,
-      )}
       ${this.renderStatic('Version', html`<code>${doc.version}</code>`)}
       ${this.renderStatic(
         'Links',
@@ -323,27 +335,29 @@ export class FmnMemoryPage extends PageElement {
             >`,
       )}
       <div class="field">
-        <sl-details summary="Archive">
+        <sl-details summary="Delete" ?open=${this.deleteOpen}>
+          <p class="muted">The file is removed in a commit; the history keeps it.</p>
           <sl-input
+            class="delete-message"
             size="small"
             label="Commit message"
             maxlength="72"
-            value=${this.archiveMessage}
+            value=${this.deleteMessage}
             @sl-input=${(event: Event) => {
-              this.archiveMessage = (event.target as HTMLInputElement).value;
+              this.deleteMessage = (event.target as HTMLInputElement).value;
             }}
           ></sl-input>
           <sl-button
             size="small"
-            variant="default"
-            ?disabled=${this.archiving || this.archiveMessage.trim() === ''}
-            ?loading=${this.archiving}
-            @click=${() => void this.archive(doc)}
-            >Archive memory</sl-button
+            variant="danger"
+            ?disabled=${this.deleting || this.deleteMessage.trim() === ''}
+            ?loading=${this.deleting}
+            @click=${() => void this.deleteMemory(doc)}
+            >Delete memory</sl-button
           >
-          ${this.archiveFailure === null
+          ${this.deleteFailure === null
             ? nothing
-            : html`<p class="failure" role="alert">${this.archiveFailure}</p>`}
+            : html`<p class="failure" role="alert">${this.deleteFailure}</p>`}
         </sl-details>
       </div>
     </aside>`;
@@ -406,7 +420,7 @@ export class FmnMemoryPage extends PageElement {
     // so has no box of its own to place or scroll to.
     return html`<section class="conflict">
       <sl-alert variant="warning" open>
-      <sl-icon slot="icon" name="circle-alert"></sl-icon>
+      <sl-icon slot="icon" name="exclamation-mark"></sl-icon>
       <strong>Conflict</strong>
       <div class="conflict-versions">
         <span>Loaded version <code>${draft.baseVersion}</code></span>
@@ -487,7 +501,6 @@ export class FmnMemoryPage extends PageElement {
             <div class="page-name">
               <fmn-kind-icon kind=${draft.kind}></fmn-kind-icon>
               <span>${doc.id}</span>
-              ${doc.archived ? html`<sl-badge variant="neutral">archived</sl-badge>` : nothing}
             </div>
             ${this.editing === 'description'
               ? html`<div class="inline-edit">

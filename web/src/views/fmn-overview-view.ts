@@ -26,7 +26,7 @@ export class FmnOverviewView extends PageElement {
   }
 
   private load(): void {
-    void this.memories.load(() => api.memoryIndex({ archived: true }));
+    void this.memories.load(() => api.memoryIndex());
     void this.scopes.load(() => api.scopeIndex());
   }
 
@@ -93,7 +93,6 @@ export class FmnOverviewView extends PageElement {
             <thead>
               <tr>
                 <th scope="col">Scope</th>
-                <th scope="col">Type</th>
                 <th scope="col">Implies</th>
                 <th scope="col" class="number">Triggers</th>
               </tr>
@@ -102,7 +101,6 @@ export class FmnOverviewView extends PageElement {
               ${rows.map(
                 (row) => html`<tr>
                   <td class="nowrap"><a href=${paths.scope(row.id)}>${row.id}</a></td>
-                  <td class="nowrap">${row.type}</td>
                   <td>
                     <span class="chips"
                       >${row.implies.map(

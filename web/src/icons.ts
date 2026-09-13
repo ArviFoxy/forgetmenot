@@ -1,59 +1,53 @@
-// One icon set, one style: Lucide, registered as Shoelace's default icon library so
-// every `<sl-icon name="...">` in the app draws from it. The files are bundled, so
-// nothing is fetched from a CDN.
+// One icon set, one style: Tabler's outline icons, registered as Shoelace's default
+// icon library so every `<sl-icon name="...">` in the app draws from it. The files
+// are bundled, so nothing is fetched from a CDN.
 
 import { registerIconLibrary } from '@shoelace-style/shoelace/dist/utilities/icon-library.js';
-import activity from 'lucide-static/icons/activity.svg?url';
-import archive from 'lucide-static/icons/archive.svg?url';
-import book from 'lucide-static/icons/book.svg?url';
-import chartColumn from 'lucide-static/icons/chart-column.svg?url';
-import circleAlert from 'lucide-static/icons/circle-alert.svg?url';
-import circleHelp from 'lucide-static/icons/circle-help.svg?url';
-import clock from 'lucide-static/icons/clock.svg?url';
-import fileText from 'lucide-static/icons/file-text.svg?url';
-import folder from 'lucide-static/icons/folder.svg?url';
-import folderOpen from 'lucide-static/icons/folder-open.svg?url';
-import globe from 'lucide-static/icons/globe.svg?url';
-import menu from 'lucide-static/icons/menu.svg?url';
-import monitor from 'lucide-static/icons/monitor.svg?url';
-import monitorCog from 'lucide-static/icons/monitor-cog.svg?url';
-import moon from 'lucide-static/icons/moon.svg?url';
-import network from 'lucide-static/icons/network.svg?url';
-import pencil from 'lucide-static/icons/pencil.svg?url';
-import plus from 'lucide-static/icons/plus.svg?url';
-import refreshCw from 'lucide-static/icons/refresh-cw.svg?url';
-import rotateCcw from 'lucide-static/icons/rotate-ccw.svg?url';
-import search from 'lucide-static/icons/search.svg?url';
-import sun from 'lucide-static/icons/sun.svg?url';
-import terminal from 'lucide-static/icons/terminal.svg?url';
-import trash from 'lucide-static/icons/trash-2.svg?url';
-import x from 'lucide-static/icons/x.svg?url';
+import activity from '@tabler/icons/outline/activity.svg?url';
+import book from '@tabler/icons/outline/book.svg?url';
+import chartBar from '@tabler/icons/outline/chart-bar.svg?url';
+import clock from '@tabler/icons/outline/clock.svg?url';
+import deviceDesktop from '@tabler/icons/outline/device-desktop.svg?url';
+import deviceDesktopCog from '@tabler/icons/outline/device-desktop-cog.svg?url';
+import exclamationMark from '@tabler/icons/outline/exclamation-mark.svg?url';
+import fileText from '@tabler/icons/outline/file-text.svg?url';
+import folder from '@tabler/icons/outline/folder.svg?url';
+import helpCircle from '@tabler/icons/outline/help-circle.svg?url';
+import menu from '@tabler/icons/outline/menu-2.svg?url';
+import moon from '@tabler/icons/outline/moon.svg?url';
+import pencil from '@tabler/icons/outline/pencil.svg?url';
+import plus from '@tabler/icons/outline/plus.svg?url';
+import refresh from '@tabler/icons/outline/refresh.svg?url';
+import rotate from '@tabler/icons/outline/rotate.svg?url';
+import search from '@tabler/icons/outline/search.svg?url';
+import sun from '@tabler/icons/outline/sun.svg?url';
+import terminal from '@tabler/icons/outline/terminal-2.svg?url';
+import trash from '@tabler/icons/outline/trash.svg?url';
+import world from '@tabler/icons/outline/world.svg?url';
+import x from '@tabler/icons/outline/x.svg?url';
 
 const files: Record<string, string> = {
   activity,
-  archive,
   book,
-  'chart-column': chartColumn,
-  'circle-alert': circleAlert,
-  'circle-help': circleHelp,
+  'chart-bar': chartBar,
   clock,
+  'device-desktop': deviceDesktop,
+  'device-desktop-cog': deviceDesktopCog,
+  'exclamation-mark': exclamationMark,
   'file-text': fileText,
   folder,
-  'folder-open': folderOpen,
-  globe,
+  'help-circle': helpCircle,
   menu,
-  monitor,
-  'monitor-cog': monitorCog,
   moon,
-  network,
   pencil,
   plus,
-  'refresh-cw': refreshCw,
-  'rotate-ccw': rotateCcw,
+  refresh,
+  rotate,
   search,
   sun,
   terminal,
-  'trash-2': trash,
+  trash,
+  world,
   x,
 };
 
@@ -62,8 +56,8 @@ export type IconName = keyof typeof files;
 export function registerIcons(): void {
   registerIconLibrary('default', {
     resolver: (name) => files[name] ?? '',
-    // Lucide draws at 24px with a 2px stroke; at the sizes used here a lighter
-    // stroke matches the text weight.
+    // The set draws at 24 px with a 2 px stroke; at the sizes used here a lighter
+    // stroke matches the weight of the text beside it.
     mutator: (svg) => {
       svg.setAttribute('stroke-width', '1.75');
       svg.setAttribute('fill', 'none');

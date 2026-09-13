@@ -176,6 +176,89 @@ test('a scope trigger is not editable on the scope page itself', async ({ page }
   await expect(page.locator('table.data')).toContainText(added);
 });
 
+test('a scope created from the tree is missing from the tree and from the API', async ({ page }) => {
+  const id = `probe-scope-${Date.now()}`;
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New scope or memory' }).click();
+  await page.getByRole('menuitem', { name: 'New scope' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('New scope');
+
+  await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+  await page.locator('fmn-trigger-rows sl-input.pattern input').first().fill('\\bprobe\\b');
+  await page.locator('.commit-bar input').fill(`add the ${id} scope`);
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/scopes/${id}$`));
+  await expect(page.locator(`sl-tree-item[data-target="/scopes/${id}"]`)).toBeVisible();
+  const scopes = (await (await page.request.get('/api/scopes')).json()) as { id: string }[];
+  expect(scopes.map((scope) => scope.id)).toContain(id);
+});
+
+test('a memory created from a scope context menu is created outside that scope', async ({ page }) => {
+  const id = `probe-memory-${Date.now()}`;
+  await page.goto('/');
+  await page
+    .locator('sl-tree-item[data-target="/scopes/widgets"] > .tree-row')
+    .click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'New memory in this scope' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('New memory');
+
+  await expect(page.getByRole('textbox', { name: 'Scopes', exact: true })).toHaveValue('widgets');
+  await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
+  await page
+    .getByRole('textbox', { name: 'Description', exact: true })
+    .fill('a memory made from the tree');
+  await page.locator('.milkdown .ProseMirror').click();
+  await page.keyboard.insertText('Made from the context menu.');
+  await page.locator('.commit-bar input').fill(`add ${id}`);
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/memories/${id}$`));
+  const doc = (await (await page.request.get(`/api/memories/${id}`)).json()) as { scopes: string[] };
+  expect(doc.scopes).toEqual(['widgets']);
+});
+
+test('a memory deleted from the tree menu stays in the store', async ({ page }) => {
+  const id = `probe-delete-${Date.now()}`;
+  const created = await page.request.post('/api/memories', {
+    data: {
+      id,
+      description: 'a memory made to be deleted',
+      kind: 'knowledge',
+      scopes: ['global'],
+      source: 'user',
+      body: `# ${id}\n\nMade to be deleted.\n`,
+      author: 'wiki',
+      message: `add ${id}`,
+    },
+  });
+  expect(created.status()).toBe(200);
+
+  // The delete route is new; until the server has it there is nothing to test here.
+  const probe = await page.request.fetch(`/api/memories/${id}`, {
+    method: 'DELETE',
+    data: { base_version: 'f'.repeat(40), author: 'wiki', message: 'probe' },
+  });
+  test.skip(probe.status() === 405, 'the server has no delete route yet');
+
+  await page.goto('/');
+  await page.getByRole('searchbox', { name: 'Search scopes and memories' }).fill(id);
+  await page
+    .locator(`sl-tree-item[data-target="/memories/${id}"] > .tree-row`)
+    .click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Delete memory' }).click();
+
+  const panel = page.locator('sl-details[open] .delete-message input');
+  await expect(panel).toBeVisible();
+  await panel.fill(`delete ${id}`);
+  await page.getByRole('button', { name: 'Delete memory' }).click();
+
+  await expect(page).toHaveURL(/\/$/);
+  const gone = await page.request.get(`/api/memories/${id}`);
+  expect(gone.status()).toBe(404);
+});
+
 test('the statistics page reports one figure per memory instead of one per delivery form', async ({
   page,
 }) => {

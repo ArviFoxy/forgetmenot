@@ -7,6 +7,7 @@ import './fmn-theme-toggle';
 import '../views/fmn-overview-view';
 import '../views/fmn-memory-page';
 import '../views/fmn-memory-new';
+import '../views/fmn-scope-new';
 import '../views/fmn-scope-page';
 import '../views/fmn-contexts-view';
 import '../views/fmn-stats-view';
@@ -21,9 +22,8 @@ interface Section {
 
 const sections: Section[] = [
   { name: 'home', href: paths.home(), label: 'Overview', icon: 'file-text' },
-  { name: 'memoryNew', href: paths.memoryNew(), label: 'New memory', icon: 'plus' },
   { name: 'contexts', href: paths.contexts(), label: 'Contexts', icon: 'activity' },
-  { name: 'stats', href: paths.stats(), label: 'Statistics', icon: 'chart-column' },
+  { name: 'stats', href: paths.stats(), label: 'Statistics', icon: 'chart-bar' },
 ];
 
 /** Every property any view takes, so a reused element never keeps a stale one. */

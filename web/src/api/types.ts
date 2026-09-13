@@ -3,7 +3,6 @@
 
 export type MemoryKind = 'critical' | 'knowledge';
 export type MemorySource = 'user' | 'assistant';
-export type ScopeType = 'global' | 'machine' | 'session' | 'project' | 'domain' | 'directory';
 export type TriggerField =
   | 'user_message'
   | 'assistant_message'
@@ -22,7 +21,6 @@ export interface MemorySummary {
   scopes: string[];
   source: MemorySource;
   modified: string | null;
-  archived: boolean;
   version: string;
 }
 
@@ -46,7 +44,6 @@ export interface MemoryDoc {
   created: string | null;
   modified: string | null;
   author: string | null;
-  archived: boolean;
   body: string;
   version: string;
   links: string[];
@@ -62,7 +59,6 @@ export interface Trigger {
 
 export interface ScopeDoc {
   id: string;
-  type: ScopeType;
   implies: string[];
   triggers: Trigger[];
   version: string;
@@ -150,7 +146,6 @@ export interface SessionBytesRow {
 export interface MemoryIndexFilter {
   scope?: string;
   kind?: MemoryKind;
-  archived?: boolean;
 }
 
 export interface WriteRequest {
@@ -167,14 +162,14 @@ export interface WriteRequest {
 /** Creation needs the id of the new memory, which is its path under memories/. */
 export type MemoryCreateRequest = WriteRequest & { id: string };
 
-export interface ArchiveRequest {
+/** A memory is deleted rather than archived: the git history is the archive. */
+export interface DeleteRequest {
   base_version: string;
   author: string;
   message: string;
 }
 
 export interface ScopeWriteRequest {
-  type: ScopeType;
   implies: string[];
   triggers: Trigger[];
   base_version?: string;
@@ -190,6 +185,11 @@ export interface WriteResponse {
   version: string;
 }
 
+/** A delete answers with the commit that removed the file, and nothing else. */
+export interface DeleteResponse {
+  commit_oid: string;
+}
+
 export interface Conflict<Doc = MemoryDoc> {
   current: Doc;
 }
@@ -198,8 +198,8 @@ export interface ValidationFailure {
   errors: ValidationError[];
 }
 
-export type WriteOutcome<Doc = MemoryDoc> =
-  | { kind: 'written'; response: WriteResponse }
+export type WriteOutcome<Doc = MemoryDoc, Written = WriteResponse> =
+  | { kind: 'written'; response: Written }
   | { kind: 'conflict'; conflict: Conflict<Doc> }
   | { kind: 'invalid'; failure: ValidationFailure };
 

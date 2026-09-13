@@ -5,7 +5,7 @@ import { setScheme, storedScheme, type ColourScheme } from '../theme';
 const order: ColourScheme[] = ['system', 'light', 'dark'];
 
 const icons: Record<ColourScheme, string> = {
-  system: 'monitor-cog',
+  system: 'device-desktop-cog',
   light: 'sun',
   dark: 'moon',
 };

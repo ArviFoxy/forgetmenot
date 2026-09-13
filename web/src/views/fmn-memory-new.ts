@@ -5,7 +5,7 @@ import { PageElement } from '../lib/element';
 import { frontendAuthor } from '../model/author';
 import { memoryKinds, memorySources, parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate } from '../navigation';
-import { paths } from '../routes';
+import { paths, scopeFromSearch } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-markdown-editor';
 import '../components/fmn-validation-errors';
@@ -29,7 +29,7 @@ export class FmnMemoryNew extends PageElement {
   private newId = '';
   private description = '';
   private kind: MemoryKind = 'knowledge';
-  private scopesText = '';
+  private scopesText = scopeFromSearch();
   private source: MemorySource = 'user';
   private body = '';
   private message = '';

@@ -1,10 +1,10 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { RequestFailed, api } from '../api/client';
-import type { MemorySummary, ScopeDoc, ScopeType, Trigger, ValidationError } from '../api/types';
+import type { MemorySummary, ScopeDoc, Trigger, ValidationError } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
 import { frontendAuthor } from '../model/author';
-import { parseIdList, scopeTypes } from '../model/triggers';
+import { parseIdList } from '../model/triggers';
 import { announceStoreChange, onStoreChange } from '../navigation';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
@@ -16,7 +16,6 @@ import '../components/fmn-validation-errors';
 
 interface ScopeDraft {
   baseVersion: string;
-  type: ScopeType;
   impliesText: string;
   triggers: Trigger[];
   message: string;
@@ -29,7 +28,6 @@ interface ScopeDraft {
 function draftOf(scope: ScopeDoc): ScopeDraft {
   return {
     baseVersion: scope.version,
-    type: scope.type,
     impliesText: scope.implies.join(', '),
     triggers: scope.triggers,
     message: '',
@@ -41,8 +39,8 @@ function draftOf(scope: ScopeDoc): ScopeDraft {
 }
 
 /** The scope fields as one text, so the two sides of a conflict can be compared. */
-function scopeText(scope: { type: string; implies: string[]; triggers: Trigger[] }): string {
-  const lines = [`type: ${scope.type}`, `implies: ${scope.implies.join(', ')}`];
+function scopeText(scope: { implies: string[]; triggers: Trigger[] }): string {
+  const lines = [`implies: ${scope.implies.join(', ')}`];
   for (const trigger of scope.triggers) {
     lines.push(
       `trigger: ${trigger.on} ${trigger.pattern}${trigger.machine ? ` @${trigger.machine}` : ''}`,
@@ -57,14 +55,6 @@ function triggersEqual(left: Trigger[], right: Trigger[]): boolean {
 
 function missingStatus(error: Error): 'failed' | 'missing' {
   return error instanceof RequestFailed && error.status === 404 ? 'missing' : 'failed';
-}
-
-/** The implicit scopes have no file, so the kind of scope is read from the id. */
-function implicitType(id: string): string {
-  if (id === 'global') return 'global';
-  if (id.startsWith('machine:')) return 'machine';
-  if (id.startsWith('session:')) return 'session';
-  return 'unknown';
 }
 
 /** One scope: its type, what it implies, its triggers and its memories, edited in place. */
@@ -107,7 +97,7 @@ export class FmnScopePage extends PageElement {
       this.loadedId = this.scopeId;
       this.draft = null;
       void this.scope.load(() => api.scope(this.scopeId));
-      void this.memories.load(() => api.memoryIndex({ scope: this.scopeId, archived: true }));
+      void this.memories.load(() => api.memoryIndex({ scope: this.scopeId }));
     }
     const scope = this.scope.value;
     if (scope !== null && (this.draft === null || this.draft.baseVersion !== scope.version)) {
@@ -121,7 +111,6 @@ export class FmnScopePage extends PageElement {
   }
 
   private dirty(scope: ScopeDoc, draft: ScopeDraft): boolean {
-    if (draft.type !== scope.type) return true;
     if (parseIdList(draft.impliesText).join(',') !== scope.implies.join(',')) return true;
     return !triggersEqual(draft.triggers, scope.triggers);
   }
@@ -132,7 +121,6 @@ export class FmnScopePage extends PageElement {
     this.change({ saving: true, errors: [], conflict: null, failure: null });
     try {
       const outcome = await api.putScope(this.scopeId, {
-        type: draft.type,
         implies: parseIdList(draft.impliesText),
         triggers: draft.triggers,
         base_version: draft.baseVersion,
@@ -271,12 +259,11 @@ export class FmnScopePage extends PageElement {
         ? nothing
         : html`<section class="conflict">
             <sl-alert variant="warning" open>
-            <sl-icon slot="icon" name="circle-alert"></sl-icon>
+            <sl-icon slot="icon" name="exclamation-mark"></sl-icon>
             <strong>Conflict</strong>
             <fmn-side-by-side
               leftLabel="Your text"
               .leftText=${scopeText({
-                type: draft.type,
                 implies: parseIdList(draft.impliesText),
                 triggers: draft.triggers,
               })}
@@ -301,20 +288,6 @@ export class FmnScopePage extends PageElement {
     const draft = this.draft ?? draftOf(scope);
     return html`
       <div class="infobox">
-        ${this.renderField(
-          'type',
-          'Type',
-          html`<span class="value-text">${draft.type}</span>`,
-          () => html`<sl-select
-            size="small"
-            value=${draft.type}
-            hoist
-            @sl-change=${(event: Event) =>
-              this.change({ type: (event.target as HTMLInputElement).value as ScopeType })}
-          >
-            ${scopeTypes.map((type) => html`<sl-option value=${type}>${type}</sl-option>`)}
-          </sl-select>`,
-        )}
         ${this.renderField(
           'implies',
           'Implies',
@@ -352,12 +325,6 @@ export class FmnScopePage extends PageElement {
   private renderImplicit(): TemplateResult {
     return html`
       <div class="infobox">
-        <div class="field">
-          <span class="field-label">Type</span>
-          <div class="field-value">
-            <span class="value-text">${implicitType(this.scopeId)}</span>
-          </div>
-        </div>
         <div class="field">
           <span class="field-label">File</span>
           <div class="field-value"><span class="value-text">none</span></div>

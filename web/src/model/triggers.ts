@@ -1,4 +1,4 @@
-import type { MemoryKind, MemorySource, ScopeType, TriggerField } from '../api/types';
+import type { MemoryKind, MemorySource, TriggerField } from '../api/types';
 
 /** The six strings the harness supplies, in the order the documentation lists them. */
 export const triggerFields: TriggerField[] = [
@@ -8,15 +8,6 @@ export const triggerFields: TriggerField[] = [
   'tool_input',
   'tool_result',
   'working_directory',
-];
-
-export const scopeTypes: ScopeType[] = [
-  'global',
-  'machine',
-  'session',
-  'project',
-  'domain',
-  'directory',
 ];
 
 export const memoryKinds: MemoryKind[] = ['critical', 'knowledge'];

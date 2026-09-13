@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { paths, resolve } from '../src/routes';
+import { paths, resolve, scopeFromSearch } from '../src/routes';
 
 // The source of these expectations is the app's own contract for addresses: the
 // deep links `/memories/<id>` and `/scopes/<id>` must open the item, memory ids may
@@ -16,6 +16,7 @@ const links: Record<keyof typeof paths, string> = {
   memoryHistory: paths.memoryHistory(memoryWithSlashes),
   memoryCommit: paths.memoryCommit(memoryWithSlashes, commitOid),
   memoryNew: paths.memoryNew(),
+  scopeNew: paths.scopeNew(),
   scope: paths.scope(sessionScope),
   contexts: paths.contexts(),
   stats: paths.stats(),
@@ -70,6 +71,19 @@ test('the address for creating a memory is read as a memory whose id is "new"', 
   const view = resolve(paths.memoryNew());
   expect(view.name).toBe('memoryNew');
   expect(view.properties.memoryId).toBeUndefined();
+});
+
+test('the address for creating a scope is read as a scope whose id is "new"', () => {
+  const view = resolve(paths.scopeNew());
+  expect(view.name).toBe('scopeNew');
+  expect(view.properties.scopeId).toBeUndefined();
+});
+
+test('the scope a new memory starts in is lost between the link and the page', () => {
+  const link = paths.memoryNew('session:alpha/session-1');
+  expect(resolve(link.split('?')[0] ?? '').name).toBe('memoryNew');
+  expect(scopeFromSearch(new URL(link, 'http://x').search)).toBe('session:alpha/session-1');
+  expect(scopeFromSearch('')).toBe('');
 });
 
 test('an address the app has no view for throws instead of resolving', () => {

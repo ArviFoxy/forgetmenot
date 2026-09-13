@@ -1,7 +1,7 @@
 // The navigation tree: categories at the top, then scopes, then the memories in
 // each scope. A memory in several scopes appears under each of them.
 
-import type { MemorySummary, ScopeDoc, ScopeType } from '../api/types';
+import type { MemorySummary, ScopeDoc } from '../api/types';
 
 export type NodeKind = 'category' | 'scope' | 'memory';
 
@@ -23,35 +23,29 @@ export interface TreeNode {
 /** The scope that is on in every context, so it is always in the tree. */
 const globalScope = 'global';
 
-/** A scope with no file: the id says what kind it is. */
-function derivedType(id: string): ScopeType | 'unknown' {
+/**
+ * What kind of scope an id names. The implicit scopes are the only special ones:
+ * everything else is an ordinary scope with a file.
+ */
+export type ScopeKind = 'global' | 'machine' | 'session' | 'plain';
+
+export function scopeKind(id: string): ScopeKind {
   if (id === globalScope) return 'global';
   if (id.startsWith('machine:')) return 'machine';
   if (id.startsWith('session:')) return 'session';
-  return 'unknown';
+  return 'plain';
 }
 
-interface Category {
-  key: string;
-  label: string;
-  /** Order among the top-level nodes. */
-  order: number;
-}
-
-// The global scope has no category: it is one node at the top, because it is on
-// everywhere and holds the memories that apply to everything.
-const categories: Record<Exclude<ScopeType, 'global'> | 'unknown', Category> = {
-  project: { key: 'projects', label: 'Projects', order: 1 },
-  domain: { key: 'domains', label: 'Domains', order: 2 },
-  directory: { key: 'directories', label: 'Directories', order: 3 },
-  machine: { key: 'machines', label: 'Machines', order: 4 },
-  session: { key: 'sessions', label: 'Sessions', order: 5 },
-  unknown: { key: 'other', label: 'Other', order: 6 },
-};
+// The scopes are one list. A scope's `type` is a label on the scope, not a place in
+// the tree, so it does not group anything here. The one exception is the session
+// scopes: there is one per session and they would bury the rest, so they sit under a
+// "Sessions" node, by machine.
+const sessionsCategory = { key: 'category:sessions', label: 'Sessions' };
 
 interface ScopeEntry {
   id: string;
-  type: ScopeType | 'unknown';
+  kind: ScopeKind;
+  /** True when the scope has no file: `global`, `machine:…`, `session:…`. */
   implicit: boolean;
   memories: MemorySummary[];
 }
@@ -93,16 +87,6 @@ function sessionParts(id: string): { machine: string; session: string } {
   return { machine: rest.slice(0, slash), session: rest.slice(slash + 1) };
 }
 
-function categoryNode(category: Category, children: TreeNode[]): TreeNode {
-  return {
-    kind: 'category',
-    key: `category:${category.key}`,
-    label: category.label,
-    children,
-    count: children.reduce((total, child) => total + child.count, 0),
-  };
-}
-
 /** Sessions are two levels: the machine, then the sessions on it. */
 function sessionNodes(entries: ScopeEntry[]): TreeNode[] {
   const machines = new Map<string, TreeNode[]>();
@@ -123,14 +107,6 @@ function sessionNodes(entries: ScopeEntry[]): TreeNode[] {
     .sort(byLabel);
 }
 
-/** The label of a scope node: the part of the id its category does not already say. */
-function scopeLabel(entry: ScopeEntry): string {
-  if (entry.type === 'machine' && entry.id.startsWith('machine:')) {
-    return entry.id.slice('machine:'.length);
-  }
-  return entry.id;
-}
-
 /**
  * Builds the tree from the scope index, the memory index and the scopes the live
  * contexts have on. Scopes with a file are included even when no memory names them;
@@ -146,47 +122,48 @@ export function buildTree(
   const entry = (id: string): ScopeEntry => {
     const found = entries.get(id);
     if (found !== undefined) return found;
-    const fresh: ScopeEntry = { id, type: derivedType(id), implicit: true, memories: [] };
+    const fresh: ScopeEntry = { id, kind: scopeKind(id), implicit: true, memories: [] };
     entries.set(id, fresh);
     return fresh;
   };
 
   entry(globalScope);
   for (const scope of scopes) {
-    const found = entry(scope.id);
-    found.type = scope.type;
-    found.implicit = false;
+    entry(scope.id).implicit = false;
   }
   for (const memory of memories) {
     for (const scope of memory.scopes) entry(scope).memories.push(memory);
   }
   for (const scope of activeScopes) entry(scope);
 
-  const grouped = new Map<string, ScopeEntry[]>();
-  const top: TreeNode[] = [];
+  const flat: TreeNode[] = [];
+  const sessions: ScopeEntry[] = [];
   for (const found of [...entries.values()].sort((left, right) => left.id.localeCompare(right.id))) {
-    if (found.type === 'global') {
-      top.push(scopeNode(found, found.id));
+    if (found.kind === 'session') {
+      sessions.push(found);
       continue;
     }
-    const category = categories[found.type];
-    grouped.set(category.key, [...(grouped.get(category.key) ?? []), found]);
+    flat.push(scopeNode(found, found.id));
   }
 
-  const categoryNodes: { order: number; node: TreeNode }[] = [];
-  for (const [type, category] of Object.entries(categories)) {
-    const members = grouped.get(category.key);
-    if (members === undefined || members.length === 0) continue;
-    const children =
-      type === 'session'
-        ? sessionNodes(members)
-        : members.map((member) => scopeNode(member, scopeLabel(member))).sort(byLabel);
-    categoryNodes.push({ order: category.order, node: categoryNode(category, children) });
-  }
+  // The global scope leads, because it is on in every context; the rest follow by id.
+  flat.sort((left, right) => {
+    if (left.scopeId === globalScope) return -1;
+    if (right.scopeId === globalScope) return 1;
+    return byLabel(left, right);
+  });
 
+  if (sessions.length === 0) return flat;
+  const children = sessionNodes(sessions);
   return [
-    ...top,
-    ...categoryNodes.sort((left, right) => left.order - right.order).map((entry) => entry.node),
+    ...flat,
+    {
+      kind: 'category',
+      key: sessionsCategory.key,
+      label: sessionsCategory.label,
+      children,
+      count: children.reduce((total, child) => total + child.count, 0),
+    },
   ];
 }
 

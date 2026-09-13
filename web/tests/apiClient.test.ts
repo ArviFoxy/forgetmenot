@@ -50,7 +50,6 @@ const serverDoc: MemoryDoc = {
   created: '2026-01-02T03:04:05Z',
   modified: '2026-01-02T03:04:05Z',
   author: 'wiki',
-  archived: false,
   body: '# Widgets\n\nhow widgets are wired\n\nthe version that is on the server\n',
   version: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   links: [],
@@ -167,7 +166,7 @@ test('a memory creation with a blank message reaches the server', async () => {
   expect(fixture.requests).toEqual([]);
 });
 
-test('an archive with a blank message reaches the server', async () => {
+test('a deletion with a blank message reaches the server', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{}');
@@ -176,7 +175,7 @@ test('an archive with a blank message reaches the server', async () => {
 
   await expect(
     Promise.resolve().then(() =>
-      client.archiveMemory('widgets', { base_version: 'a'.repeat(40), author: 'wiki', message: ' ' }),
+      client.deleteMemory('widgets', { base_version: 'a'.repeat(40), author: 'wiki', message: ' ' }),
     ),
   ).rejects.toThrow(MissingCommitMessage);
   expect(fixture.requests).toEqual([]);
@@ -192,7 +191,6 @@ test('a scope write with a blank message reaches the server', async () => {
   await expect(
     Promise.resolve().then(() =>
       client.putScope('rocketry', {
-        type: 'domain',
         implies: [],
         triggers: [{ on: 'user_message', pattern: 'rocket' }],
         base_version: 'a'.repeat(40),

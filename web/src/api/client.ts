@@ -1,8 +1,9 @@
 import type {
-  ArchiveRequest,
   Commit,
   ContextRow,
   Conflict,
+  DeleteRequest,
+  DeleteResponse,
   DenyDayRow,
   HistoryEntry,
   LatencyRow,
@@ -62,7 +63,6 @@ function indexQuery(filter: MemoryIndexFilter | undefined): string {
   const query = new URLSearchParams();
   if (filter.scope) query.set('scope', filter.scope);
   if (filter.kind) query.set('kind', filter.kind);
-  if (filter.archived !== undefined) query.set('archived', String(filter.archived));
   const text = query.toString();
   return text === '' ? '' : `?${text}`;
 }
@@ -72,7 +72,7 @@ export interface ApiClient {
   memory(id: string): Promise<MemoryDoc>;
   putMemory(id: string, request: WriteRequest): Promise<WriteOutcome<MemoryDoc>>;
   createMemory(request: MemoryCreateRequest): Promise<WriteOutcome<MemoryDoc>>;
-  archiveMemory(id: string, request: ArchiveRequest): Promise<WriteOutcome<MemoryDoc>>;
+  deleteMemory(id: string, request: DeleteRequest): Promise<WriteOutcome<MemoryDoc, DeleteResponse>>;
   memoryHistory(id: string): Promise<Commit[]>;
   memoryHistoryEntry(id: string, oid: string): Promise<HistoryEntry>;
   scopeIndex(): Promise<ScopeDoc[]>;
@@ -105,11 +105,11 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
 
   // 409 carries the current document, 422 the validation errors; both are values the
   // page shows, not failures. Anything else is a failure the page cannot act on.
-  async function write<Doc>(
-    method: 'PUT' | 'POST',
+  async function write<Doc, Written = WriteResponse>(
+    method: 'PUT' | 'POST' | 'DELETE',
     path: string,
     body: unknown,
-  ): Promise<WriteOutcome<Doc>> {
+  ): Promise<WriteOutcome<Doc, Written>> {
     const url = `${root}${path}`;
     const response = await fetchImpl(url, {
       method,
@@ -131,7 +131,7 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     if (!response.ok) {
       throw new RequestFailed(method, url, response.status, await response.text());
     }
-    return { kind: 'written', response: (await response.json()) as WriteResponse };
+    return { kind: 'written', response: (await response.json()) as Written };
   }
 
   return {
@@ -146,9 +146,9 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
       requireMessage(`memory ${request.id}`, request.message);
       return write<MemoryDoc>('POST', '/api/memories', request);
     },
-    archiveMemory(id, request) {
-      requireMessage(`archive of memory ${id}`, request.message);
-      return write<MemoryDoc>('POST', `/api/memories/${memoryPath(id)}/archive`, request);
+    deleteMemory(id, request) {
+      requireMessage(`deletion of memory ${id}`, request.message);
+      return write<MemoryDoc, DeleteResponse>('DELETE', `/api/memories/${memoryPath(id)}`, request);
     },
 
     memoryHistory: (id) => read<Commit[]>(`/api/memories/${memoryPath(id)}/history`),

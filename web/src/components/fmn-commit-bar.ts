@@ -18,7 +18,6 @@ export class FmnCommitBar extends PageElement {
   override render(): TemplateResult {
     return html`
       <div class="commit-bar" role="group" aria-label=${this.label}>
-        <span class="commit-label">${this.label}</span>
         <sl-input
           size="small"
           label="Commit message"
@@ -47,7 +46,7 @@ export class FmnCommitBar extends PageElement {
           ?disabled=${this.saving}
           @click=${() => this.dispatchEvent(new CustomEvent('fmn-discard', { bubbles: true }))}
         >
-          <sl-icon slot="prefix" name="rotate-ccw"></sl-icon>Discard
+          <sl-icon slot="prefix" name="rotate"></sl-icon>Discard
         </sl-button>
       </div>
     `;

@@ -23,7 +23,6 @@ const doc: MemoryDoc = {
   created: null,
   modified: null,
   author: 'wiki',
-  archived: false,
   // Hard-wrapped, with a wiki link: the bytes a rich editor would reformat.
   body: '# Where the workshop references live\n\nThe bench notes and the parts\ncatalogue live in the binder.\n\nStage numbering is in [[rocket-stages]].\n',
   version: 'b'.repeat(40),

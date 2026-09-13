@@ -205,7 +205,7 @@ export class FmnStatsView extends PageElement {
   override render(): TemplateResult {
     return html`
       <header class="page-header">
-        <div class="page-name"><sl-icon name="chart-column"></sl-icon><span>statistics</span></div>
+        <div class="page-name"><sl-icon name="chart-bar"></sl-icon><span>statistics</span></div>
         <h1>Statistics</h1>
       </header>
       <h2>Per memory</h2>

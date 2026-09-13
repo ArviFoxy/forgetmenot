@@ -180,6 +180,8 @@ fmn-kind-icon {
 fmn-sidebar {
   position: sticky;
   top: var(--fmn-bar-height);
+  /* Above the content, so the menu the tree opens is not painted over by it. */
+  z-index: 5;
   height: calc(100dvh - var(--fmn-bar-height));
   border-inline-end: 1px solid var(--fmn-border);
   background-color: var(--fmn-bg);
@@ -224,12 +226,27 @@ fmn-sidebar {
   text-transform: uppercase;
 }
 
-.sidebar-title sl-checkbox {
+.sidebar-title .new-menu {
   margin-inline-start: auto;
-  font-size: 0.8rem;
+}
+
+/* The section label is set in small capitals; the menu it holds is not. */
+.sidebar-title sl-menu {
   font-weight: var(--sl-font-weight-normal);
-  letter-spacing: 0;
+  letter-spacing: normal;
   text-transform: none;
+}
+
+.sidebar-title sl-icon-button {
+  font-size: 0.95rem;
+}
+
+/* A right click opens the menu where the pointer is, so the menu is anchored to a
+   point rather than to a control. */
+.context-anchor {
+  position: fixed;
+  width: 0;
+  height: 0;
 }
 
 .sidebar-tree {
@@ -853,21 +870,24 @@ table.stats td:first-child {
   min-width: 0;
 }
 
-/* The field is labelled for screen readers; the bar shows the placeholder. */
-.commit-bar sl-input::part(form-control-label) {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
+/* The label sits beside the field rather than above it, so the bar stays one row
+   and the field is still plainly labelled. */
+.commit-bar sl-input::part(form-control) {
+  display: flex;
+  gap: var(--sl-spacing-x-small);
+  align-items: center;
 }
 
-.commit-bar .commit-label {
+.commit-bar sl-input::part(form-control-label) {
+  margin: 0;
   color: var(--fmn-fg-muted);
   font-size: 0.9rem;
   white-space: nowrap;
+}
+
+.commit-bar sl-input::part(form-control-input) {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* ---------- Diffs and conflicts ---------- */

@@ -3,9 +3,10 @@ import type { MemorySummary, ScopeDoc } from '../src/api/types';
 import { buildTree, filterTree, keysToReveal, type TreeNode } from '../src/model/tree';
 
 // The source of these expectations is the data model in the README together with the
-// shape the navigation promises: categories at the top, the scopes of that kind
-// below them, and the memories of a scope below it. `global` is always on and has no
-// category; `machine:<name>` and `session:<machine>/<id>` are scopes with no file.
+// shape the navigation promises: one list of scopes, each holding its memories, with
+// the session scopes gathered under a "Sessions" node by machine because there is one
+// per session. A scope's type is a label on the scope and groups nothing. `global` is
+// always on; `machine:<name>` and `session:<machine>/<id>` are scopes with no file.
 
 function memory(id: string, scopes: string[], over: Partial<MemorySummary> = {}): MemorySummary {
   return {
@@ -17,14 +18,13 @@ function memory(id: string, scopes: string[], over: Partial<MemorySummary> = {})
     scopes,
     source: 'user',
     modified: null,
-    archived: false,
     version: 'v',
     ...over,
   };
 }
 
 function scope(id: string, over: Partial<ScopeDoc> = {}): ScopeDoc {
-  return { id, type: 'project', implies: [], triggers: [], version: 'v', ...over };
+  return { id, implies: [], triggers: [], version: 'v', ...over };
 }
 
 function find(nodes: TreeNode[], label: string): TreeNode {
@@ -49,19 +49,14 @@ function labels(nodes: TreeNode[]): string[] {
   return nodes.map((node) => node.label);
 }
 
-test('a scope with a file sits at the top level instead of under its category', () => {
-  const nodes = buildTree(
-    [scope('widgets'), scope('rocketry', { type: 'domain' }), scope('shed', { type: 'directory' })],
-    [],
-  );
-  expect(labels(find(nodes, 'Projects').children)).toEqual(['widgets']);
-  expect(labels(find(nodes, 'Domains').children)).toEqual(['rocketry']);
-  expect(labels(find(nodes, 'Directories').children)).toEqual(['shed']);
-  expect(labels(nodes)).not.toContain('widgets');
+test('a scope with a file is grouped instead of listed with the others', () => {
+  const nodes = buildTree([scope('widgets'), scope('rocketry'), scope('shed')], []);
+  // One list, and nothing between the root and a scope.
+  expect(labels(nodes)).toEqual(['global', 'rocketry', 'shed', 'widgets']);
 });
 
-test('the global scope is put inside a category instead of at the top', () => {
-  const nodes = buildTree([], [memory('bench-power', ['global'])]);
+test('the global scope is listed among the others instead of leading', () => {
+  const nodes = buildTree([scope('alpha-project')], [memory('bench-power', ['global'])]);
   expect(labels(nodes)[0]).toBe('global');
   expect(labels(find(nodes, 'global').children)).toEqual(['bench-power']);
 });
@@ -78,14 +73,14 @@ test('a session memory is listed outside the Sessions category and its machine',
   expect(labels(find(machine.children, 'session-1').children)).toEqual(['notes']);
 });
 
-test('a machine scope a live context has on is dropped from Machines', () => {
-  const nodes = buildTree([], [], ['machine:alpha', 'global']);
-  expect(labels(find(nodes, 'Machines').children)).toEqual(['alpha']);
+test('a machine scope is put under a category instead of in the list with the rest', () => {
+  const nodes = buildTree([scope('widgets')], [], ['machine:alpha', 'global']);
+  expect(labels(nodes)).toEqual(['global', 'machine:alpha', 'widgets']);
 });
 
 test('a memory in two scopes appears under one of them only', () => {
   const nodes = buildTree(
-    [scope('widgets'), scope('rocketry', { type: 'domain' })],
+    [scope('widgets'), scope('rocketry')],
     [memory('widget-naming', ['widgets', 'rocketry'])],
   );
   expect(labels(find(nodes, 'widgets').children)).toEqual(['widget-naming']);
@@ -94,23 +89,29 @@ test('a memory in two scopes appears under one of them only', () => {
 
 test('a count reports the node itself rather than the memories under it', () => {
   const nodes = buildTree(
-    [scope('widgets'), scope('gadgets')],
-    [memory('a', ['widgets']), memory('b', ['widgets']), memory('c', ['gadgets'])],
+    [scope('widgets')],
+    [
+      memory('a', ['widgets']),
+      memory('b', ['widgets']),
+      memory('notes', ['session:alpha/session-1']),
+    ],
   );
   expect(find(nodes, 'widgets').count).toBe(2);
-  expect(find(nodes, 'Projects').count).toBe(3);
+  expect(find(nodes, 'Sessions').count).toBe(1);
+  expect(find(nodes, 'alpha').count).toBe(1);
 });
 
 test('a scope id a memory names that is neither a file nor implicit is dropped', () => {
   const nodes = buildTree([], [memory('stray', ['not-a-real-scope'])]);
-  expect(labels(find(nodes, 'Other').children)).toEqual(['not-a-real-scope']);
+  expect(labels(nodes)).toEqual(['global', 'not-a-real-scope']);
+  expect(labels(find(nodes, 'not-a-real-scope').children)).toEqual(['stray']);
 });
 
 // The filter is what the search box does: case-insensitive, literal, no pattern
 // matching and no fuzzy matching.
 
 const hierarchy = buildTree(
-  [scope('widgets'), scope('rocketry', { type: 'domain' })],
+  [scope('widgets'), scope('rocketry')],
   [
     memory('widget-naming', ['widgets']),
     memory('rocket-stages', ['rocketry']),
@@ -119,17 +120,26 @@ const hierarchy = buildTree(
 );
 
 test('a search only matches when the case of the text matches', () => {
-  expect(labels(filterTree(hierarchy, 'WIDGET'))).toEqual(['Projects']);
-  expect(labels(find(filterTree(hierarchy, 'WIDGET'), 'Projects').children)).toEqual(['widgets']);
+  expect(labels(filterTree(hierarchy, 'WIDGET'))).toEqual(['widgets']);
   const byTitle = filterTree(hierarchy, 'workshop references');
   expect(labels(byTitle)).toEqual(['global']);
   expect(labels(find(byTitle, 'global').children)).toEqual(['reading-list']);
 });
 
-test('a match drops the categories above it, so it cannot be found', () => {
+test('a match drops the node above it, so it cannot be found', () => {
   const shown = filterTree(hierarchy, 'rocket-stages');
-  expect(labels(shown)).toEqual(['Domains']);
+  expect(labels(shown)).toEqual(['rocketry']);
   expect(labels(find(shown, 'rocketry').children)).toEqual(['rocket-stages']);
+});
+
+test('a session memory that matches loses the Sessions node above it', () => {
+  const withSession = buildTree(
+    [],
+    [memory('sessions/alpha/session-1/notes', ['session:alpha/session-1'])],
+  );
+  const shown = filterTree(withSession, 'notes');
+  expect(labels(shown)).toEqual(['Sessions']);
+  expect(labels(find(shown, 'alpha').children)).toEqual(['session-1']);
 });
 
 test('a scope that matches keeps only the memories that match', () => {
@@ -146,15 +156,19 @@ test('a search that matches nothing keeps branches on screen', () => {
   expect(filterTree(hierarchy, 'zzz')).toEqual([]);
 });
 
-test('the open memory is left buried, with its ancestors collapsed', () => {
+test('the open memory is left buried, with the scope above it collapsed', () => {
   const keys = keysToReveal(hierarchy, 'rocket-stages', '');
-  expect(keys).toContain('category:domains');
   expect(keys).toContain('scope:rocketry');
-  expect(keys).not.toContain('category:projects');
+  expect(keys).not.toContain('scope:widgets');
 });
 
-test('the open scope is left buried, with its category collapsed', () => {
-  const keys = keysToReveal(hierarchy, '', 'widgets');
-  expect(keys).toContain('category:projects');
-  expect(keys).not.toContain('scope:widgets');
+test('a session memory is left buried, with Sessions and its machine collapsed', () => {
+  const withSession = buildTree(
+    [],
+    [memory('sessions/alpha/session-1/notes', ['session:alpha/session-1'])],
+  );
+  const keys = keysToReveal(withSession, 'sessions/alpha/session-1/notes', '');
+  expect(keys).toContain('category:sessions');
+  expect(keys).toContain('sessions:alpha');
+  expect(keys).toContain('scope:session:alpha/session-1');
 });

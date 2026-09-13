@@ -28,7 +28,7 @@ export class FmnContextsView extends PageElement {
         <h1>Contexts</h1>
         <div class="actions">
           <sl-button size="small" @click=${() => void this.rows.load(() => api.contexts())}>
-            <sl-icon slot="prefix" name="refresh-cw"></sl-icon>Reload
+            <sl-icon slot="prefix" name="refresh"></sl-icon>Reload
           </sl-button>
         </div>
       </header>

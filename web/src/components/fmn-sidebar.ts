@@ -2,27 +2,22 @@ import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'l
 import { api } from '../api/client';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
-import { buildTree, filterTree, keysToReveal, type TreeNode } from '../model/tree';
+import { buildTree, filterTree, keysToReveal, scopeKind, type TreeNode } from '../model/tree';
 import { currentPath, navigate, onLocationChange, onStoreChange } from '../navigation';
+import { requestDelete } from '../intent';
 import { paths, resolve } from '../routes';
 import './fmn-kind-icon';
 
 const openKeysStorage = 'fmn-tree-open';
 
-const categoryIcons: Record<string, string> = {
-  'category:projects': 'folder',
-  'category:domains': 'network',
-  'category:directories': 'folder-open',
-  'category:machines': 'monitor',
-  'category:sessions': 'terminal',
-  'category:other': 'circle-help',
-};
-
+/** The icon says what kind of scope a row is, which the flat list does not group by. */
 function nodeIcon(node: TreeNode): string {
-  if (node.kind === 'category') return categoryIcons[node.key] ?? 'folder';
-  if (node.scopeId === 'global') return 'globe';
-  if (node.key.startsWith('scope:machine:')) return 'monitor';
-  if (node.key.startsWith('scope:session:')) return 'terminal';
+  if (node.kind === 'category') return node.key === 'category:sessions' ? 'terminal' : 'device-desktop';
+  if (node.scopeId === undefined) return 'folder';
+  const kind = scopeKind(node.scopeId);
+  if (kind === 'global') return 'world';
+  if (kind === 'machine') return 'device-desktop';
+  if (kind === 'session') return 'terminal';
   return 'folder';
 }
 
@@ -35,15 +30,33 @@ function readOpenKeys(): Set<string> {
   }
 }
 
-/** The hierarchy: categories, the scopes in them, and the memories in each scope. */
+/** One line of the menu that a right click opens. */
+interface MenuItem {
+  value: string;
+  label: string;
+  icon: string;
+}
+
+interface OpenMenu {
+  x: number;
+  y: number;
+  items: MenuItem[];
+}
+
+const newItems: MenuItem[] = [
+  { value: 'new-scope', label: 'New scope', icon: 'folder' },
+  { value: 'new-memory', label: 'New memory', icon: 'file-text' },
+];
+
+/** The hierarchy: the scopes, the memories in each, and the session scopes together. */
 export class FmnSidebar extends PageElement {
   static override properties: PropertyDeclarations = {
     search: { state: true },
-    withArchived: { state: true },
+    menu: { state: true },
   };
 
   private search = '';
-  private withArchived = false;
+  private menu: OpenMenu | null = null;
 
   private readonly tree = new Resource<TreeNode[]>(() => this.requestUpdate());
   private openKeys = readOpenKeys();
@@ -68,7 +81,7 @@ export class FmnSidebar extends PageElement {
     return this.tree.load(async () => {
       const [scopes, memories, contexts] = await Promise.all([
         api.scopeIndex(),
-        api.memoryIndex(this.withArchived ? { archived: true } : undefined),
+        api.memoryIndex(),
         api.contexts(),
       ]);
       return buildTree(scopes, memories, contexts.flatMap((context) => context.active_scopes));
@@ -86,7 +99,48 @@ export class FmnSidebar extends PageElement {
     window.localStorage.setItem(openKeysStorage, JSON.stringify([...this.openKeys]));
   }
 
-  private renderNode(node: TreeNode, revealed: Set<string>, searching: boolean, selected: { memoryId: string; scopeId: string }): TemplateResult {
+  /** What a right click offers on a node, and on the empty space below the tree. */
+  private itemsFor(node: TreeNode | null): MenuItem[] {
+    if (node === null || node.kind === 'category') return newItems;
+    const memory = node.memory;
+    if (memory !== undefined) {
+      return [
+        { value: `history:${memory.id}`, label: 'Open history', icon: 'clock' },
+        { value: `delete:${memory.id}`, label: 'Delete memory', icon: 'trash' },
+      ];
+    }
+    const scope = node.scopeId ?? '';
+    const inThis = scopeKind(scope) === 'session' ? 'New memory in this session' : 'New memory in this scope';
+    return [
+      { value: `new-memory:${scope}`, label: inThis, icon: 'file-text' },
+      ...newItems,
+    ];
+  }
+
+  private openMenu(event: MouseEvent, node: TreeNode | null): void {
+    event.preventDefault();
+    event.stopPropagation();
+    this.menu = { x: event.clientX, y: event.clientY, items: this.itemsFor(node) };
+  }
+
+  private runMenu(value: string): void {
+    this.menu = null;
+    const [action, argument = ''] = value.split(/:(.*)/s);
+    if (action === 'new-scope') navigate(paths.scopeNew());
+    else if (action === 'new-memory') navigate(paths.memoryNew(argument));
+    else if (action === 'history') navigate(paths.memoryHistory(argument));
+    else if (action === 'delete') {
+      requestDelete(argument);
+      navigate(paths.memory(argument));
+    }
+  }
+
+  private renderNode(
+    node: TreeNode,
+    revealed: Set<string>,
+    searching: boolean,
+    selected: { memoryId: string; scopeId: string },
+  ): TemplateResult {
     const isSelected =
       (node.memory !== undefined && node.memory.id === selected.memoryId) ||
       (node.memory === undefined && node.scopeId !== undefined && node.scopeId === selected.scopeId);
@@ -112,14 +166,11 @@ export class FmnSidebar extends PageElement {
         this.rememberOpen(node.key, false);
       }}
     >
-      <span class="tree-row ${node.kind}">
+      <span class="tree-row ${node.kind}" @contextmenu=${(event: MouseEvent) => this.openMenu(event, node)}>
         ${node.memory === undefined
           ? html`<sl-icon name=${nodeIcon(node)}></sl-icon>`
           : html`<fmn-kind-icon kind=${node.memory.kind}></fmn-kind-icon>`}
         <span class="tree-label" title=${node.memory?.description ?? node.label}>${node.label}</span>
-        ${node.memory?.archived === true
-          ? html`<sl-icon name="archive" label="archived"></sl-icon>`
-          : nothing}
         ${node.kind === 'memory' ? nothing : html`<span class="tree-count">${node.count}</span>`}
       </span>
       ${node.children.map((child) => this.renderNode(child, revealed, searching, selected))}
@@ -144,6 +195,38 @@ export class FmnSidebar extends PageElement {
     </sl-tree>`;
   }
 
+  override updated(): void {
+    // The menu is opened after it exists, so it can measure where to sit.
+    if (this.menu === null) return;
+    const dropdown = this.querySelector('.context-menu') as (HTMLElement & { open: boolean; show: () => void }) | null;
+    if (dropdown !== null && !dropdown.open) dropdown.show();
+  }
+
+  private renderMenu(): TemplateResult | typeof nothing {
+    const menu = this.menu;
+    if (menu === null) return nothing;
+    return html`<sl-dropdown
+      class="context-menu"
+      hoist
+      placement="right-start"
+      @sl-after-hide=${() => {
+        this.menu = null;
+      }}
+    >
+      <span slot="trigger" class="context-anchor" style="left: ${menu.x}px; top: ${menu.y}px"></span>
+      <sl-menu
+        @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
+          this.runMenu(event.detail.item.value)}
+      >
+        ${menu.items.map(
+          (item) => html`<sl-menu-item value=${item.value}>
+            <sl-icon slot="prefix" name=${item.icon}></sl-icon>${item.label}
+          </sl-menu-item>`,
+        )}
+      </sl-menu>
+    </sl-dropdown>`;
+  }
+
   override render(): TemplateResult {
     return html`
       <div class="sidebar">
@@ -163,20 +246,28 @@ export class FmnSidebar extends PageElement {
           </sl-input>
           <div class="sidebar-title">
             <span>Scopes</span>
-            <sl-checkbox
-              size="small"
-              ?checked=${this.withArchived}
-              @sl-change=${(event: Event) => {
-                this.withArchived = (event.target as HTMLInputElement).checked;
-                void this.load();
-              }}
-              >Archived</sl-checkbox
-            >
+            <sl-dropdown class="new-menu" placement="bottom-end" hoist>
+              <sl-icon-button slot="trigger" name="plus" label="New scope or memory"></sl-icon-button>
+              <sl-menu
+                @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
+                  this.runMenu(event.detail.item.value)}
+              >
+                ${newItems.map(
+                  (item) => html`<sl-menu-item value=${item.value}>
+                    <sl-icon slot="prefix" name=${item.icon}></sl-icon>${item.label}
+                  </sl-menu-item>`,
+                )}
+              </sl-menu>
+            </sl-dropdown>
           </div>
         </div>
-        <div class="sidebar-tree">
+        <div
+          class="sidebar-tree"
+          @contextmenu=${(event: MouseEvent) => this.openMenu(event, null)}
+        >
           ${gate(this.tree.state, (nodes) => this.renderTree(nodes))}
         </div>
+        ${this.renderMenu()}
       </div>
     `;
   }

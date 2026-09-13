@@ -8,7 +8,7 @@ export class FmnUnknownView extends PageElement {
   override render(): TemplateResult {
     return html`
       <header class="page-header">
-        <div class="page-name"><sl-icon name="circle-help"></sl-icon><span>not found</span></div>
+        <div class="page-name"><sl-icon name="help-circle"></sl-icon><span>not found</span></div>
         <h1>No view for ${currentPath()}</h1>
       </header>
       <p><a href=${paths.home()}>Memories and scopes</a></p>

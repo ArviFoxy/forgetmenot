@@ -118,8 +118,15 @@ export default async function globalSetup(): Promise<void> {
     throw new Error('the Playwright config did not pass a port for the fixture server');
   }
 
-  if (!existsSync(serverBinary)) {
+  // Always, not only when the binary is missing: the server's source changes and the
+  // tests have to run against the current one. Cargo does nothing when it is up to
+  // date. A build that fails while someone is editing the crate is reported and the
+  // binary that is already there is used, because the alternative is no run at all.
+  try {
     run('cargo', ['build', '--release', '-p', 'forgetmenot-server'], repoRoot);
+  } catch (failure) {
+    if (!existsSync(serverBinary)) throw failure;
+    process.stdout.write('the server did not build; the tests use the binary already built\n');
   }
   if (!existsSync(path.join(webDist, 'index.html'))) {
     run('npm', ['run', 'build'], path.join(repoRoot, 'web'));

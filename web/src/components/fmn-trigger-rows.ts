@@ -51,7 +51,7 @@ export class FmnTriggerRows extends PageElement {
                 this.replace(index, { machine: (event.target as HTMLInputElement).value })}
             ></sl-input>
             <sl-icon-button
-              name="trash-2"
+              name="trash"
               label="Remove trigger"
               @click=${() => this.emit(this.triggers.filter((_, at) => at !== index))}
             ></sl-icon-button>

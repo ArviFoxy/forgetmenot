@@ -12,6 +12,7 @@ export type RouteName =
   | 'memoryCommit'
   | 'memoryNew'
   | 'scope'
+  | 'scopeNew'
   | 'contexts'
   | 'stats'
   | 'unknown';
@@ -42,7 +43,12 @@ export const paths = {
   memoryHistory: (id: string): string => `/memories/${encodeId(id)}/history`,
   memoryCommit: (id: string, oid: string): string =>
     `/memories/${encodeId(id)}/history/${encodeURIComponent(oid)}`,
-  memoryNew: (): string => '/memories/new',
+  /** With a scope, the new memory starts out in it. */
+  memoryNew: (scope?: string): string =>
+    scope === undefined || scope === ''
+      ? '/memories/new'
+      : `/memories/new?scope=${encodeURIComponent(scope)}`,
+  scopeNew: (): string => '/scopes/new',
   scope: (id: string): string => `/scopes/${encodeId(id)}`,
   contexts: (): string => '/contexts',
   stats: (): string => '/stats',
@@ -65,6 +71,7 @@ function view(name: RouteName, tag: string, properties: Record<string, string> =
 const router = new UniversalRouterSync<RouteView>([
   { path: '/', action: () => view('home', 'fmn-overview-view') },
   { path: '/memories/new', action: () => view('memoryNew', 'fmn-memory-new') },
+  { path: '/scopes/new', action: () => view('scopeNew', 'fmn-scope-new') },
   {
     path: '/memories/*id/history/:oid',
     action: ({ params }) =>
@@ -97,6 +104,11 @@ const router = new UniversalRouterSync<RouteView>([
 export function resolve(pathname: string): RouteView {
   const match = router.resolve(pathname);
   return match ?? view('unknown', 'fmn-unknown-view');
+}
+
+/** The scope a new memory starts in, as `paths.memoryNew` wrote it. */
+export function scopeFromSearch(search: string = window.location.search): string {
+  return new URLSearchParams(search).get('scope') ?? '';
 }
 
 /** True when an address belongs to this app, so a click on it is navigation. */

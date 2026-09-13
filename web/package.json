@@ -17,9 +17,9 @@
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@milkdown/crepe": "^7.22.1",
     "@shoelace-style/shoelace": "^2.20.1",
+    "@tabler/icons": "^3.46.0",
     "diff": "^9.0.0",
     "lit": "^3.3.3",
-    "lucide-static": "^1.45.0",
     "modern-normalize": "^3.0.1",
     "universal-router": "^10.0.3"
   },
