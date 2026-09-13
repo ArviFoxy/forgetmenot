@@ -12,7 +12,7 @@ forgetmenot is a memory server for LLM coding agents, for people who work on man
 - **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one. Several agents and people can write at the same time: their changes are merged, and only edits to the same lines conflict.
 - **Backwards compatible.** Memory files use Claude Code's own auto-memory format, so an existing Claude Code memory directory can be used as a store, and Claude Code can read a forgetmenot store.
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
-- **Statistics.** Every trigger match, delivery and fetch is recorded, so unused memories are visible.
+- **Statistics.** Every trigger match, every memory shown to the agent and every memory it reads is recorded, so unused memories are visible.
 
 One server serves every machine on a network, and subagents receive the same memories as the session that spawned them.
 
