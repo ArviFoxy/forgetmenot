@@ -4,16 +4,15 @@ Trigger-based, scoped LLM memory.
 
 forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
 
-- **Scoped memories.** Every memory belongs to scopes: a project, a domain, a machine, a session. A session only sees what applies to it, so the context stays small and relevant.
-- **Triggers turn scopes on.** Regular expressions over the user's messages, the agent's commands and tool calls, its output and its working directory activate scopes automatically. A trigger matches all of them unless it names one. Nobody has to remember to load the right memory.
-- **Critical memories are always delivered in full.** Rules the agent must not break are never reduced to an index line the agent might skip.
-- **A command that surfaces a critical memory is intercepted.** The call is held, the memory is delivered, and the agent reissues the call after reading it. The rule arrives before the action, not after.
-- **Periodic reminders.** Critical memories are delivered again after a configurable number of context tokens, because attention to early context fades in long sessions.
-- **Stored in git.** Memories are markdown files; every change is a commit with a title line, so history, review and rollback come for free.
-- **A web frontend.** Browse and edit memories and scopes in place, test a scope's triggers against sample text, and watch live sessions.
-- **Statistics.** Every trigger fire, delivery and fetch is recorded, so you can see which memories are used and which never are.
+- **Scopes.** Every memory belongs to one or more scopes, such as a project, a topic, a machine or a session. A session receives only the memories of the scopes active in it.
+- **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
+- **Critical memories.** Rules are delivered in full whenever they apply; other memories are delivered as a one-line index and read on demand. A tool call that brings a new rule into play is held until the agent has been given the rule.
+- **Reminders.** Optionally, rules are delivered again after a set number of context tokens.
+- **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one.
+- **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
+- **Statistics.** Every trigger match, delivery and fetch is recorded, so unused memories are visible.
 
-One server serves every machine on a network, and subagents get the same memories as the session that spawned them.
+One server serves every machine on a network, and subagents receive the same memories as the session that spawned them.
 
 ## Components
 
