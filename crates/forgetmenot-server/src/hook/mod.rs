@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use forgetmenot_types::hook::{HookEvent, HookRequest, HookResponse};
 
 use crate::app::AppState;
+use crate::context::registry::Inheritance;
 use crate::context::{ContextState, Needs, compute_needs, initial_active, record_delivery};
 use crate::render::{self, Delivery};
 use crate::stats::{Decision, HookEventRecord, TriggerFire};
@@ -42,12 +43,8 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         return (StatusCode::BAD_REQUEST, "the hook event could not be read").into_response();
     };
 
-    // An event name this server does not know is acknowledged with an object
-    // Claude Code reads as "nothing to do", not with an error.
-    let Some(plan) = events::plan(&event, &request.machine) else {
-        return axum::Json(serde_json::json!({})).into_response();
-    };
-
+    // The catalog is read before the event is planned, because the store's own
+    // settings decide how the event is read and what it may do.
     let catalog = match state.store.snapshot().await {
         Ok(catalog) => catalog,
         Err(error) => {
@@ -59,18 +56,26 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
                 .into_response();
         }
     };
+    let settings = catalog.settings();
+
+    // An event name this server does not know is acknowledged with an object
+    // Claude Code reads as "nothing to do", not with an error.
+    let Some(plan) = events::plan(&event, &request.machine, settings) else {
+        return axum::Json(serde_json::json!({})).into_response();
+    };
 
     let now = state.clock.now();
     let tokens_now = request.context_tokens;
-    let stale_tokens = state.config.stale_tokens;
     let outcome = state
         .contexts
-        .with_context(&plan.key, now, |context| {
-            apply(context, &plan, &catalog, tokens_now, stale_tokens, now)
+        .with_context(&plan.key, now, Inheritance::of(settings), |context| {
+            apply(context, &plan, &catalog, tokens_now, now)
         })
         .await;
 
-    let deny = plan.may_deny && outcome.needs.has_critical_arrival(&catalog);
+    let deny = plan.may_deny
+        && settings.interrupts(plan.tool_name.as_deref())
+        && outcome.needs.has_critical_arrival(&catalog);
     let response = if outcome.needs.is_empty() {
         HookResponse::empty(plan.event_name)
     } else {
@@ -129,7 +134,6 @@ fn apply(
     plan: &EventPlan,
     catalog: &Catalog,
     tokens_now: Option<u64>,
-    stale_tokens: u64,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Outcome {
     match plan.reset {
@@ -163,7 +167,7 @@ fn apply(
     context.active = catalog.closure(&context.active);
 
     let needs = if plan.deliver {
-        let needs = compute_needs(catalog, context, tokens_now, stale_tokens);
+        let needs = compute_needs(catalog, context, tokens_now);
         record_delivery(context, &needs, catalog, tokens_now);
         needs
     } else {

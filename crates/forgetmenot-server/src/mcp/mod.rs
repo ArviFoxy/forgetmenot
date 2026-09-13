@@ -9,6 +9,8 @@
 //!
 //! - `memory_*` changes the store. Every write is a git commit and affects every
 //!   context the memory's scopes cover.
+//! - `settings_*` reads and changes the store's behaviour settings, which is the
+//!   same kind of change: one git commit, in force for every context.
 //! - `branch_*` opens, inspects and lands a transaction, which is a git branch:
 //!   writes made on one become a single commit on `main` when it lands.
 //! - `session_*` changes the calling context alone and never touches the store.
@@ -31,6 +33,7 @@ use serde::Serialize;
 
 use crate::app::AppState;
 use crate::operations::branches::{self, LandRequest};
+use crate::operations::settings::{self as settings_operations, SettingsWriteRequest};
 use crate::operations::{
     self, CurrentDocument, DeleteRequest, MemoryFilter, MemoryWriteRequest, OperationError,
     RenameRequest, ReplaceTextRequest, SetFieldsRequest,
@@ -43,7 +46,7 @@ use params::{
     BranchCreateParams, BranchLandParams, BranchParams, MemoryDeleteParams, MemoryGetParams,
     MemoryIndexParams, MemoryPutParams, MemoryRenameParams, MemoryReplaceTextParams,
     MemorySetFieldsParams, SessionInheritParams, SessionParams, SessionScopeParams,
-    parse_session_key,
+    SettingsSetParams, parse_session_key,
 };
 
 /// What the model is told about this server when it connects.
@@ -57,7 +60,10 @@ memory_set_fields, memory_rename, memory_delete) read and change the shared stor
 where every write is one git commit and takes effect in every session the memory's scopes \
 cover. A branch is how several changes land as one commit: branch_create opens one, every write \
 tool takes its name in branch and then changes nothing any session sees, and branch_land \
-squashes the whole branch onto main as a single commit. The session management tools \
+squashes the whole branch onto main as a single commit. The settings management tools \
+(settings_get, settings_set) read and change the shared store's behaviour settings, which say \
+when memories are repeated, when a tool call is held and what a subagent starts with; a change \
+is one git commit and takes effect in every session. The session management tools \
 (session_scopes, session_scope_on, session_scope_off, session_inherit) change only the calling \
 session's own scopes and never touch the store; every tool takes session_key, which is printed \
 in this session's first hook context as machine/session-id, or machine/session-id/agent-id \
@@ -427,6 +433,54 @@ impl ToolServer {
     }
 
     #[tool(
+        description = "Settings management family: the shared store's behaviour settings, which \
+                       say when a critical memory is repeated, when a tool call is held, what a \
+                       subagent starts with and what is delivered. They are part of the store, so \
+                       a change is one git commit and is in force for every session. This call \
+                       only reads. Reports every setting with the value in force, the version to \
+                       write against, and the type and meaning of each key."
+    )]
+    async fn settings_get(&self) -> Result<CallToolResult, ErrorData> {
+        match settings_operations::settings_get(&self.state, None).await {
+            Ok(document) => json_text(&document),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Settings management family: change one of the shared store's behaviour \
+                       settings, as one git commit authored by session_key. The settings are part \
+                       of the store, so the new value is in force in every session at its next \
+                       hook event, not only in this one. key is one of the keys settings_get \
+                       reports and value has the type it gives; every other setting is left as it \
+                       is."
+    )]
+    async fn settings_set(
+        &self,
+        Parameters(params): Parameters<SettingsSetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(failure),
+        };
+        let request = SettingsWriteRequest {
+            value: params.value,
+            // The tools take no version: a setting is one value, and a model
+            // that read it and writes it back is not resolving an edit conflict.
+            base_version: None,
+            author: author.to_string(),
+            message: params.message,
+        };
+        match settings_operations::settings_set(&self.state, &params.key, &request, branch.as_ref())
+            .await
+        {
+            Ok(outcome) => json_text(&outcome),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
         description = "Session management family: changes only the calling session and never \
                        touches the store. Reports the scope ids this session works in, and the \
                        ones it could turn on."
@@ -597,5 +651,10 @@ fn current_version(current: &CurrentDocument) -> &str {
     match current {
         CurrentDocument::Memory(document) => &document.version,
         CurrentDocument::Scope(document) => &document.version,
+        // A store that has never had a settings file has no version to name.
+        CurrentDocument::Settings(document) => document.version.as_deref().unwrap_or(NO_VERSION),
     }
 }
+
+/// What a conflict shows for a document the store does not have yet.
+const NO_VERSION: &str = "none";

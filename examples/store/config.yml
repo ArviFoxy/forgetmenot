@@ -1,0 +1,2 @@
+# How this store behaves. Every key is optional; see the README for the rest.
+reminder_tokens: 200000

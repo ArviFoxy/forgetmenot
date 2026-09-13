@@ -16,12 +16,12 @@ reasoning: >
   Step 1, a tool call at 40999, one token short of K: 40999 − 40000 < 1000, so
   nothing is stale and nothing at all is owed.
 
-  Step 2, a tool call at 41000, exactly K on from the delivery: bench-power is
-  critical and out of reach, so it is delivered again in full. Staleness is not an
-  arrival: nothing is new or changed, so the call is not stopped. The knowledge
-  memories never go stale, because an index line is a pointer the model can follow
-  again.
-stale_tokens: 1000
+  Step 2, a tool call at 41000, exactly K on from the delivery: everything shown
+  at step 0 is K tokens of context behind and out of the model's reach, so all of
+  it is delivered again, each in the form its kind gets: bench-power in full, the
+  two knowledge memories as their index lines. Staleness is not an arrival:
+  nothing is new or changed, so the call is not stopped.
+reminder_tokens: 1000
 steps:
   - hook:
       machine: alpha
@@ -67,3 +67,4 @@ steps:
     expect:
       decision: context
       full: [bench-power]
+      index: [reading-list, sessions/alpha/session-1/notes]

@@ -156,13 +156,14 @@ fn an_event_name_nothing_knows_yet_puts_the_empty_object_on_stdout() {
 /// answer carries nothing.
 #[test]
 fn the_context_size_read_from_the_transcript_reaches_the_stale_rule() {
-    let stale_tokens = 1_000;
-    let server = TestServer::start(example_store_files(), |config| {
-        config.stale_tokens = stale_tokens;
-    });
+    let reminder_tokens = 1_000;
+    let server = TestServer::start(
+        common::example_store_with_settings(&format!("reminder_tokens: {reminder_tokens}\n")),
+        |_| {},
+    );
     let directory = TempDir::new().expect("a temporary directory");
     let before = transcript(&directory, "before.jsonl", BASE_TOKENS);
-    let after = transcript(&directory, "after.jsonl", BASE_TOKENS + stale_tokens);
+    let after = transcript(&directory, "after.jsonl", BASE_TOKENS + reminder_tokens);
 
     let first = run_fixture(&server, "pre_tool_use_bash", &before, "alpha");
     let first_answer = first

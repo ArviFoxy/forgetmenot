@@ -14,6 +14,7 @@ use super::frontmatter::FrontmatterError;
 use super::git::{GitError, GitRepo};
 use super::memory::{MemoryDocument, MemoryKind};
 use super::scope::ScopeDocument;
+use super::settings::{SETTINGS_PATH, SettingProblem, Settings, SettingsFile};
 use super::validate::{ValidationError, ValidationWarning};
 use super::{MemoryId, ScopeId};
 use crate::triggers::{TriggerIndex, TriggerIndexBuilder};
@@ -65,6 +66,11 @@ pub struct ScopeEntry {
 pub struct Catalog {
     /// The commit this catalog was built from.
     pub head: Oid,
+    /// The behaviour settings this revision puts in force, and the entries the
+    /// file itself carries.
+    settings: SettingsFile,
+    /// The blob id of `config.yml`, `None` when the revision has no such file.
+    settings_version: Option<Oid>,
     scopes: BTreeMap<ScopeId, ScopeEntry>,
     memories: BTreeMap<MemoryId, MemoryEntry>,
     implied: BTreeMap<ScopeId, BTreeSet<ScopeId>>,
@@ -86,9 +92,30 @@ impl Catalog {
         let mut load_warnings = Vec::new();
         let mut scopes = BTreeMap::new();
         let mut memories = BTreeMap::new();
+        let mut settings = SettingsFile::default();
+        let mut settings_version = None;
 
         for entry in repository.read_tree(head)? {
-            if let Some(id) = ScopeId::from_repository_path(&entry.path) {
+            if entry.path == SETTINGS_PATH {
+                // The version is recorded whatever the file says, so that a
+                // write against a file this server cannot read is still a
+                // compare-and-swap against the file that is there.
+                settings_version = Some(entry.blob_oid);
+                match super::settings::parse(&entry.bytes) {
+                    Ok((file, problems)) => {
+                        settings = file;
+                        load_errors.extend(
+                            problems
+                                .iter()
+                                .map(|problem| settings_error(&entry.path, problem)),
+                        );
+                    }
+                    Err(error) => load_errors.push(ValidationError::ParseFailure {
+                        path: entry.path,
+                        message: error.to_string(),
+                    }),
+                }
+            } else if let Some(id) = ScopeId::from_repository_path(&entry.path) {
                 match ScopeDocument::parse(&entry.bytes) {
                     Ok(document) => {
                         scopes.insert(
@@ -148,6 +175,8 @@ impl Catalog {
 
         Ok(Self {
             head,
+            settings,
+            settings_version,
             scopes,
             memories,
             implied,
@@ -155,6 +184,22 @@ impl Catalog {
             load_errors,
             load_warnings,
         })
+    }
+
+    /// The behaviour settings in force at this revision.
+    pub fn settings(&self) -> &Settings {
+        &self.settings.settings
+    }
+
+    /// The entries the settings file itself carries, which a write of one key
+    /// keeps.
+    pub fn settings_entries(&self) -> &yaml_serde::Mapping {
+        &self.settings.entries
+    }
+
+    /// The version of the settings file, `None` when the store has none.
+    pub fn settings_version(&self) -> Option<Oid> {
+        self.settings_version
     }
 
     /// The memory with this id.
@@ -216,6 +261,22 @@ impl Catalog {
             }
         }
         closed
+    }
+}
+
+/// One problem with one settings key, as the report shows it against the file.
+fn settings_error(path: &str, problem: &SettingProblem) -> ValidationError {
+    match problem {
+        SettingProblem::UnknownKey { key } => ValidationError::UnknownSetting {
+            path: path.to_string(),
+            key: key.clone(),
+        },
+        SettingProblem::WrongType { key, mismatch } => ValidationError::BadSettingValue {
+            path: path.to_string(),
+            key: key.clone(),
+            expected: mismatch.expected,
+            found: mismatch.found.clone(),
+        },
     }
 }
 

@@ -1020,6 +1020,34 @@ fn check_exits_zero_and_reports_counts_on_the_example_store() {
     );
 }
 
+/// Detects a `check` that passes a settings file this server cannot act on: a
+/// key it does not have and a value of the wrong type are both a behaviour
+/// somebody asked for and is not getting, and `check` is the gate that says so
+/// before the store is deployed.
+#[test]
+fn check_exits_one_and_names_the_setting_a_store_gets_wrong() {
+    for (settings, expected) in [
+        ("remind_tokens: 1000\n", "remind_tokens"),
+        (
+            "interrupt_on_critical: sometimes\n",
+            "interrupt_on_critical",
+        ),
+    ] {
+        let store = store_with(&[("config.yml", settings.as_bytes())]);
+        let output = run_check(store.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "check did not exit 1 on {settings:?}:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("config.yml") && stdout.contains(expected),
+            "check did not name the file and the setting for {settings:?}:\n{stdout}"
+        );
+    }
+}
+
 /// Detects a `check` that exits zero on a broken store, or one that reports the
 /// problem without saying which file to open.
 #[test]

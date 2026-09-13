@@ -18,6 +18,7 @@ use git2::Oid;
 use crate::store::branch::{BranchName, BranchRecord};
 use crate::store::catalog::{Catalog, LoadError};
 use crate::store::git::{CommitOutcome, FileChange, FileConflict, GitError, GitRepo, LandAttempt};
+use crate::store::settings::SETTINGS_PATH;
 use crate::store::validate::{self, ValidationError};
 use crate::store::{MemoryId, ScopeId};
 
@@ -668,6 +669,9 @@ fn is_idle(record: &BranchRecord, now: DateTime<Utc>, retention: Duration) -> bo
 /// The version of the document at `path` in `catalog`, or `None` when the
 /// catalog holds no document there.
 pub fn version_at(catalog: &Catalog, path: &str) -> Option<Oid> {
+    if path == SETTINGS_PATH {
+        return catalog.settings_version();
+    }
     if let Some(id) = MemoryId::from_repository_path(path) {
         return catalog.memory(&id).map(|memory| memory.version);
     }

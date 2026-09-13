@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use forgetmenot_server::clock::SystemClock;
-use forgetmenot_server::config::{Config, DEFAULT_SNAPSHOT_DEBOUNCE_MS, DEFAULT_STALE_TOKENS};
+use forgetmenot_server::config::{Config, DEFAULT_SNAPSHOT_DEBOUNCE_MS};
 use forgetmenot_server::stats::{
     DenyDayRow, LatencyRow, MemoryStatsRow, SessionBytesRow, StatsReader, TriggerStatsRow,
 };
@@ -64,10 +64,6 @@ struct ServeArgs {
     /// A Host header value accepted on `/mcp`; may be given more than once.
     #[arg(long = "allowed-host", value_name = "HOST")]
     allowed_hosts: Vec<String>,
-    /// Context growth in tokens after which a delivered critical memory is
-    /// delivered again.
-    #[arg(long, value_name = "TOKENS", default_value_t = DEFAULT_STALE_TOKENS)]
-    stale_tokens: u64,
     /// How long a context change waits for further changes before the state
     /// file is written.
     #[arg(long, value_name = "MS", default_value_t = DEFAULT_SNAPSHOT_DEBOUNCE_MS)]
@@ -96,7 +92,6 @@ impl ServeArgs {
         }
         config.web_dist = self.web_dist;
         config.allowed_hosts = self.allowed_hosts;
-        config.stale_tokens = self.stale_tokens;
         config.snapshot_debounce_ms = self.snapshot_debounce_ms;
         config.context_retention_days = self.context_retention_days;
         config.branch_retention_days = self.branch_retention_days;

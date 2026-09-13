@@ -234,6 +234,26 @@ pub struct BranchLandParams {
     pub message: String,
 }
 
+/// Which setting to change, and to what.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SettingsSetParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The setting to change, one of the keys `settings_get` reports.
+    pub key: String,
+    /// The new value, of the type `settings_get` gives for this key: a number,
+    /// a bool, null, or a list of tool names.
+    pub value: serde_json::Value,
+    /// The commit's title line: one line, at most 72 characters, saying what the
+    /// new behaviour is for.
+    pub message: String,
+    /// A branch from `branch_create`. With it the change is committed to that
+    /// branch instead of to main, so no session behaves differently until the
+    /// branch is landed.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
 /// Which session is asking.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionParams {

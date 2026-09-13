@@ -9,11 +9,7 @@ use forgetmenot_types::hook::{HookCommon, HookEvent};
 
 use crate::context::{ContextKey, MAIN_AGENT};
 use crate::store::scope::TriggerField;
-
-/// The largest tool result matched against triggers. A result larger than this
-/// is truncated: matching is linear in the text, and a 10 MB file read must not
-/// cost a 10 MB regex pass on the hot path.
-pub const TOOL_RESULT_CAP: usize = 256 * 1024;
+use crate::store::settings::Settings;
 
 /// What an event does to the context's delivery record before anything else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,8 +40,12 @@ pub struct EventPlan {
     /// injection point is the one every other event uses.
     pub deliver: bool,
     /// Whether a critical arrival may stop the call, which only `PreToolUse`
-    /// can do.
+    /// can do. Whether it does is the store's to say: see
+    /// [`Settings::interrupts`].
     pub may_deny: bool,
+    /// The tool about to run, for `PreToolUse` alone, which is what the store's
+    /// exemptions are matched against.
+    pub tool_name: Option<String>,
     /// Whether the answer also tells the model which scopes it can turn on and
     /// which session key to pass to the MCP tools.
     pub session_start: bool,
@@ -53,7 +53,10 @@ pub struct EventPlan {
 
 /// What to do about `event`, or `None` for an event name this server does not
 /// know, which is answered with an empty object.
-pub fn plan(event: &HookEvent, machine: &str) -> Option<EventPlan> {
+///
+/// `settings` are the store's, because how much of a tool result is matched
+/// against triggers is part of what the store says about its own behaviour.
+pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<EventPlan> {
     let event_name = event.event_name();
     let common = event.common()?;
     let mut plan = EventPlan {
@@ -63,6 +66,7 @@ pub fn plan(event: &HookEvent, machine: &str) -> Option<EventPlan> {
         reset: Reset::Keep,
         deliver: true,
         may_deny: false,
+        tool_name: None,
         session_start: false,
     };
 
@@ -85,6 +89,7 @@ pub fn plan(event: &HookEvent, machine: &str) -> Option<EventPlan> {
             ..
         } => {
             plan.may_deny = true;
+            plan.tool_name = Some(tool_name.clone());
             push_text(&mut plan, TriggerField::ToolName, Some(tool_name));
             let input = string_leaves(tool_input, usize::MAX);
             push_text(&mut plan, TriggerField::ToolInput, Some(&input));
@@ -95,7 +100,7 @@ pub fn plan(event: &HookEvent, machine: &str) -> Option<EventPlan> {
             );
         }
         HookEvent::PostToolUse { tool_output, .. } => {
-            let result = string_leaves(tool_output, TOOL_RESULT_CAP);
+            let result = string_leaves(tool_output, settings.tool_result_cap());
             push_text(&mut plan, TriggerField::ToolResult, Some(&result));
         }
         HookEvent::Stop {
@@ -222,6 +227,12 @@ mod tests {
         serde_json::from_value(payload).expect("the payload parses as an event")
     }
 
+    /// The plan for one event on `machine`, under a store that has said nothing
+    /// about its behaviour.
+    fn plan_of(event: &HookEvent, machine: &str) -> Option<EventPlan> {
+        plan(event, machine, &Settings::default())
+    }
+
     /// Detects a tool input flattened in a way that loses a nested value, which
     /// would stop a trigger matching the text a tool was actually called with.
     #[test]
@@ -271,7 +282,7 @@ mod tests {
     /// directory trigger would then fire for the directory that was left.
     #[test]
     fn cwd_changed_matches_the_directory_now_in_force() {
-        let plan = plan(
+        let plan = plan_of(
             &event(json!({
                 "hook_event_name": "CwdChanged",
                 "session_id": "session-1",
@@ -291,7 +302,7 @@ mod tests {
     /// child's, which would give the parent the child's deliveries.
     #[test]
     fn subagent_start_acts_on_the_child_context() {
-        let plan = plan(
+        let plan = plan_of(
             &event(json!({
                 "hook_event_name": "SubagentStart",
                 "session_id": "session-1",

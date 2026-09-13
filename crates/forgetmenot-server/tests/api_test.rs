@@ -15,7 +15,10 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
-use common::{TestServer, additional_context, api_request, example_store_files, hook_fixture};
+use common::{
+    TestServer, additional_context, api_request, example_store_files, example_store_with_settings,
+    example_store_without_settings, hook_fixture,
+};
 
 /// The author name a write carries; the frontend sends this one.
 const AUTHOR: &str = "wiki";
@@ -965,6 +968,222 @@ fn deleting_an_implicit_scope_is_refused_as_a_bad_request() {
         head(&server),
         before,
         "a refused delete must leave the store as it was"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+/// The settings of the store the server is answering from.
+fn settings(server: &TestServer) -> Value {
+    let (status, answer) = server.api("GET", "/api/settings", None);
+    assert_eq!(
+        status, 200,
+        "reading the settings must succeed, got {answer}"
+    );
+    answer
+}
+
+/// Detects a store with no settings file reported as anything other than the
+/// documented defaults, and one reported with a version a write could send back:
+/// an editor told the file exists would write against a version that is not
+/// there, and one told the wrong defaults would show a behaviour nobody has.
+#[test]
+fn the_settings_of_a_store_without_a_file_are_the_defaults_at_no_version() {
+    let server = TestServer::start(example_store_without_settings(), |_| {});
+
+    let answer = settings(&server);
+
+    assert_eq!(
+        answer["version"],
+        Value::Null,
+        "a store with no settings file has no version, got {answer}"
+    );
+    assert_eq!(
+        answer["settings"],
+        json!({
+            "reminder_tokens": null,
+            "interrupt_on_critical": true,
+            "interrupt_exempt_tools": [],
+            "subagents_inherit_scopes": true,
+            "deliver_knowledge_index": true,
+            "tool_result_match_limit": 262_144,
+        }),
+        "the defaults must be the documented ones, got {answer}"
+    );
+    let described: Vec<&str> = answer["schema"]
+        .as_array()
+        .expect("the schema is a list")
+        .iter()
+        .filter_map(|row| row["key"].as_str())
+        .collect();
+    assert_eq!(
+        described.len(),
+        answer["settings"]
+            .as_object()
+            .expect("the settings are an object")
+            .len(),
+        "the schema must describe every setting, got {answer}"
+    );
+}
+
+/// Detects a write of the first setting that does not create the file, one that
+/// answers 200 without committing, and a change that does not reach the settings
+/// the server answers from: the whole point of the file is that the next read
+/// sees it.
+#[test]
+fn writing_a_setting_creates_the_file_in_one_commit_and_changes_what_is_read_back() {
+    let server = TestServer::start(example_store_without_settings(), |_| {});
+    let before = head(&server);
+
+    let (status, written) = server.api(
+        "PUT",
+        "/api/settings/reminder_tokens",
+        Some(&json!({
+            "value": 150_000,
+            "author": AUTHOR,
+            "message": "remind the agent of the rules every 150k tokens",
+        })),
+    );
+
+    assert_eq!(status, 200, "the write must be accepted, got {written}");
+    assert_ne!(head(&server), before, "the write must make a commit");
+    assert_eq!(
+        commits_touching(&server, "config.yml").len(),
+        1,
+        "the write must make exactly one commit on the settings file"
+    );
+    let answer = settings(&server);
+    assert_eq!(
+        answer["settings"]["reminder_tokens"],
+        json!(150_000),
+        "the setting must read back as it was written, got {answer}"
+    );
+    assert_eq!(
+        answer["version"], written["version"],
+        "the write must report the version the next one sends back, got {written}"
+    );
+}
+
+/// Detects a write that leaves the settings the store already had: a change to
+/// one key must not quietly take every other one back to its default.
+#[test]
+fn writing_one_setting_leaves_the_others_as_the_store_had_them() {
+    let server = TestServer::start(
+        example_store_with_settings("reminder_tokens: 120000\n"),
+        |_| {},
+    );
+
+    let (status, written) = server.api(
+        "PUT",
+        "/api/settings/deliver_knowledge_index",
+        Some(&json!({
+            "value": false,
+            "author": AUTHOR,
+            "message": "fetch knowledge on demand instead of indexing it",
+        })),
+    );
+
+    assert_eq!(status, 200, "the write must be accepted, got {written}");
+    let answer = settings(&server);
+    assert_eq!(
+        answer["settings"]["deliver_knowledge_index"],
+        json!(false),
+        "the written key must change, got {answer}"
+    );
+    assert_eq!(
+        answer["settings"]["reminder_tokens"],
+        json!(120_000),
+        "the key the write did not name must be left alone, got {answer}"
+    );
+}
+
+/// Detects a settings write that accepts a key this server does not act on, or a
+/// value of the wrong type: either would be a setting written down, committed and
+/// silently doing nothing.
+#[test]
+fn a_setting_this_server_does_not_have_or_a_value_of_the_wrong_type_is_refused() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let before = head(&server);
+
+    let (unknown_key, unknown_answer) = server.api(
+        "PUT",
+        "/api/settings/remind_tokens",
+        Some(&json!({
+            "value": 1_000,
+            "author": AUTHOR,
+            "message": "set a reminder threshold",
+        })),
+    );
+    let (wrong_type, wrong_answer) = server.api(
+        "PUT",
+        "/api/settings/interrupt_on_critical",
+        Some(&json!({
+            "value": "yes",
+            "author": AUTHOR,
+            "message": "hold tool calls for critical memories",
+        })),
+    );
+
+    assert_eq!(
+        unknown_key, 422,
+        "a key this server does not have must be refused, got {unknown_answer}"
+    );
+    assert_eq!(
+        wrong_type, 422,
+        "a value of the wrong type must be refused, got {wrong_answer}"
+    );
+    assert_eq!(
+        head(&server),
+        before,
+        "a refused settings write must leave the store as it was"
+    );
+}
+
+/// Detects a settings write that ignores the version it was made from: two
+/// people changing the settings at once would overwrite each other, and the
+/// second would never see that the first had written anything.
+#[test]
+fn a_settings_write_from_a_stale_version_is_refused_with_the_settings_as_they_are() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let stale = settings(&server);
+    let (status, _) = server.api(
+        "PUT",
+        "/api/settings/reminder_tokens",
+        Some(&json!({
+            "value": 90_000,
+            "base_version": stale["version"],
+            "author": AUTHOR,
+            "message": "remind the agent of the rules every 90k tokens",
+        })),
+    );
+    assert_eq!(status, 200, "the first write must land");
+
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/settings/reminder_tokens",
+        Some(&json!({
+            "value": 10_000,
+            "base_version": stale["version"],
+            "author": AUTHOR,
+            "message": "remind the agent of the rules every 10k tokens",
+        })),
+    );
+
+    assert_eq!(
+        status, 409,
+        "a write from a version that is no longer current must be refused, got {answer}"
+    );
+    assert_eq!(
+        answer["current"]["settings"]["reminder_tokens"],
+        json!(90_000),
+        "the refusal must carry the settings as the store has them, got {answer}"
+    );
+    assert_eq!(
+        settings(&server)["settings"]["reminder_tokens"],
+        json!(90_000),
+        "the refused write must not have changed anything"
     );
 }
 

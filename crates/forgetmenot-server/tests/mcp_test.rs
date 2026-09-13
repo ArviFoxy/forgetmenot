@@ -21,8 +21,8 @@ use rmcp::service::ServiceError;
 use serde_json::{Value, json};
 
 use common::{
-    TestServer, additional_context, example_store_files, hook_fixture, test_agent, tool_json,
-    tool_text,
+    TestServer, additional_context, example_store_files, hook_fixture, permission_decision,
+    test_agent, tool_json, tool_text,
 };
 
 /// The machine every session in these tests runs on.
@@ -52,13 +52,17 @@ const BRANCH_TOOLS: [&str; 5] = [
     "branch_abandon",
 ];
 
+/// The settings tools, which read and change the store's behaviour settings.
+const SETTINGS_TOOLS: [&str; 2] = ["settings_get", "settings_set"];
+
 /// The tools that write to the store, each of which takes an optional branch.
-const WRITE_TOOLS: [&str; 5] = [
+const WRITE_TOOLS: [&str; 6] = [
     "memory_put",
     "memory_replace_text",
     "memory_set_fields",
     "memory_rename",
     "memory_delete",
+    "settings_set",
 ];
 
 /// The session management tools, which change only the calling context.
@@ -77,6 +81,9 @@ const SESSION_FAMILY_PHRASE: &str = "never touches the store";
 
 /// What a branch tool's description has to say: what a branch is for.
 const BRANCH_FAMILY_PHRASE: &str = "one commit on main";
+
+/// What a settings tool's description has to say: what these settings are.
+const SETTINGS_FAMILY_PHRASE: &str = "behaviour settings";
 
 // Lines that appear in one memory's body of the example store and nowhere else,
 // so that "delivered in full" can be told apart from "named in an index line".
@@ -171,12 +178,13 @@ fn tools_list_names_every_tool_and_each_description_names_its_family() {
     let expected: BTreeSet<String> = MEMORY_TOOLS
         .iter()
         .chain(BRANCH_TOOLS.iter())
+        .chain(SETTINGS_TOOLS.iter())
         .chain(SESSION_TOOLS.iter())
         .map(|name| (*name).to_string())
         .collect();
     assert_eq!(
         offered, expected,
-        "tools/list must name exactly the tools of the three families"
+        "tools/list must name exactly the tools of the four families"
     );
     for tool in &tools {
         let description = tool.description.as_deref().unwrap_or_default();
@@ -184,6 +192,8 @@ fn tools_list_names_every_tool_and_each_description_names_its_family() {
             MEMORY_FAMILY_PHRASE
         } else if BRANCH_TOOLS.contains(&tool.name.as_ref()) {
             BRANCH_FAMILY_PHRASE
+        } else if SETTINGS_TOOLS.contains(&tool.name.as_ref()) {
+            SETTINGS_FAMILY_PHRASE
         } else {
             SESSION_FAMILY_PHRASE
         };
@@ -254,10 +264,16 @@ fn the_server_says_which_families_it_has_and_where_the_session_key_comes_from() 
         instructions.contains("session_key") && instructions.contains("hook"),
         "the instructions must say that session_key comes from the hook context, got {instructions:?}"
     );
-    assert!(
-        instructions.contains("memory management") && instructions.contains("session management"),
-        "the instructions must name both families, got {instructions:?}"
-    );
+    for family in [
+        "memory management",
+        "settings management",
+        "session management",
+    ] {
+        assert!(
+            instructions.contains(family),
+            "the instructions must name the {family} family, got {instructions:?}"
+        );
+    }
     assert!(
         instructions.contains("branch") && instructions.contains("one commit"),
         "the instructions must say that a branch is how several changes land as one \
@@ -982,6 +998,88 @@ fn three_writes_on_a_branch_through_mcp_are_invisible_until_they_land_as_one_com
         open,
         json!([]),
         "the landed branch must no longer be open, got {open}"
+    );
+}
+
+/// Detects a settings change on a branch that changes how sessions behave before
+/// it lands, and one that does not take effect once it has: the settings are part
+/// of the store, so a branch has to hold them back exactly as it holds back a
+/// memory, and landing has to put them in force at the next event.
+#[test]
+fn a_settings_change_on_a_branch_through_mcp_is_invisible_until_it_lands() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-13";
+    let branch =
+        tool_json(&session.call("branch_create", json!({ "session_key": session_key })))["branch"]
+            .as_str()
+            .expect("branch_create names the branch")
+            .to_string();
+
+    let written = session.call(
+        "settings_set",
+        json!({
+            "session_key": session_key,
+            "key": "interrupt_on_critical",
+            "value": false,
+            "message": "stop holding tool calls for critical memories",
+            "branch": branch,
+        }),
+    );
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "the settings write on the branch must be accepted, got {}",
+        tool_text(&written)
+    );
+
+    let on_main = tool_json(&session.call("settings_get", json!({})));
+    assert_eq!(
+        on_main["settings"]["interrupt_on_critical"],
+        json!(true),
+        "main must still carry the setting it had, got {on_main}"
+    );
+    let (_, before) = server.hook(
+        MACHINE,
+        SOME_TOKENS,
+        &event_with("pre_tool_use_bash", &[("session_id", json!("session-14"))]),
+    );
+    assert_eq!(
+        permission_decision(&before),
+        Some("deny"),
+        "the behaviour must not change before the branch lands, got {before}"
+    );
+
+    let landed = session.call(
+        "branch_land",
+        json!({
+            "session_key": session_key,
+            "branch": branch,
+            "message": "stop holding tool calls for critical memories",
+        }),
+    );
+    assert_ne!(
+        landed.is_error,
+        Some(true),
+        "the branch must land, got {}",
+        tool_text(&landed)
+    );
+
+    let after_landing = tool_json(&session.call("settings_get", json!({})));
+    assert_eq!(
+        after_landing["settings"]["interrupt_on_critical"],
+        json!(false),
+        "the landed setting must be the one in force, got {after_landing}"
+    );
+    let (_, after) = server.hook(
+        MACHINE,
+        SOME_TOKENS,
+        &event_with("pre_tool_use_bash", &[("session_id", json!("session-15"))]),
+    );
+    assert_eq!(
+        permission_decision(&after),
+        None,
+        "the landed setting must be in force at the next event, got {after}"
     );
 }
 

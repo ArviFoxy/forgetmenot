@@ -4,6 +4,7 @@
 //! Paths inside the repository:
 //!
 //! ```text
+//! config.yml
 //! scopes/<id>.yaml
 //! memories/<name>.md
 //! memories/sessions/<machine>/<session-id>/<name>.md
@@ -15,6 +16,7 @@ pub mod frontmatter;
 pub mod git;
 pub mod memory;
 pub mod scope;
+pub mod settings;
 pub mod validate;
 
 use std::fmt;

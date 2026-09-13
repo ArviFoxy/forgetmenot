@@ -15,6 +15,26 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify};
 
 use super::{ContextKey, ContextState, initial_active};
+use crate::store::settings::Settings;
+
+/// What a subagent's context starts with, which the store's settings decide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inheritance {
+    /// The scopes its session had active when it was spawned.
+    FromParent,
+    /// Only the scopes every context has: global, its machine and its session.
+    ImplicitOnly,
+}
+
+impl Inheritance {
+    /// What the store's settings ask for.
+    pub fn of(settings: &Settings) -> Self {
+        match settings.subagents_inherit_scopes {
+            true => Inheritance::FromParent,
+            false => Inheritance::ImplicitOnly,
+        }
+    }
+}
 
 /// What went wrong loading or writing a snapshot of the registry.
 #[derive(Debug, thiserror::Error)]
@@ -117,14 +137,16 @@ impl ContextRegistry {
     ///
     /// A subagent's context starts from a copy of its session's active scopes,
     /// taken under the session's own lock so that a scope activated at the same
-    /// moment is either fully in or fully out.
+    /// moment is either fully in or fully out, unless `inheritance` says the
+    /// store wants subagents to start from nothing.
     pub async fn with_context<R>(
         &self,
         key: &ContextKey,
         now: DateTime<Utc>,
+        inheritance: Inheritance,
         work: impl FnOnce(&mut ContextState) -> R,
     ) -> R {
-        let handle = self.handle(key, now).await;
+        let handle = self.handle(key, now, inheritance).await;
         let result = {
             let mut state = handle.lock().await;
             work(&mut state)
@@ -134,7 +156,12 @@ impl ContextRegistry {
     }
 
     /// The handle of one context, created if absent.
-    pub async fn handle(&self, key: &ContextKey, now: DateTime<Utc>) -> Arc<Mutex<ContextState>> {
+    pub async fn handle(
+        &self,
+        key: &ContextKey,
+        now: DateTime<Utc>,
+        inheritance: Inheritance,
+    ) -> Arc<Mutex<ContextState>> {
         if let Some(existing) = self.contexts.lock().await.get(key).cloned() {
             return existing;
         }
@@ -143,7 +170,12 @@ impl ContextRegistry {
             let parent = self.handle_main(&parent_key, now).await;
             // The map lock is not held here, so the parent's own events are not
             // blocked by a child being created.
-            let active = parent.lock().await.active.clone();
+            let active = match inheritance {
+                Inheritance::FromParent => parent.lock().await.active.clone(),
+                // The parent is still the parent: what changes is only what the
+                // child starts with.
+                Inheritance::ImplicitOnly => initial_active(&key.machine, &key.session_id),
+            };
             (active, Some(parent_key))
         } else {
             (initial_active(&key.machine, &key.session_id), None)

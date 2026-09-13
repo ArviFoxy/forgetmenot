@@ -16,6 +16,7 @@
 //! landed. The branch operations themselves are in [`branches`].
 
 pub mod branches;
+pub mod settings;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::context::registry::ContextRegistry;
+use crate::context::registry::{ContextRegistry, Inheritance};
 use crate::context::{ContextKey, Form, Shown};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
 use crate::stats::ToolCallRecord;
@@ -179,10 +180,11 @@ impl ConflictedFile {
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub enum CurrentDocument {
-    /// Both variants are boxed: every operation's failure carries this enum, and
+    /// Every variant is boxed: every operation's failure carries this enum, and
     /// a whole document is far larger than the answer it travels with.
     Memory(Box<MemoryDoc>),
     Scope(Box<ScopeDoc>),
+    Settings(Box<settings::SettingsDoc>),
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +571,7 @@ pub async fn memory_get(
         let version = entry.version.to_string();
         state
             .contexts
-            .with_context(key, now, |context| {
+            .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
                 context.delivered.insert(
                     id.clone(),
                     Shown {
@@ -1576,7 +1578,12 @@ pub async fn session_scopes(
     let catalog = state.store.snapshot().await?;
     let active = state
         .contexts
-        .with_context(key, state.clock.now(), |context| context.active.clone())
+        .with_context(
+            key,
+            state.clock.now(),
+            Inheritance::of(catalog.settings()),
+            |context| context.active.clone(),
+        )
         .await;
     record_tool_call(state, "session_scopes", key, None, true).await;
     Ok(session_scopes_of(&catalog, active))
@@ -1596,7 +1603,7 @@ pub async fn session_scope_on(
     let now = state.clock.now();
     let active = state
         .contexts
-        .with_context(key, now, |context| {
+        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
             context.active.insert(scope.clone());
             context.active = catalog.closure(&context.active);
             context.last_seen = now;
@@ -1629,7 +1636,7 @@ pub async fn session_scope_off(
     let now = state.clock.now();
     let active = state
         .contexts
-        .with_context(key, now, |context| {
+        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
             context.active.remove(scope);
             context.last_seen = now;
             context.active.clone()
@@ -1661,7 +1668,7 @@ pub async fn session_inherit(
     inherited.insert(from.session_scope());
     let active = state
         .contexts
-        .with_context(key, now, |context| {
+        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
             context.active.extend(inherited);
             context.last_seen = now;
             context.active.clone()
@@ -1712,7 +1719,7 @@ const MISSING_BASE_VERSION: &str =
     "base_version is required: a write replaces the version it was read from";
 
 /// What a write is refused for when its `base_version` is not a version at all.
-const UNREADABLE_BASE_VERSION: &str = "base_version is not a version of this document";
+pub(crate) const UNREADABLE_BASE_VERSION: &str = "base_version is not a version of this document";
 
 /// What a replacement is refused for when it does not say what to replace.
 const EMPTY_SNIPPET: &str = "old_string is empty: a replacement needs the text it replaces";
@@ -1749,7 +1756,7 @@ pub async fn target_catalog(
 }
 
 /// Commit one set of files where the write says: to `main`, or to one branch.
-async fn commit_to(
+pub(crate) async fn commit_to(
     state: &AppState,
     branch: Option<&BranchName>,
     author: &str,
@@ -1780,7 +1787,7 @@ fn commit_body(kind: &str, id: &str, author: &str) -> String {
     format!("{kind}: {id}\nauthor: {author}")
 }
 
-fn write_outcome(outcome: &crate::service::WriteOutcome, path: &str) -> WriteOutcome {
+pub(crate) fn write_outcome(outcome: &crate::service::WriteOutcome, path: &str) -> WriteOutcome {
     WriteOutcome {
         commit_oid: outcome.commit_oid.to_string(),
         version: outcome.blob_oids.get(path).map(Oid::to_string),
@@ -1788,7 +1795,7 @@ fn write_outcome(outcome: &crate::service::WriteOutcome, path: &str) -> WriteOut
 }
 
 /// The store's write failures that are not a version mismatch.
-fn write_error(path: &str, error: WriteError) -> OperationError {
+pub(crate) fn write_error(path: &str, error: WriteError) -> OperationError {
     match error {
         WriteError::BadMessage => {
             OperationError::invalid(path, &WriteError::BadMessage.to_string())

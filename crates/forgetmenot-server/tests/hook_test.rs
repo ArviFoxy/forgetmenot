@@ -17,8 +17,9 @@ use forgetmenot_server::store::{MemoryId, ScopeId};
 use serde_json::{Value, json};
 
 use common::{
-    TestServer, additional_context, example_store, example_store_files, hook_fixture,
-    permission_decision, permission_decision_reason, post_hook,
+    TestServer, additional_context, example_store, example_store_files,
+    example_store_with_settings, example_store_without_settings, hook_fixture, permission_decision,
+    permission_decision_reason, post_hook,
 };
 
 /// The reason a stopped tool call is given. Source: the plan's hook contract,
@@ -31,12 +32,19 @@ const DENY_REASON: &str = "This tool call was not executed. Its input matched a 
 const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 const WIDGET_NAMING_BODY: &str = "Downstream drawings cite part numbers by value";
 const ROCKET_STAGES_BODY: &str = "Test reports and telemetry both use this numbering";
+const READING_LIST_BODY: &str = "The bench notes, the parts catalogue and the test log";
+/// The index entry of `reading-list`, from its `description`.
+const READING_LIST_DESCRIPTION: &str = "The workshop references are all on paper in the binder";
 /// The index entry of `rocket-stages`, from its `description`.
 const ROCKET_STAGES_DESCRIPTION: &str =
     "Stage one lights on the pad and later stages count upwards in firing order";
 
 /// The context size reported with an event that is not about staleness.
 const SOME_TOKENS: Option<u64> = Some(10_000);
+
+/// The reminder threshold K the example store's `config.yml` asks for. Source:
+/// `examples/store/config.yml`, which is the fixture these tests run on.
+const REMINDER_TOKENS: u64 = 200_000;
 
 /// Whether any line of `text`, trimmed, is exactly `wanted`. Used for the list
 /// of scope ids, which is one id per line; it does not depend on the wording of
@@ -302,42 +310,49 @@ fn a_memory_carrying_the_legacy_archived_key_is_delivered_like_any_other() {
     );
 }
 
-/// Detects a staleness threshold that fires late: a critical memory delivered K
-/// tokens of context ago is out of the model's reach and must be delivered again.
+/// Detects a reminder threshold that fires late, a `reminder_tokens` in the
+/// store that never reaches the state machine, and a reminder that covers only
+/// the critical memories: everything delivered K tokens of context ago is out of
+/// the model's reach, and each kind has to come back in the form it is delivered
+/// in, the rule in full and the knowledge memory as its index line.
 #[test]
-fn a_critical_memory_is_delivered_again_once_the_context_has_grown_by_the_threshold() {
-    let stale_tokens = 1_000;
-    let server = TestServer::start(example_store_files(), |config| {
-        config.stale_tokens = stale_tokens;
-    });
+fn everything_due_is_delivered_again_once_the_context_has_grown_by_the_stores_threshold() {
+    let server = TestServer::start(example_store_files(), |_| {});
     server.hook("alpha", Some(10_000), &hook_fixture("session_start"));
 
     let (status, answer) = server.hook(
         "alpha",
-        Some(10_000 + stale_tokens),
+        Some(10_000 + REMINDER_TOKENS),
         &neutral_pre_tool_use(),
     );
 
     assert_eq!(status, 200, "the event must be answered");
+    let text = context_of(&answer);
     assert!(
-        context_of(&answer).contains(BENCH_POWER_BODY),
-        "a stale critical memory must be delivered again, got {answer}"
+        text.contains(BENCH_POWER_BODY),
+        "a critical memory out of reach must be delivered again in full, got {text:?}"
+    );
+    assert!(
+        has_index_line(text, "reading-list", READING_LIST_DESCRIPTION),
+        "a knowledge memory out of reach must be delivered again as its index line, got {text:?}"
+    );
+    assert!(
+        !text.contains(READING_LIST_BODY),
+        "a knowledge memory must not be delivered in full by a reminder, got {text:?}"
     );
 }
 
-/// Detects a staleness threshold that fires early: just short of K the memory is
-/// still in the model's reach and delivering it again wastes context.
+/// Detects a reminder threshold that fires early: just short of K everything
+/// delivered is still in the model's reach and delivering any of it again wastes
+/// the context the reminder exists to protect.
 #[test]
-fn a_critical_memory_is_not_delivered_again_just_short_of_the_threshold() {
-    let stale_tokens = 1_000;
-    let server = TestServer::start(example_store_files(), |config| {
-        config.stale_tokens = stale_tokens;
-    });
+fn nothing_is_delivered_again_just_short_of_the_stores_threshold() {
+    let server = TestServer::start(example_store_files(), |_| {});
     server.hook("alpha", Some(10_000), &hook_fixture("session_start"));
 
     let (status, answer) = server.hook(
         "alpha",
-        Some(10_000 + stale_tokens - 1),
+        Some(10_000 + REMINDER_TOKENS - 1),
         &neutral_pre_tool_use(),
     );
 
@@ -345,7 +360,203 @@ fn a_critical_memory_is_not_delivered_again_just_short_of_the_threshold() {
     assert_eq!(
         additional_context(&answer),
         None,
-        "below the threshold nothing may be delivered again, got {answer}"
+        "below the threshold neither form may be delivered again, got {answer}"
+    );
+}
+
+/// Detects a reminder threshold that applies when no store asks for one: a store
+/// with no settings file must never repeat a memory it has already delivered,
+/// however far the context has grown, because nobody asked for the context to be
+/// spent that way.
+#[test]
+fn no_reminder_is_delivered_when_the_store_has_no_settings_file() {
+    let server = TestServer::start(example_store_without_settings(), |_| {});
+    server.hook("alpha", Some(10_000), &hook_fixture("session_start"));
+
+    let (status, answer) = server.hook(
+        "alpha",
+        Some(10_000 + 100 * REMINDER_TOKENS),
+        &neutral_pre_tool_use(),
+    );
+
+    assert_eq!(status, 200, "the event must be answered");
+    assert_eq!(
+        additional_context(&answer),
+        None,
+        "with no settings file reminders are off, so nothing may be repeated, got {answer}"
+    );
+}
+
+/// Detects an interrupt that is held on regardless of the store's settings: a
+/// store that has turned it off wants the memory in the context and the call to
+/// run, and stopping the call anyway makes every session pay for a setting it
+/// turned off.
+#[test]
+fn a_store_that_turns_the_interrupt_off_is_given_the_memory_without_the_call_being_stopped() {
+    let server = TestServer::start(
+        example_store_with_settings("interrupt_on_critical: false\n"),
+        |_| {},
+    );
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("pre_tool_use_bash"));
+
+    assert_eq!(status, 200, "a tool call must be answered");
+    assert_eq!(
+        permission_decision(&answer),
+        None,
+        "with the interrupt off the call must not be stopped, got {answer}"
+    );
+    assert!(
+        context_of(&answer).contains(WIDGET_NAMING_BODY),
+        "the critical memory must still be delivered in full, got {answer}"
+    );
+}
+
+/// Detects an exemption list that is not consulted, or one that releases every
+/// tool: a tool the store exempts must run while the memory is attached, and a
+/// tool it does not exempt must still be stopped.
+#[test]
+fn a_tool_the_store_exempts_is_not_stopped_while_another_tool_still_is() {
+    let server = TestServer::start(
+        example_store_with_settings("interrupt_exempt_tools: [Bash]\n"),
+        |_| {},
+    );
+    let exempt = event_with("pre_tool_use_bash", &[("session_id", json!("session-a"))]);
+    let held = event_with(
+        "pre_tool_use_bash",
+        &[
+            ("session_id", json!("session-b")),
+            ("tool_name", json!("Write")),
+        ],
+    );
+
+    let (_, exempt_answer) = server.hook("alpha", SOME_TOKENS, &exempt);
+    let (_, held_answer) = server.hook("alpha", SOME_TOKENS, &held);
+
+    assert_eq!(
+        permission_decision(&exempt_answer),
+        None,
+        "an exempt tool must not be stopped, got {exempt_answer}"
+    );
+    assert!(
+        context_of(&exempt_answer).contains(WIDGET_NAMING_BODY),
+        "an exempt tool must still carry the memory, got {exempt_answer}"
+    );
+    assert_eq!(
+        permission_decision(&held_answer),
+        Some("deny"),
+        "a tool the store does not exempt must still be stopped, got {held_answer}"
+    );
+}
+
+/// Detects a subagent that is given its parent's scopes although the store asked
+/// for subagents to start from nothing: a subagent would be handed rules its own
+/// task never touches, which is the context the setting exists to save.
+#[test]
+fn a_subagent_starts_with_the_implicit_scopes_alone_when_the_store_says_so() {
+    let server = TestServer::start(
+        example_store_with_settings("subagents_inherit_scopes: false\n"),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    server.hook("alpha", SOME_TOKENS, &widget_prompt());
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("subagent_start"));
+
+    assert_eq!(status, 200, "a subagent start must be answered");
+    let text = context_of(&answer);
+    assert!(
+        !text.contains(WIDGET_NAMING_BODY),
+        "the subagent must not be given the scope its session turned on, got {text:?}"
+    );
+    assert!(
+        text.contains(BENCH_POWER_BODY),
+        "the subagent must still be given what the implicit scopes owe it, got {text:?}"
+    );
+}
+
+/// Detects a knowledge index delivered although the store asked for knowledge to
+/// be fetched on demand: the index lines are what that setting exists to keep
+/// out of the context, while the critical memories must be unaffected.
+#[test]
+fn no_knowledge_index_line_is_delivered_when_the_store_turns_the_index_off() {
+    let server = TestServer::start(
+        example_store_with_settings("deliver_knowledge_index: false\n"),
+        |_| {},
+    );
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &widget_prompt());
+
+    assert_eq!(status, 200, "a user prompt must be answered");
+    let text = context_of(&answer);
+    assert!(
+        !has_index_line(text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "no knowledge index line may be delivered, got {text:?}"
+    );
+    assert!(
+        text.contains(WIDGET_NAMING_BODY),
+        "a critical memory must still be delivered in full, got {text:?}"
+    );
+}
+
+/// Detects a tool result matched past the limit the store set, and a limit that
+/// throws the result away before it: matching is linear in the text, so a limit
+/// that is not applied makes a large tool result cost a regex pass over all of
+/// it, and one applied too soon silently stops triggers firing on results the
+/// store meant to match.
+#[test]
+fn a_trigger_past_the_stores_tool_result_limit_does_not_fire_while_one_before_it_does() {
+    let limit = 64;
+    let marker = "SUPERNOVA";
+    let scope = (
+        "scopes/results.yaml".to_string(),
+        Some(
+            format!("id: results\ntriggers:\n- on: tool_result\n  pattern: '{marker}'\n")
+                .into_bytes(),
+        ),
+    );
+    let memory = (
+        "memories/result-rule.md".to_string(),
+        Some(
+            format!(
+                "---\nname: result-rule\ndescription: What to do when a test run reports a \
+                 {marker}\nmetadata:\n  kind: critical\n  scopes:\n  - results\n---\n\
+                 # The {marker} rule\n\nStop the run and read the log.\n"
+            )
+            .into_bytes(),
+        ),
+    );
+    let settings = (
+        "config.yml".to_string(),
+        Some(format!("tool_result_match_limit: {limit}\n").into_bytes()),
+    );
+    let server = TestServer::start(vec![scope, memory, settings], |_| {});
+    let result_with_marker_at = |offset: usize, session: &str| {
+        json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": session,
+            "cwd": "/home/dev/widgets",
+            "tool_name": "Bash",
+            "tool_input": { "command": "cargo test" },
+            "tool_output": format!("{}{marker} in the log\n", "-".repeat(offset)),
+        })
+    };
+
+    let (_, past) = server.hook("alpha", SOME_TOKENS, &result_with_marker_at(limit, "past"));
+    let (_, before) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &result_with_marker_at(limit / 2, "before"),
+    );
+
+    assert_eq!(
+        additional_context(&past),
+        None,
+        "a trigger past the limit must not fire, got {past}"
+    );
+    assert!(
+        context_of(&before).contains("Stop the run and read the log."),
+        "a trigger before the limit must fire and deliver its memory, got {before}"
     );
 }
 
@@ -612,7 +823,7 @@ mod state_machine {
             Some(10_000),
         );
 
-        let needs = compute_needs(&catalog, &state, Some(10_000), 1_000);
+        let needs = compute_needs(&catalog, &state, Some(10_000));
 
         assert_eq!(
             needs.retracted,
@@ -636,7 +847,7 @@ mod state_machine {
             Some(10_000),
         );
         assert!(
-            compute_needs(&catalog, &state, Some(10_000), 1_000).is_empty(),
+            compute_needs(&catalog, &state, Some(10_000)).is_empty(),
             "nothing is owed while the delivered version is current"
         );
 
@@ -645,7 +856,7 @@ mod state_machine {
             .get_mut(&id)
             .expect("the memory was delivered")
             .version = "0".repeat(40);
-        let needs = compute_needs(&catalog, &state, Some(10_000), 1_000);
+        let needs = compute_needs(&catalog, &state, Some(10_000));
 
         assert_eq!(
             needs.changed,
@@ -669,7 +880,7 @@ mod state_machine {
             None,
         );
 
-        let needs = compute_needs(&catalog, &state, Some(1_000_000), 1_000);
+        let needs = compute_needs(&catalog, &state, Some(1_000_000));
 
         assert!(
             needs.stale.is_empty(),

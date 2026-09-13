@@ -187,8 +187,8 @@ pub struct Needs {
     pub new: Vec<MemoryId>,
     /// Delivered, but the store holds a different version now.
     pub changed: Vec<MemoryId>,
-    /// A critical memory delivered so long ago in context that it is out of
-    /// the model's reach.
+    /// Delivered so long ago in context that it is out of the model's reach,
+    /// whatever form it was delivered in.
     pub stale: Vec<MemoryId>,
     /// Delivered, and no longer to be acted on.
     pub retracted: Vec<(MemoryId, RetractReason)>,
@@ -225,30 +225,40 @@ impl Needs {
 
 /// What a context is owed given the store, its state and its context size.
 ///
-/// `stale_tokens` is the growth in context after which a critical memory is
-/// delivered again; staleness is judged only when both the delivery and the
-/// event carry a context size.
-pub fn compute_needs(
-    catalog: &Catalog,
-    state: &ContextState,
-    tokens_now: Option<u64>,
-    stale_tokens: u64,
-) -> Needs {
+/// The store's own settings decide two of the answers: `reminder_tokens` is the
+/// growth in context after which anything already delivered is delivered again,
+/// and without it nothing is ever stale; `deliver_knowledge_index` decides
+/// whether a knowledge memory is delivered at all or only fetched on demand.
+/// Staleness is judged only when both the delivery and the event carry a context
+/// size.
+pub fn compute_needs(catalog: &Catalog, state: &ContextState, tokens_now: Option<u64>) -> Needs {
+    let settings = catalog.settings();
     let mut needs = Needs::default();
     let due = catalog.due(&state.active);
+    // Every due memory, whether or not it is delivered, so that a memory the
+    // context holds is not withdrawn merely because its kind is not delivered.
     let due_ids: BTreeSet<&MemoryId> = due.iter().map(|memory| &memory.id).collect();
 
     for memory in &due {
         let version = memory.version.to_string();
+        let delivers = memory.kind() == MemoryKind::Critical || settings.deliver_knowledge_index;
         match state.delivered.get(&memory.id) {
-            None => needs.new.push(memory.id.clone()),
-            Some(shown) if shown.version != version => needs.changed.push(memory.id.clone()),
+            None if delivers => needs.new.push(memory.id.clone()),
+            None => {}
+            Some(shown) if shown.version != version => {
+                if delivers {
+                    needs.changed.push(memory.id.clone());
+                }
+            }
             Some(shown) => {
-                // Only a critical memory goes stale: an index line is a pointer
-                // the model can follow again, a rule has to be in front of it.
-                if memory.kind() == MemoryKind::Critical
+                // Every kind goes stale: what was shown that long ago is out of
+                // the model's reach whatever form it took, so it is delivered
+                // again in the form its kind gets, the rule in full and the
+                // knowledge memory as its index line.
+                if delivers
+                    && let Some(reminder_tokens) = settings.reminder_tokens
                     && let (Some(delivered_at), Some(now)) = (shown.tokens, tokens_now)
-                    && now.saturating_sub(delivered_at) >= stale_tokens
+                    && now.saturating_sub(delivered_at) >= reminder_tokens
                 {
                     needs.stale.push(memory.id.clone());
                 }

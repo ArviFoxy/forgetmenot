@@ -1,11 +1,12 @@
 //! Server configuration, read once at start.
+//!
+//! Only the infrastructure is here: where the server listens, what it reads and
+//! writes, and how long it keeps things. Everything that changes what an agent
+//! experiences lives in the store's own `config.yml`, so that it is versioned,
+//! reviewable and the same for every machine the server serves.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-
-/// The default context size in tokens that has to pass before a critical
-/// memory already delivered to a context is delivered again.
-pub const DEFAULT_STALE_TOKENS: u64 = 200_000;
 
 /// The default delay between a change to the context registry and the snapshot
 /// that records it.
@@ -29,9 +30,6 @@ pub struct Config {
     pub web_dist: Option<PathBuf>,
     /// Host header values accepted on `/mcp`.
     pub allowed_hosts: Vec<String>,
-    /// How much the context may grow before a delivered critical memory counts
-    /// as stale and is delivered again.
-    pub stale_tokens: u64,
     /// How long a change waits for further changes before the registry is
     /// written; zero writes on every change, which is what tests use.
     pub snapshot_debounce_ms: u64,
@@ -57,7 +55,6 @@ impl Config {
             listen: SocketAddr::from((Ipv4Addr::LOCALHOST, DEFAULT_PORT)),
             web_dist: None,
             allowed_hosts: Vec::new(),
-            stale_tokens: DEFAULT_STALE_TOKENS,
             snapshot_debounce_ms: DEFAULT_SNAPSHOT_DEBOUNCE_MS,
             context_retention_days: None,
             branch_retention_days: None,

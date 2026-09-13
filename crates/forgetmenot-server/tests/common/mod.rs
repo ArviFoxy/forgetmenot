@@ -372,6 +372,27 @@ pub fn example_store_files() -> Vec<(String, Option<Vec<u8>>)> {
     read_directory(&example_store_path())
 }
 
+/// The path of the store's behaviour settings, which the example store carries
+/// like any other file.
+pub const SETTINGS_PATH: &str = "config.yml";
+
+/// The example store with its `config.yml` replaced by `text`, for the tests
+/// that run under settings other than the example's own.
+pub fn example_store_with_settings(text: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = example_store_without_settings();
+    files.push((SETTINGS_PATH.to_string(), Some(text.as_bytes().to_vec())));
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// The example store with no settings file at all, which is a store nobody has
+/// ever configured.
+pub fn example_store_without_settings() -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = example_store_files();
+    files.retain(|(path, _)| path != SETTINGS_PATH);
+    files
+}
+
 /// One of the recorded hook payloads, with the transcript placeholder replaced.
 ///
 /// The server never reads the transcript, so the path only has to be a path.

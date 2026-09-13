@@ -7,6 +7,7 @@
 use super::catalog::Catalog;
 use super::memory::MemoryDocument;
 use super::scope::{ScopeDocument, TriggerField};
+use super::settings::SettingType;
 use super::{MemoryId, ScopeId, is_valid_scope_file_id};
 
 /// One problem in one file.
@@ -96,6 +97,17 @@ pub enum ValidationError {
         expected: ScopeId,
         found: String,
     },
+
+    #[error("sets `{key}`, which is not a setting of this server")]
+    UnknownSetting { path: String, key: String },
+
+    #[error("sets `{key}` to {found}, but it takes {expected}")]
+    BadSettingValue {
+        path: String,
+        key: String,
+        expected: SettingType,
+        found: String,
+    },
 }
 
 impl ValidationError {
@@ -113,7 +125,9 @@ impl ValidationError {
             | ValidationError::DuplicateMemoryId { path, .. }
             | ValidationError::MissingLinkTarget { path, .. }
             | ValidationError::LinkCrossesSessionSilo { path, .. }
-            | ValidationError::SessionMemoryScopes { path, .. } => path,
+            | ValidationError::SessionMemoryScopes { path, .. }
+            | ValidationError::UnknownSetting { path, .. }
+            | ValidationError::BadSettingValue { path, .. } => path,
         }
     }
 }

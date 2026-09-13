@@ -46,9 +46,10 @@ struct Scenario {
     name: String,
     /// Why each step expects what it expects, written from the state machine.
     reasoning: String,
-    /// The stale threshold K this scenario runs with, when it is about staleness.
+    /// The reminder threshold K this scenario runs with, written into the
+    /// store's own settings, when the scenario is about reminders.
     #[serde(default)]
-    stale_tokens: Option<u64>,
+    reminder_tokens: Option<u64>,
     steps: Vec<Step>,
 }
 
@@ -206,12 +207,13 @@ impl Step {
 /// Replay one scenario on its own server and store, and report the first step
 /// whose answer is not what the scenario says it must be.
 fn run_scenario(scenario: &Scenario) -> Result<(), String> {
-    let stale_tokens = scenario.stale_tokens;
-    let server = TestServer::start(example_store_files(), |config| {
-        if let Some(stale_tokens) = stale_tokens {
-            config.stale_tokens = stale_tokens;
+    let files = match scenario.reminder_tokens {
+        Some(reminder_tokens) => {
+            common::example_store_with_settings(&format!("reminder_tokens: {reminder_tokens}\n"))
         }
-    });
+        None => example_store_files(),
+    };
+    let server = TestServer::start(files, |_| {});
     if scenario.reasoning.trim().is_empty() {
         return Err("the scenario must say why its expectations are what they are".to_string());
     }
