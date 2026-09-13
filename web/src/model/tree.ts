@@ -13,6 +13,8 @@ export interface TreeNode {
   label: string;
   /** The scope this node opens, for a scope node. */
   scopeId?: string;
+  /** True for a scope with no file: `global`, `machine:…`, `session:…`. */
+  implicit?: boolean;
   /** The memory this node opens, for a memory node. */
   memory?: MemorySummary;
   children: TreeNode[];
@@ -74,6 +76,7 @@ function scopeNode(entry: ScopeEntry, label: string): TreeNode {
     key: `scope:${entry.id}`,
     label,
     scopeId: entry.id,
+    implicit: entry.implicit,
     children,
     count: children.length,
   };

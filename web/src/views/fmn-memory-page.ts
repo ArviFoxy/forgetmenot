@@ -102,7 +102,7 @@ export class FmnMemoryPage extends PageElement {
     if (doc !== null && (this.draft === null || this.draft.baseVersion !== doc.version)) {
       this.draft = draftOf(doc);
     }
-    if (this.memoryId !== '' && takeDeleteIntent(this.memoryId)) {
+    if (this.memoryId !== '' && takeDeleteIntent('memory', this.memoryId)) {
       this.deleteOpen = true;
       void this.showDeletePanel();
     }

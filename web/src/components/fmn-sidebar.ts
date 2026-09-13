@@ -114,6 +114,10 @@ export class FmnSidebar extends PageElement {
     return [
       { value: `new-memory:${scope}`, label: inThis, icon: 'file-text' },
       ...newItems,
+      // Only a scope with a file can be deleted; the implicit ones have none.
+      ...(node.implicit === true
+        ? []
+        : [{ value: `delete-scope:${scope}`, label: 'Delete scope', icon: 'trash' }]),
     ];
   }
 
@@ -130,8 +134,11 @@ export class FmnSidebar extends PageElement {
     else if (action === 'new-memory') navigate(paths.memoryNew(argument));
     else if (action === 'history') navigate(paths.memoryHistory(argument));
     else if (action === 'delete') {
-      requestDelete(argument);
+      requestDelete({ kind: 'memory', id: argument });
       navigate(paths.memory(argument));
+    } else if (action === 'delete-scope') {
+      requestDelete({ kind: 'scope', id: argument });
+      navigate(paths.scope(argument));
     }
   }
 

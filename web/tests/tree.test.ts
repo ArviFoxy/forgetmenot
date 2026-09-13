@@ -78,6 +78,13 @@ test('a machine scope is put under a category instead of in the list with the re
   expect(labels(nodes)).toEqual(['global', 'machine:alpha', 'widgets']);
 });
 
+test('a scope with no file is reported as one that has a file, so the tree offers to delete it', () => {
+  const nodes = buildTree([scope('widgets')], [], ['machine:alpha']);
+  expect(find(nodes, 'widgets').implicit).toBe(false);
+  expect(find(nodes, 'machine:alpha').implicit).toBe(true);
+  expect(find(nodes, 'global').implicit).toBe(true);
+});
+
 test('a memory in two scopes appears under one of them only', () => {
   const nodes = buildTree(
     [scope('widgets'), scope('rocketry')],

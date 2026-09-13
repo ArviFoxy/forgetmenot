@@ -5,7 +5,8 @@ import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
 import { frontendAuthor } from '../model/author';
 import { parseIdList } from '../model/triggers';
-import { announceStoreChange, onStoreChange } from '../navigation';
+import { announceStoreChange, navigate, onStoreChange } from '../navigation';
+import { takeDeleteIntent } from '../intent';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-kind-icon';
@@ -63,6 +64,11 @@ export class FmnScopePage extends PageElement {
     scopeId: { type: String },
     draft: { state: true },
     editing: { state: true },
+    deleteMessage: { state: true },
+    deleting: { state: true },
+    deleteOpen: { state: true },
+    deleteErrors: { state: true },
+    deleteFailure: { state: true },
   };
 
   scopeId = '';
@@ -74,6 +80,11 @@ export class FmnScopePage extends PageElement {
 
   private draft: ScopeDraft | null = null;
   private editing: string | null = null;
+  private deleteMessage = '';
+  private deleting = false;
+  private deleteOpen = false;
+  private deleteErrors: ValidationError[] = [];
+  private deleteFailure: string | null = null;
 
   private loadedId = '';
   private stopListening: (() => void) | null = null;
@@ -102,6 +113,51 @@ export class FmnScopePage extends PageElement {
     const scope = this.scope.value;
     if (scope !== null && (this.draft === null || this.draft.baseVersion !== scope.version)) {
       this.draft = draftOf(scope);
+    }
+    if (this.scopeId !== '' && takeDeleteIntent('scope', this.scopeId)) {
+      this.deleteOpen = true;
+      void this.showDeletePanel();
+    }
+  }
+
+  /** The panel the tree asked for, brought on screen with its field ready. */
+  private async showDeletePanel(): Promise<void> {
+    await this.updateComplete;
+    const panel = this.querySelector('sl-details[open] .delete-message');
+    panel?.scrollIntoView?.({ block: 'center' });
+    (panel as HTMLElement | null)?.focus?.();
+  }
+
+  /**
+   * Deletes the scope's file. The server refuses while a memory still lists the
+   * scope or another scope implies it, and names those files; they are shown so the
+   * reader knows what to change first.
+   */
+  private async deleteScope(scope: ScopeDoc): Promise<void> {
+    this.deleting = true;
+    this.deleteErrors = [];
+    this.deleteFailure = null;
+    try {
+      const outcome = await api.deleteScope(this.scopeId, {
+        base_version: scope.version,
+        author: frontendAuthor,
+        message: this.deleteMessage,
+      });
+      if (outcome.kind === 'written') {
+        this.deleteMessage = '';
+        this.deleteOpen = false;
+        announceStoreChange();
+        navigate(paths.home());
+        return;
+      }
+      if (outcome.kind === 'invalid') this.deleteErrors = outcome.failure.errors;
+      else {
+        this.deleteFailure = `the scope changed on the server; its version is now ${outcome.conflict.current.version}`;
+      }
+    } catch (caught) {
+      this.deleteFailure = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      this.deleting = false;
     }
   }
 
@@ -312,6 +368,36 @@ export class FmnScopePage extends PageElement {
         <div class="field">
           <span class="field-label">Version</span>
           <div class="field-value"><code>${scope.version}</code></div>
+        </div>
+        <div class="field">
+          <sl-details summary="Delete" ?open=${this.deleteOpen}>
+            <p class="muted">
+              The file is removed in a commit; the history keeps it. A scope that a
+              memory still lists cannot be removed.
+            </p>
+            <sl-input
+              class="delete-message"
+              size="small"
+              label="Commit message"
+              maxlength="72"
+              value=${this.deleteMessage}
+              @sl-input=${(event: Event) => {
+                this.deleteMessage = (event.target as HTMLInputElement).value;
+              }}
+            ></sl-input>
+            <sl-button
+              size="small"
+              variant="danger"
+              ?disabled=${this.deleting || this.deleteMessage.trim() === ''}
+              ?loading=${this.deleting}
+              @click=${() => void this.deleteScope(scope)}
+              >Delete scope</sl-button
+            >
+            <fmn-validation-errors .errors=${this.deleteErrors}></fmn-validation-errors>
+            ${this.deleteFailure === null
+              ? nothing
+              : html`<p class="failure" role="alert">${this.deleteFailure}</p>`}
+          </sl-details>
         </div>
       </div>
       ${this.renderTriggers(scope, draft)}

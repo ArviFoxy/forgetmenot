@@ -59,6 +59,7 @@ vi.mock('../src/api/client', () => ({
     scope: () =>
       Promise.resolve({ id: 'widgets', implies: [], triggers: [], version: 'v' }),
     putScope: () => Promise.resolve({ kind: 'written' }),
+    deleteScope: () => Promise.resolve({ kind: 'written' }),
     createScope: () => Promise.resolve({ kind: 'written' }),
     scopeHistory: () => Promise.resolve([]),
     testTriggers: () => Promise.resolve({ fired: [] }),

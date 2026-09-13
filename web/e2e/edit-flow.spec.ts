@@ -259,6 +259,58 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
   expect(gone.status()).toBe(404);
 });
 
+/** The scope delete route is new; until the server has it there is nothing to test. */
+async function scopeDeleteReady(page: Page): Promise<boolean> {
+  const probe = await page.request.fetch('/api/scopes/probe-absent-scope', {
+    method: 'DELETE',
+    data: { base_version: 'f'.repeat(40), author: 'wiki', message: 'probe' },
+  });
+  return probe.status() !== 405;
+}
+
+test('a scope nothing refers to is kept when it is deleted from the tree', async ({ page }) => {
+  const id = `probe-lonely-${Date.now()}`;
+  const created = await page.request.post('/api/scopes', {
+    data: { id, implies: [], triggers: [], author: 'wiki', message: `add ${id}` },
+  });
+  expect(created.status()).toBe(200);
+  test.skip(!(await scopeDeleteReady(page)), 'the server has no scope delete route yet');
+
+  await page.goto('/');
+  await page.getByRole('searchbox', { name: 'Search scopes and memories' }).fill(id);
+  await page.locator(`sl-tree-item[data-target="/scopes/${id}"] > .tree-row`).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Delete scope' }).click();
+
+  const field = page.locator('sl-details[open] .delete-message input');
+  await expect(field).toBeVisible();
+  await field.fill(`delete ${id}`);
+  await page.getByRole('button', { name: 'Delete scope' }).click();
+
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator(`sl-tree-item[data-target="/scopes/${id}"]`)).toHaveCount(0);
+  const scopes = (await (await page.request.get('/api/scopes')).json()) as { id: string }[];
+  expect(scopes.map((scope) => scope.id)).not.toContain(id);
+});
+
+test('a scope a memory still lists is deleted without saying what refers to it', async ({ page }) => {
+  test.skip(!(await scopeDeleteReady(page)), 'the server has no scope delete route yet');
+
+  await page.goto('/scopes/widgets');
+  await page.locator('sl-details').filter({ hasText: 'Delete' }).first().click();
+  const field = page.locator('sl-details[open] .delete-message input');
+  await expect(field).toBeVisible();
+  await field.fill('remove the widgets scope');
+  await page.getByRole('button', { name: 'Delete scope' }).click();
+
+  // The scope stays, and the page names the file that still refers to it.
+  const errors = page.locator('fmn-validation-errors sl-alert');
+  await expect(errors).toBeVisible();
+  await expect(errors).toContainText('widget-naming');
+  await expect(page).toHaveURL(/\/scopes\/widgets$/);
+  const scopes = (await (await page.request.get('/api/scopes')).json()) as { id: string }[];
+  expect(scopes.map((scope) => scope.id)).toContain('widgets');
+});
+
 test('the statistics page reports one figure per memory instead of one per delivery form', async ({
   page,
 }) => {

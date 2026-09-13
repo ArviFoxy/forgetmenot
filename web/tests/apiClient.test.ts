@@ -181,6 +181,42 @@ test('a deletion with a blank message reaches the server', async () => {
   expect(fixture.requests).toEqual([]);
 });
 
+test('a scope deletion with a blank message reaches the server', async () => {
+  fixture = await serveOnce((_request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{}');
+  });
+  const client = createApiClient(fixture.baseUrl);
+
+  await expect(
+    Promise.resolve().then(() =>
+      client.deleteScope('rocketry', { base_version: 'a'.repeat(40), author: 'wiki', message: '' }),
+    ),
+  ).rejects.toThrow(MissingCommitMessage);
+  expect(fixture.requests).toEqual([]);
+});
+
+test('a scope that is still referenced is deleted instead of reporting what refers to it', async () => {
+  fixture = await serveOnce((_request, response) => {
+    response.writeHead(422, { 'content-type': 'application/json' });
+    response.end(
+      JSON.stringify({ errors: [{ path: 'memories/widget-naming.md', message: 'lists the scope' }] }),
+    );
+  });
+  const client = createApiClient(fixture.baseUrl);
+
+  const outcome = await client.deleteScope('widgets', {
+    base_version: 'a'.repeat(40),
+    author: 'wiki',
+    message: 'remove the widgets scope',
+  });
+
+  expect(outcome.kind).toBe('invalid');
+  if (outcome.kind !== 'invalid') return;
+  expect(outcome.failure.errors[0]?.path).toBe('memories/widget-naming.md');
+  expect(fixture.requests[0]?.method).toBe('DELETE');
+});
+
 test('a scope write with a blank message reaches the server', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });

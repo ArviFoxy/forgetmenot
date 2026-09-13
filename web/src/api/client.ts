@@ -79,6 +79,7 @@ export interface ApiClient {
   scope(id: string): Promise<ScopeDoc>;
   putScope(id: string, request: ScopeWriteRequest): Promise<WriteOutcome<ScopeDoc>>;
   createScope(request: ScopeCreateRequest): Promise<WriteOutcome<ScopeDoc>>;
+  deleteScope(id: string, request: DeleteRequest): Promise<WriteOutcome<ScopeDoc, DeleteResponse>>;
   scopeHistory(id: string): Promise<Commit[]>;
   testTriggers(request: TriggerTestRequest): Promise<TriggerTestResult>;
   contexts(): Promise<ContextRow[]>;
@@ -165,6 +166,11 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     createScope(request) {
       requireMessage(`scope ${request.id}`, request.message);
       return write<ScopeDoc>('POST', '/api/scopes', request);
+    },
+
+    deleteScope(id, request) {
+      requireMessage(`deletion of scope ${id}`, request.message);
+      return write<ScopeDoc, DeleteResponse>('DELETE', `/api/scopes/${encodeURIComponent(id)}`, request);
     },
 
     scopeHistory: (id) => read<Commit[]>(`/api/scopes/${encodeURIComponent(id)}/history`),
