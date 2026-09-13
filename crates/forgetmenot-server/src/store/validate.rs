@@ -215,11 +215,18 @@ pub fn validate(catalog: &Catalog) -> ValidationReport {
             &scope.path,
             &scope.id,
             &scope.document,
+            CrossDocumentRules::CheckedNow,
             &mut report,
         );
     }
     for memory in catalog.memories() {
-        validate_memory_document(catalog, &memory.path, &memory.document, &mut report);
+        validate_memory_document(
+            catalog,
+            &memory.path,
+            &memory.document,
+            CrossDocumentRules::CheckedNow,
+            &mut report,
+        );
     }
     report
 }
@@ -249,15 +256,47 @@ pub enum Candidate<'a> {
     },
 }
 
+/// When the rules that are answered from files other than the candidate itself
+/// are checked: by this write, or by the land of the branch it is written to.
+///
+/// A branch is a transaction. Nothing reads the revisions it holds before it
+/// lands, and `land_branch` validates the whole merged tree and refuses to land
+/// an inconsistent one, so the landed tree is what has to be consistent. A set
+/// of memories that link to each other has no write order in which every
+/// intermediate revision resolves every link, so checking those rules per write
+/// on a branch would make such a set impossible to write at all.
+///
+/// The rules this governs are the ones answered from other files:
+/// [`ValidationError::UnknownScope`], [`ValidationError::UnknownImpliesTarget`],
+/// [`ValidationError::MissingLinkTarget`] and
+/// [`ValidationError::LinkCrossesSessionSilo`]. Every rule one document answers
+/// by itself is checked by every write, on a branch as on `main`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossDocumentRules {
+    /// Checked by this write. Every commit on `main` is a revision sessions
+    /// read, so it has to be consistent on its own.
+    CheckedNow,
+    /// Left to the land of the branch this write is on.
+    DeferredToLanding,
+}
+
+impl CrossDocumentRules {
+    fn are_checked(self) -> bool {
+        self == CrossDocumentRules::CheckedNow
+    }
+}
+
 /// Validate one document against the current catalog.
 ///
 /// This is the check the write path runs before committing: rules that involve
 /// other files (unknown scopes, link targets, the session silo) are answered
-/// from `catalog`, and the candidate itself is not in it yet.
+/// from `catalog`, and the candidate itself is not in it yet. `cross_document`
+/// says whether those rules are answered here or at landing.
 pub fn validate_write(
     catalog: &Catalog,
     candidate: Candidate<'_>,
     mode: WriteMode,
+    cross_document: CrossDocumentRules,
 ) -> ValidationReport {
     let mut report = ValidationReport::default();
     match candidate {
@@ -269,11 +308,11 @@ pub fn validate_write(
                     id: document.id.clone(),
                 });
             }
-            validate_memory_document(catalog, &path, document, &mut report);
+            validate_memory_document(catalog, &path, document, cross_document, &mut report);
         }
         Candidate::Scope { id, document } => {
             let path = id.repository_path();
-            validate_scope_document(catalog, &path, id, document, &mut report);
+            validate_scope_document(catalog, &path, id, document, cross_document, &mut report);
         }
     }
     report
@@ -284,6 +323,7 @@ fn validate_scope_document(
     path: &str,
     id: &ScopeId,
     document: &ScopeDocument,
+    cross_document: CrossDocumentRules,
     report: &mut ValidationReport,
 ) {
     if !is_valid_scope_file_id(id.as_str()) {
@@ -300,7 +340,7 @@ fn validate_scope_document(
         });
     }
     for target in &document.implies {
-        if !is_known_scope(catalog, target) {
+        if cross_document.are_checked() && !is_known_scope(catalog, target) {
             report.push(ValidationError::UnknownImpliesTarget {
                 path: path.to_string(),
                 scope: id.clone(),
@@ -335,6 +375,7 @@ fn validate_memory_document(
     catalog: &Catalog,
     path: &str,
     document: &MemoryDocument,
+    cross_document: CrossDocumentRules,
     report: &mut ValidationReport,
 ) {
     let id = &document.id;
@@ -354,7 +395,7 @@ fn validate_memory_document(
         });
     }
     for scope in document.scopes() {
-        if !is_known_scope(catalog, scope) {
+        if cross_document.are_checked() && !is_known_scope(catalog, scope) {
             report.push(ValidationError::UnknownScope {
                 path: path.to_string(),
                 memory: id.clone(),
@@ -374,6 +415,12 @@ fn validate_memory_document(
                 found: join_scopes(document.scopes()),
             });
         }
+    }
+    if !cross_document.are_checked() {
+        // Whether a link resolves and whether it crosses a silo are questions
+        // only the other files answer, so a branch write leaves both to the
+        // land, where the whole tree is there to answer them.
+        return;
     }
     for target in document.links() {
         match resolve_link(catalog, id, &target) {

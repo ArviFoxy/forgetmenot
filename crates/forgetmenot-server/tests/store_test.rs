@@ -9,8 +9,8 @@ use std::process::{Command, Output};
 use forgetmenot_server::store::git::GitError;
 use forgetmenot_server::store::memory::MemoryDocument;
 use forgetmenot_server::store::validate::{
-    Candidate, ValidationError, ValidationReport, ValidationWarning, WriteMode, validate,
-    validate_write,
+    Candidate, CrossDocumentRules, ValidationError, ValidationReport, ValidationWarning, WriteMode,
+    validate, validate_write,
 };
 use forgetmenot_server::store::{MemoryId, ScopeId};
 
@@ -773,12 +773,23 @@ fn creating_a_memory_whose_id_already_exists_is_reported() {
     };
 
     assert_reports(
-        &validate_write(&catalog, candidate, WriteMode::Create),
+        &validate_write(
+            &catalog,
+            candidate,
+            WriteMode::Create,
+            CrossDocumentRules::CheckedNow,
+        ),
         "duplicate memory id",
         |error| matches!(error, ValidationError::DuplicateMemoryId { id, .. } if id.as_str() == "bench-power"),
     );
     assert!(
-        !validate_write(&catalog, candidate, WriteMode::Update).has_errors(),
+        !validate_write(
+            &catalog,
+            candidate,
+            WriteMode::Update,
+            CrossDocumentRules::CheckedNow,
+        )
+        .has_errors(),
         "replacing the memory at its own id was reported as a duplicate"
     );
 }

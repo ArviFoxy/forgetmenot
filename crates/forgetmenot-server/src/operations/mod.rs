@@ -38,7 +38,7 @@ use crate::store::memory::{
     MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource, rewrite_links,
 };
 use crate::store::scope::{ScopeDocument, Trigger, TriggerField};
-use crate::store::validate::{self, Candidate, ValidationError, WriteMode};
+use crate::store::validate::{self, Candidate, CrossDocumentRules, ValidationError, WriteMode};
 use crate::store::{MemoryId, ScopeId};
 
 // ---------------------------------------------------------------------------
@@ -536,6 +536,18 @@ impl DocumentKind {
     }
 }
 
+/// When a write to this target answers the rules that read other files.
+///
+/// A write to a branch answers them at the land, where the merged tree is whole;
+/// a write to `main` answers them now, because the commit it makes is a revision
+/// sessions read.
+fn cross_document_rules(branch: Option<&BranchName>) -> CrossDocumentRules {
+    match branch {
+        Some(_) => CrossDocumentRules::DeferredToLanding,
+        None => CrossDocumentRules::CheckedNow,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Memories
 // ---------------------------------------------------------------------------
@@ -868,6 +880,7 @@ pub async fn memory_rename(
         &catalog,
         Candidate::Memory { document: &moved },
         WriteMode::Create,
+        cross_document_rules(branch),
     );
     let mut errors: Vec<ValidationMessage> =
         report.errors().iter().map(ValidationMessage::of).collect();
@@ -1011,6 +1024,7 @@ async fn commit_memory(
             document: &document,
         },
         mode,
+        cross_document_rules(branch),
     );
     let mut errors: Vec<ValidationMessage> =
         report.errors().iter().map(ValidationMessage::of).collect();
@@ -1218,6 +1232,7 @@ pub async fn scope_put(
             document: &document,
         },
         mode,
+        cross_document_rules(branch),
     );
     let mut errors: Vec<ValidationMessage> =
         report.errors().iter().map(ValidationMessage::of).collect();

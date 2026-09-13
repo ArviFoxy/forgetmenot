@@ -151,7 +151,7 @@ branch_land message="..."         merge into main as one commit with that title
 branch_abandon                    throw the branch away
 ```
 
-Nothing on a branch reaches any session until it lands. Landing is a three-way merge, so changes made on `main` in the meantime are kept, and two branches that edited different parts of the same memory both land. When the branch and `main` changed the same lines, landing reports the file with its three versions and leaves everything as it was; write the version you want on the branch and land again. Branches are ordinary git refs under `tx/`, so nothing about them is lost on a restart.
+Nothing on a branch reaches any session until it lands. A write on a branch is checked on its own; whether every link resolves and every scope exists is checked when the branch lands, so memories that link to each other can be written in any order. Landing is a three-way merge, so changes made on `main` in the meantime are kept, and two branches that edited different parts of the same memory both land. When the branch and `main` changed the same lines, landing reports the file with its three versions and leaves everything as it was; write the version you want on the branch and land again. Branches are ordinary git refs under `tx/`, so nothing about them is lost on a restart.
 
 ## Running
 

@@ -1593,3 +1593,213 @@ fn renaming_onto_an_id_that_exists_or_into_a_session_silo_is_refused() {
         "the memory must still be where it was"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The rules a branch answers only at landing
+// ---------------------------------------------------------------------------
+
+/// Create one memory, on `branch` when given.
+fn create_memory(
+    server: &TestServer,
+    id: &str,
+    scopes: &[&str],
+    body: &str,
+    branch: Option<&str>,
+) -> (u16, Value) {
+    server.api(
+        "POST",
+        &with_branch("/api/memories", branch),
+        Some(&json!({
+            "id": id,
+            "description": format!("the index entry of {id}"),
+            "kind": "knowledge",
+            "scopes": scopes,
+            "source": "user",
+            "body": body,
+            "author": AUTHOR,
+            "message": format!("record {id}"),
+        })),
+    )
+}
+
+/// The problems a refusal lists, as pairs of file and message.
+fn problems(answer: &Value) -> Vec<(String, String)> {
+    answer["errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a refusal must list the problems, got {answer}"))
+        .iter()
+        .map(|error| {
+            (
+                error["path"].as_str().unwrap_or_default().to_string(),
+                error["message"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Detects a branch that checks each write against the branch as it stands so
+/// far: two memories that link to each other have no write order in which every
+/// intermediate revision resolves both links, so one of the two writes would be
+/// refused and a set of memories that cite each other could never be imported.
+/// Both orders are run, because a branch that only accepted the second-written
+/// half would pass a test that fixed the order.
+#[test]
+fn two_memories_that_link_to_each_other_are_written_on_a_branch_in_either_order_and_land() {
+    let north = (
+        "north-shelf",
+        "# North shelf\n\nThe north shelf faces [[south-shelf]].\n",
+    );
+    let south = (
+        "south-shelf",
+        "# South shelf\n\nThe south shelf faces [[north-shelf]].\n",
+    );
+
+    for (first, second) in [(north, south), (south, north)] {
+        let server = TestServer::start(store_files(), |_| {});
+        let branch = open_branch(&server, SESSION);
+
+        let (first_status, first_answer) =
+            create_memory(&server, first.0, &["global"], first.1, Some(&branch));
+        let (second_status, second_answer) =
+            create_memory(&server, second.0, &["global"], second.1, Some(&branch));
+
+        assert_eq!(
+            first_status, 200,
+            "writing {} first on a branch must be taken, got {first_answer}",
+            first.0
+        );
+        assert_eq!(
+            second_status, 200,
+            "writing {} second on a branch must be taken, got {second_answer}",
+            second.0
+        );
+
+        land_ok(&server, &branch, "record the two shelves");
+
+        assert_eq!(
+            body(&server, first.0),
+            first.1,
+            "the memory written first must reach main with its link"
+        );
+        assert_eq!(
+            body(&server, second.0),
+            second.1,
+            "the memory written second must reach main with its link"
+        );
+    }
+}
+
+/// Detects a branch that never checks the links it deferred: a link to a name
+/// nobody writes has to stop the land, or the deferral would let an invalid
+/// store onto main.
+#[test]
+fn a_branch_link_to_a_name_nobody_writes_is_taken_but_stops_the_land() {
+    let server = TestServer::start(store_files(), |_| {});
+    let branch = open_branch(&server, SESSION);
+    let head_before = head(&server);
+
+    let (status, written) = create_memory(
+        &server,
+        "north-shelf",
+        &["global"],
+        "# North shelf\n\nThe north shelf faces [[no-such-shelf]].\n",
+        Some(&branch),
+    );
+    assert_eq!(
+        status, 200,
+        "a link a branch has not written yet must not stop the write, got {written}"
+    );
+
+    let (land_status, refusal) = land(&server, &branch, "record the north shelf");
+
+    assert_eq!(
+        land_status, 422,
+        "a merged store with a link to nothing must not land, got {refusal}"
+    );
+    assert!(
+        problems(&refusal).iter().any(|(path, message)| {
+            path == "memories/north-shelf.md" && message.contains("no-such-shelf")
+        }),
+        "the refusal must name the file and the target it links to, got {refusal}"
+    );
+    assert_eq!(
+        head(&server),
+        head_before,
+        "nothing may land when the merged store is refused"
+    );
+}
+
+/// Detects a branch that defers the scope check and then forgets it: a memory
+/// filed under a scope that has no file is delivered to nobody, so the land has
+/// to refuse it just as a write to main does.
+#[test]
+fn a_branch_memory_in_a_scope_that_has_no_file_is_taken_but_stops_the_land() {
+    let server = TestServer::start(store_files(), |_| {});
+    let branch = open_branch(&server, SESSION);
+    let head_before = head(&server);
+
+    let (status, written) = create_memory(
+        &server,
+        "north-shelf",
+        &["no-such-scope"],
+        "# North shelf\n\nThe north shelf is by the door.\n",
+        Some(&branch),
+    );
+    assert_eq!(
+        status, 200,
+        "a scope the branch could still create must not stop the write, got {written}"
+    );
+
+    let (land_status, refusal) = land(&server, &branch, "record the north shelf");
+
+    assert_eq!(
+        land_status, 422,
+        "a merged store naming a scope that has no file must not land, got {refusal}"
+    );
+    assert!(
+        problems(&refusal).iter().any(|(path, message)| {
+            path == "memories/north-shelf.md" && message.contains("no-such-scope")
+        }),
+        "the refusal must name the file and the scope it names, got {refusal}"
+    );
+    assert_eq!(
+        head(&server),
+        head_before,
+        "nothing may land when the merged store is refused"
+    );
+}
+
+/// Detects the deferral reaching writes that are not on a branch: a commit on
+/// main is a revision every session reads, so a link to nothing has to be
+/// refused as it is written, not at some later land that will never come.
+#[test]
+fn the_same_dangling_link_written_straight_to_main_is_still_refused_at_write_time() {
+    let server = TestServer::start(store_files(), |_| {});
+    let head_before = head(&server);
+
+    let (status, refusal) = create_memory(
+        &server,
+        "north-shelf",
+        &["global"],
+        "# North shelf\n\nThe north shelf faces [[no-such-shelf]].\n",
+        None,
+    );
+
+    assert_eq!(
+        status, 422,
+        "a write to main that links to nothing must be refused, got {refusal}"
+    );
+    assert!(
+        problems(&refusal).iter().any(|(path, message)| {
+            path == "memories/north-shelf.md"
+                && message.contains("no-such-shelf")
+                && message.contains("not a memory in this store")
+        }),
+        "the refusal must say which link of which file resolves to nothing, got {refusal}"
+    );
+    assert_eq!(
+        head(&server),
+        head_before,
+        "a refused write must commit nothing"
+    );
+}
