@@ -204,7 +204,8 @@ test('a memory created from a scope context menu is created outside that scope',
   await page.getByRole('menuitem', { name: 'New memory in this scope' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('New memory');
 
-  await expect(page.getByRole('textbox', { name: 'Scopes', exact: true })).toHaveValue('widgets');
+  // The scope the menu came from is already a chip in the Scopes field.
+  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['widgets']);
   await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
   await page
     .getByRole('textbox', { name: 'Description', exact: true })
@@ -267,6 +268,33 @@ async function scopeDeleteReady(page: Page): Promise<boolean> {
   });
   return probe.status() !== 405;
 }
+
+test('a scope picked from the suggestions is not added to the memory', async ({ page }) => {
+  await openMemory(page, 'bench-power');
+  await page.getByRole('button', { name: 'Edit Scopes' }).click();
+
+  const field = page.locator('fmn-tag-field sl-input input');
+  await expect(field).toBeVisible();
+  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['global']);
+
+  // Typed, chosen from the list with the keyboard.
+  await field.fill('rocket');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['global', 'rocketry']);
+
+  await save(page, 'put bench-power in rocketry as well');
+  const doc = (await (await page.request.get('/api/memories/bench-power')).json()) as {
+    scopes: string[];
+  };
+  expect(doc.scopes).toEqual(['global', 'rocketry']);
+
+  // Backspace takes the last chip back.
+  await page.getByRole('button', { name: 'Edit Scopes' }).click();
+  await page.locator('fmn-tag-field sl-input input').click();
+  await page.keyboard.press('Backspace');
+  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['global']);
+});
 
 test('a scope nothing refers to is kept when it is deleted from the tree', async ({ page }) => {
   const id = `probe-lonely-${Date.now()}`;

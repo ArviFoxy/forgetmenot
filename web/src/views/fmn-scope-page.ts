@@ -11,9 +11,11 @@ import { paths } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-kind-icon';
 import '../components/fmn-side-by-side';
+import '../components/fmn-tag-field';
 import '../components/fmn-trigger-rows';
 import '../components/fmn-trigger-test';
 import '../components/fmn-validation-errors';
+import type { TagsChange } from '../components/fmn-tag-field';
 
 interface ScopeDraft {
   baseVersion: string;
@@ -77,6 +79,9 @@ export class FmnScopePage extends PageElement {
     classify: missingStatus,
   });
   private readonly memories = new Resource<MemorySummary[]>(() => this.requestUpdate());
+  /** The scope ids the Implies field offers: the other scopes with a file. */
+  private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
+  private loadedOptions = false;
 
   private draft: ScopeDraft | null = null;
   private editing: string | null = null;
@@ -104,6 +109,12 @@ export class FmnScopePage extends PageElement {
   }
 
   override updated(): void {
+    if (!this.loadedOptions) {
+      this.loadedOptions = true;
+      void this.scopeOptions.load(async () =>
+        (await api.scopeIndex()).map((scope) => scope.id).filter((id) => id !== this.scopeId),
+      );
+    }
     if (this.scopeId !== '' && this.loadedId !== this.scopeId) {
       this.loadedId = this.scopeId;
       this.draft = null;
@@ -357,13 +368,14 @@ export class FmnScopePage extends PageElement {
                     >`,
                 )}</span
               >`,
-          () => html`<sl-input
-            size="small"
-            value=${draft.impliesText}
-            help-text="Comma separated"
-            @sl-input=${(event: Event) =>
-              this.change({ impliesText: (event.target as HTMLInputElement).value })}
-          ></sl-input>`,
+          () => html`<fmn-tag-field
+            label="Implies"
+            placeholder="Add a scope"
+            .value=${parseIdList(draft.impliesText)}
+            .suggestions=${this.scopeOptions.value ?? []}
+            @fmn-tags-change=${(event: CustomEvent<TagsChange>) =>
+              this.change({ impliesText: event.detail.value.join(', ') })}
+          ></fmn-tag-field>`,
         )}
         <div class="field">
           <span class="field-label">Version</span>

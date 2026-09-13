@@ -778,6 +778,58 @@ h3 {
   }
 }
 
+/* ---------- Tag fields ---------- */
+
+.tag-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-spacing-2x-small);
+  width: 100%;
+  min-width: 0;
+}
+
+.tag-field .tag-chips {
+  display: flex;
+  gap: var(--sl-spacing-3x-small);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tag-field .tag-chips:empty {
+  display: none;
+}
+
+/* On a form the field shows its own label, as the fields beside it do. */
+.tag-field[data-labelled] sl-input::part(form-control-label) {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0 0 calc(var(--sl-spacing-3x-small) + 1px);
+  overflow: visible;
+  clip-path: none;
+  color: var(--fmn-fg);
+  font-size: 0.93rem;
+}
+
+/* In the fact box the row already carries the label, so the field hides its own. */
+.tag-field sl-input::part(form-control-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tag-field sl-dropdown {
+  width: 100%;
+}
+
+.tag-field sl-menu-item.active::part(base) {
+  background-color: var(--fmn-hover);
+}
+
 /* ---------- Tables ---------- */
 
 .table-wrap {

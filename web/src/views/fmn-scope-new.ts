@@ -1,5 +1,6 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { api } from '../api/client';
+import { Resource } from '../lib/resource';
 import type { Trigger, ValidationError } from '../api/types';
 import { PageElement } from '../lib/element';
 import { frontendAuthor } from '../model/author';
@@ -7,8 +8,10 @@ import { parseIdList } from '../model/triggers';
 import { announceStoreChange, navigate } from '../navigation';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
+import '../components/fmn-tag-field';
 import '../components/fmn-trigger-rows';
 import '../components/fmn-validation-errors';
+import type { TagsChange } from '../components/fmn-tag-field';
 
 /** Creates a scope: an id, what it implies, and the triggers that turn it on. */
 export class FmnScopeNew extends PageElement {
@@ -29,6 +32,15 @@ export class FmnScopeNew extends PageElement {
   private saving = false;
   private errors: ValidationError[] = [];
   private failure: string | null = null;
+
+  private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
+  private loadedOptions = false;
+
+  override updated(): void {
+    if (this.loadedOptions) return;
+    this.loadedOptions = true;
+    void this.scopeOptions.load(async () => (await api.scopeIndex()).map((scope) => scope.id));
+  }
 
   private async create(): Promise<void> {
     this.saving = true;
@@ -72,15 +84,16 @@ export class FmnScopeNew extends PageElement {
             this.newId = (event.target as HTMLInputElement).value;
           }}
         ></sl-input>
-        <sl-input
-          size="small"
+        <fmn-tag-field
           label="Implies"
-          help-text="Scopes that are on whenever this one is, comma separated"
-          value=${this.impliesText}
-          @sl-input=${(event: Event) => {
-            this.impliesText = (event.target as HTMLInputElement).value;
+          showLabel
+          placeholder="Scopes that are on whenever this one is"
+          .value=${parseIdList(this.impliesText)}
+          .suggestions=${this.scopeOptions.value ?? []}
+          @fmn-tags-change=${(event: CustomEvent<TagsChange>) => {
+            this.impliesText = event.detail.value.join(', ');
           }}
-        ></sl-input>
+        ></fmn-tag-field>
       </div>
 
       <h2>Triggers</h2>

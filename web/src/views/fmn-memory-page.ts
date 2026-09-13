@@ -1,6 +1,7 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { RequestFailed, api } from '../api/client';
 import type { Commit, HistoryEntry, MemoryDoc, MemoryKind, MemorySource } from '../api/types';
+import { suggestScopes } from '../model/tagField';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
 import { frontendAuthor } from '../model/author';
@@ -20,8 +21,10 @@ import '../components/fmn-diff';
 import '../components/fmn-kind-icon';
 import '../components/fmn-markdown-editor';
 import '../components/fmn-side-by-side';
+import '../components/fmn-tag-field';
 import '../components/fmn-validation-errors';
 import type { BodyChange, FmnMarkdownEditor } from '../components/fmn-markdown-editor';
+import type { TagsChange } from '../components/fmn-tag-field';
 
 export type MemoryMode = 'document' | 'history' | 'commit';
 
@@ -52,6 +55,9 @@ export class FmnMemoryPage extends PageElement {
   });
   private readonly commits = new Resource<Commit[]>(() => this.requestUpdate());
   private readonly entry = new Resource<HistoryEntry>(() => this.requestUpdate());
+  /** The scope ids the Scopes field offers. */
+  private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
+  private loadedOptions = false;
 
   private draft: MemoryDraft | null = null;
   /** The field whose control is open, if any. */
@@ -83,6 +89,13 @@ export class FmnMemoryPage extends PageElement {
   }
 
   override updated(): void {
+    if (!this.loadedOptions) {
+      this.loadedOptions = true;
+      void this.scopeOptions.load(async () => {
+        const [scopes, contexts] = await Promise.all([api.scopeIndex(), api.contexts()]);
+        return suggestScopes(scopes, contexts, this.doc.value?.scopes ?? []);
+      });
+    }
     if (this.memoryId !== '' && this.loadedId !== this.memoryId) {
       this.loadedId = this.memoryId;
       this.draft = null;
@@ -284,13 +297,14 @@ export class FmnMemoryPage extends PageElement {
               >`,
           )}</span
         >`,
-        () => html`<sl-input
-          size="small"
-          value=${draft.scopesText}
-          help-text="Comma separated"
-          @sl-input=${(event: Event) =>
-            this.change({ scopesText: (event.target as HTMLInputElement).value })}
-        ></sl-input>`,
+        () => html`<fmn-tag-field
+          label="Scopes"
+          placeholder="Add a scope"
+          .value=${parseIdList(draft.scopesText)}
+          .suggestions=${this.scopeOptions.value ?? []}
+          @fmn-tags-change=${(event: CustomEvent<TagsChange>) =>
+            this.change({ scopesText: event.detail.value.join(', ') })}
+        ></fmn-tag-field>`,
       )}
       ${this.renderField(
         'source',

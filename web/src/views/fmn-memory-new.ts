@@ -1,5 +1,7 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { api } from '../api/client';
+import { Resource } from '../lib/resource';
+import { suggestScopes } from '../model/tagField';
 import type { MemoryKind, MemorySource, ValidationError } from '../api/types';
 import { PageElement } from '../lib/element';
 import { frontendAuthor } from '../model/author';
@@ -8,8 +10,10 @@ import { announceStoreChange, navigate } from '../navigation';
 import { paths, scopeFromSearch } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-markdown-editor';
+import '../components/fmn-tag-field';
 import '../components/fmn-validation-errors';
 import type { BodyChange } from '../components/fmn-markdown-editor';
+import type { TagsChange } from '../components/fmn-tag-field';
 
 /** Creates a memory: its id is its path under memories/. */
 export class FmnMemoryNew extends PageElement {
@@ -36,6 +40,18 @@ export class FmnMemoryNew extends PageElement {
   private saving = false;
   private errors: ValidationError[] = [];
   private failure: string | null = null;
+
+  private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
+  private loadedOptions = false;
+
+  override updated(): void {
+    if (this.loadedOptions) return;
+    this.loadedOptions = true;
+    void this.scopeOptions.load(async () => {
+      const [scopes, contexts] = await Promise.all([api.scopeIndex(), api.contexts()]);
+      return suggestScopes(scopes, contexts, parseIdList(this.scopesText));
+    });
+  }
 
   private async create(): Promise<void> {
     this.saving = true;
@@ -101,15 +117,16 @@ export class FmnMemoryNew extends PageElement {
         >
           ${memoryKinds.map((kind) => html`<sl-option value=${kind}>${kind}</sl-option>`)}
         </sl-select>
-        <sl-input
-          size="small"
+        <fmn-tag-field
           label="Scopes"
-          help-text="Comma separated"
-          value=${this.scopesText}
-          @sl-input=${(event: Event) => {
-            this.scopesText = (event.target as HTMLInputElement).value;
+          showLabel
+          placeholder="Add a scope"
+          .value=${parseIdList(this.scopesText)}
+          .suggestions=${this.scopeOptions.value ?? []}
+          @fmn-tags-change=${(event: CustomEvent<TagsChange>) => {
+            this.scopesText = event.detail.value.join(', ');
           }}
-        ></sl-input>
+        ></fmn-tag-field>
         <sl-select
           size="small"
           label="Source"
