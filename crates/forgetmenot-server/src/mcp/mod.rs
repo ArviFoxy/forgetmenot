@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::app::AppState;
 use crate::operations::{
-    self, CurrentDocument, MemoryDeleteRequest, MemoryFilter, MemoryWriteRequest, OperationError,
+    self, CurrentDocument, DeleteRequest, MemoryFilter, MemoryWriteRequest, OperationError,
 };
 use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord};
 use crate::store::validate::WriteMode;
@@ -209,7 +209,7 @@ impl ToolServer {
                 }
             }
         };
-        let request = MemoryDeleteRequest {
+        let request = DeleteRequest {
             base_version,
             author: author.to_string(),
             message: params.message,

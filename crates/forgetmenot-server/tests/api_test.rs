@@ -113,6 +113,28 @@ fn index_ids(server: &TestServer, query: &str) -> Vec<String> {
         .collect()
 }
 
+/// The ids the scope index reports.
+fn scope_ids(server: &TestServer) -> Vec<String> {
+    let (status, answer) = server.api("GET", "/api/scopes", None);
+    assert_eq!(status, 200, "the scopes must be readable, got {answer}");
+    answer
+        .as_array()
+        .expect("the scope index is a list")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("an id is text").to_string())
+        .collect()
+}
+
+/// One scope as the API reports it, failing the test when it cannot be read.
+fn scope(server: &TestServer, id: &str) -> Value {
+    let (status, answer) = server.api("GET", &format!("/api/scopes/{id}"), None);
+    assert_eq!(
+        status, 200,
+        "reading the scope {id} must succeed, got {answer}"
+    );
+    answer
+}
+
 /// A memory file with a generated name, for the tests that need more memories
 /// than the example store has.
 fn generated_memory(index: usize) -> (String, Option<Vec<u8>>) {
@@ -712,6 +734,237 @@ fn a_scope_file_with_a_legacy_type_key_loads_and_the_key_is_not_written_back() {
     assert!(
         on_disk.contains("legacy"),
         "the saved file must carry the write, got {on_disk:?}"
+    );
+}
+
+/// Detects a scope delete that answers 200 without taking the file out of the
+/// store, one that removes it in more than one commit, and one that leaves the
+/// scope in the index a person picks scopes from: an editor would keep offering a
+/// scope that is gone.
+///
+/// `workshop` is the example store's scope that no memory lists and no other
+/// scope implies, so nothing about the store refuses this deletion.
+#[test]
+fn deleting_an_unreferenced_scope_removes_the_file_in_one_commit_and_stops_listing_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let path = "scopes/workshop.yaml";
+    let before = commits_touching(&server, path).len();
+    let message = "the workshop directory moved off this machine";
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/workshop",
+        Some(&json!({
+            "base_version": scope(&server, "workshop")["version"],
+            "author": AUTHOR,
+            "message": message,
+        })),
+    );
+
+    assert_eq!(status, 200, "the delete must be accepted, got {answer}");
+    let commits = commits_touching(&server, path);
+    assert_eq!(
+        commits.len(),
+        before + 1,
+        "the delete must make exactly one commit, got {commits:?}"
+    );
+    assert_eq!(
+        commits[0],
+        (AUTHOR.to_string(), message.to_string()),
+        "the commit must carry the author and the message the delete gave"
+    );
+    assert_eq!(
+        file_at(
+            &server,
+            answer["commit_oid"]
+                .as_str()
+                .unwrap_or_else(|| panic!("the answer must name the commit, got {answer}")),
+            path,
+        ),
+        None,
+        "the commit the delete reports must be one whose tree has no file for the scope"
+    );
+    assert!(
+        !scope_ids(&server).contains(&"workshop".to_string()),
+        "a deleted scope must not be in the scope index"
+    );
+    let (status, gone) = server.api("GET", "/api/scopes/workshop", None);
+    assert_eq!(
+        status, 404,
+        "a deleted scope must no longer be readable, got {gone}"
+    );
+}
+
+/// Detects a scope delete that goes ahead while a memory still lists the scope:
+/// the store would be left with a memory naming a scope that does not exist,
+/// which `forgetmenot check` calls invalid, and the memory would be due in no
+/// context with nothing saying why.
+#[test]
+fn deleting_a_scope_a_memory_still_lists_is_refused_naming_that_memory_and_makes_no_commit() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    // widget-naming is the example store's memory scoped to `widgets`.
+    let version = scope(&server, "widgets")["version"].clone();
+    let before = head(&server);
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/widgets",
+        Some(&json!({
+            "base_version": version,
+            "author": AUTHOR,
+            "message": "widgets are not made here any more",
+        })),
+    );
+
+    assert_eq!(
+        status, 422,
+        "deleting a scope a memory lists must be refused, got {answer}"
+    );
+    assert!(
+        answer["errors"].as_array().is_some_and(|errors| errors
+            .iter()
+            .any(|error| error["path"] == json!("memories/widget-naming.md"))),
+        "the refusal must name the memory that has to be edited first, got {answer}"
+    );
+    assert_eq!(
+        head(&server),
+        before,
+        "a refused delete must leave the store as it was"
+    );
+    assert!(
+        scope_ids(&server).contains(&"widgets".to_string()),
+        "a refused delete must leave the scope in the index"
+    );
+}
+
+/// Detects a scope delete that only looks at the memories: a scope whose
+/// `implies` target is gone is just as invalid, and the implication would
+/// silently stop turning anything on.
+#[test]
+fn deleting_a_scope_another_scope_implies_is_refused_naming_that_scope_and_makes_no_commit() {
+    let mut files = example_store_files();
+    files.push((
+        "scopes/bench.yaml".to_owned(),
+        Some(b"id: bench\nimplies: [workshop]\n".to_vec()),
+    ));
+    let server = TestServer::start(files, |_| {});
+    let before = head(&server);
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/workshop",
+        Some(&json!({
+            "base_version": scope(&server, "workshop")["version"],
+            "author": AUTHOR,
+            "message": "the workshop directory moved off this machine",
+        })),
+    );
+
+    assert_eq!(
+        status, 422,
+        "deleting a scope another scope implies must be refused, got {answer}"
+    );
+    assert!(
+        answer["errors"].as_array().is_some_and(|errors| errors
+            .iter()
+            .any(|error| error["path"] == json!("scopes/bench.yaml"))),
+        "the refusal must name the scope that has to be edited first, got {answer}"
+    );
+    assert_eq!(
+        head(&server),
+        before,
+        "a refused delete must leave the store as it was"
+    );
+    assert!(
+        scope_ids(&server).contains(&"workshop".to_string()),
+        "a refused delete must leave the scope in the index"
+    );
+}
+
+/// Detects a scope delete that ignores the version it was made from: an editor
+/// holding a scope as it was before someone else changed its triggers would
+/// remove work it never saw.
+#[test]
+fn a_scope_delete_from_a_stale_version_is_refused_and_leaves_the_scope_in_the_store() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let stale = scope(&server, "workshop");
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/scopes/workshop",
+        Some(&json!({
+            "implies": stale["implies"],
+            "triggers": [{ "on": "tool_input", "pattern": "bench" }],
+            "base_version": stale["version"],
+            "author": AUTHOR,
+            "message": "match the bench in tool input as well",
+        })),
+    );
+    assert_eq!(
+        status, 200,
+        "the other editor's write must land, got {answer}"
+    );
+    let after_write = head(&server);
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/workshop",
+        Some(&json!({
+            "base_version": stale["version"],
+            "author": AUTHOR,
+            "message": "the workshop directory moved off this machine",
+        })),
+    );
+
+    assert_eq!(
+        status, 409,
+        "a delete from a stale version must be refused, got {answer}"
+    );
+    assert_ne!(
+        answer["current"]["version"].as_str(),
+        stale["version"].as_str(),
+        "the refusal must carry the scope as the store has it, got {answer}"
+    );
+    assert_eq!(
+        head(&server),
+        after_write,
+        "a refused delete must leave the store as it was"
+    );
+    assert!(
+        scope_ids(&server).contains(&"workshop".to_string()),
+        "a refused delete must leave the scope in the index"
+    );
+}
+
+/// Detects an implicit scope being answered as a document that could be deleted:
+/// `global` has no file, and a delete that reported anything but a refusal would
+/// suggest a session's own scopes can be taken away from it.
+#[test]
+fn deleting_an_implicit_scope_is_refused_as_a_bad_request() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let before = head(&server);
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/global",
+        Some(&json!({
+            "base_version": before,
+            "author": AUTHOR,
+            "message": "remove the global scope",
+        })),
+    );
+
+    assert_eq!(
+        status, 400,
+        "deleting an implicit scope must be a bad request, got {answer}"
+    );
+    assert!(
+        answer["error"].is_string(),
+        "a 400 must carry a message, got {answer}"
+    );
+    assert_eq!(
+        head(&server),
+        before,
+        "a refused delete must leave the store as it was"
     );
 }
 

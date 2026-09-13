@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::operations::{
-    self, DocumentKind, MemoryCreateRequest, MemoryDeleteRequest, MemoryFilter, MemoryWriteRequest,
+    self, DeleteRequest, DocumentKind, MemoryCreateRequest, MemoryFilter, MemoryWriteRequest,
     OperationError,
 };
 use crate::store::MemoryId;
@@ -126,7 +126,7 @@ async fn remove(
     let MemoryRoute::Document(id) = MemoryRoute::of(&rest) else {
         return unknown_path(&rest);
     };
-    let request: MemoryDeleteRequest = match parse_body(&body) {
+    let request: DeleteRequest = match parse_body(&body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };

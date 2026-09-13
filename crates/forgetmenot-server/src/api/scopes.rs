@@ -13,7 +13,7 @@ use axum::routing::get;
 
 use crate::app::AppState;
 use crate::operations::{
-    self, DocumentKind, OperationError, ScopeCreateRequest, ScopeWriteRequest,
+    self, DeleteRequest, DocumentKind, OperationError, ScopeCreateRequest, ScopeWriteRequest,
 };
 use crate::store::ScopeId;
 use crate::store::validate::WriteMode;
@@ -23,7 +23,7 @@ use super::{answer, parse_body, resource};
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/scopes", get(index).post(create))
-        .route("/scopes/{id}", get(read).put(replace))
+        .route("/scopes/{id}", get(read).put(replace).delete(remove))
         .route("/scopes/{id}/history", get(history))
         .route("/scopes/{id}/history/{oid}", get(history_entry))
 }
@@ -66,6 +66,19 @@ async fn replace(
         Err(rejection) => return rejection.into_response(),
     };
     answer(operations::scope_put(&state, &ScopeId::new(id), &request, WriteMode::Update).await)
+}
+
+/// `DELETE /api/scopes/{id}`: remove the version the caller read.
+async fn remove(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let request: DeleteRequest = match parse_body(&body) {
+        Ok(request) => request,
+        Err(rejection) => return rejection.into_response(),
+    };
+    answer(operations::scope_delete(&state, &ScopeId::new(id), &request).await)
 }
 
 /// `GET /api/scopes/{id}/history`

@@ -120,6 +120,7 @@ impl IntoResponse for OperationError {
             }
             OperationError::UnknownScope(_)
             | OperationError::ImplicitScope(_)
+            | OperationError::ImplicitScopeHasNoFile(_)
             | OperationError::UnknownSession(_) => {
                 error_response(StatusCode::BAD_REQUEST, &self.to_string())
             }

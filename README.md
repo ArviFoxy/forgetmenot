@@ -85,7 +85,7 @@ Every write through the API or MCP carries a `message` that becomes the commit t
 
 - `POST /hook`: the hook endpoint, called by `forgetmenot-hook`.
 - `/mcp`: MCP over streamable HTTP. Memory management tools (`memory_index`, `memory_get`, `memory_put`, `memory_delete`) change the store and are git commits. Session management tools (`session_scopes`, `session_scope_on`, `session_scope_off`, `session_inherit`) change only the calling context and never touch the store.
-- `/api/*`: the JSON API the frontend uses.
+- `/api/*`: the JSON API the frontend uses. Like a memory, a scope is retired by deleting its file (`DELETE /api/scopes/{id}`), which is one commit; the implicit scopes have no file, and a scope any memory still lists or any other scope still implies is refused, naming each file to edit first.
 - `/`: the frontend, served from `web/dist`.
 
 Claude Code templates for the hooks block and the MCP registration are in `examples/claude-code/`. An example store is in `examples/store/`.

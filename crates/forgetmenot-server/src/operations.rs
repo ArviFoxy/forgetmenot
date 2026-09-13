@@ -66,6 +66,9 @@ pub enum OperationError {
     #[error("`{0}` is always on for a session and cannot be turned off")]
     ImplicitScope(ScopeId),
 
+    #[error("`{0}` is implicit and has no file, so there is nothing to delete")]
+    ImplicitScopeHasNoFile(ScopeId),
+
     #[error("no session `{0}` has been seen by this server")]
     UnknownSession(String),
 
@@ -344,8 +347,11 @@ pub struct MemoryCreateRequest {
 }
 
 /// A deletion, which removes the file and so carries no content.
+///
+/// One type for memories and scopes: a deletion says which version it removes
+/// and nothing about what kind of document that version is.
 #[derive(Clone, Debug, Deserialize)]
-pub struct MemoryDeleteRequest {
+pub struct DeleteRequest {
     pub base_version: String,
     pub author: String,
     pub message: String,
@@ -522,7 +528,7 @@ pub async fn memory_put(
 pub async fn memory_delete(
     state: &AppState,
     id: &MemoryId,
-    request: &MemoryDeleteRequest,
+    request: &DeleteRequest,
 ) -> Result<WriteOutcome, OperationError> {
     let catalog = state.store.snapshot().await?;
     let path = id.repository_path();
@@ -831,6 +837,110 @@ pub async fn scope_put(
         }
         Err(error) => Err(write_error(&path, error)),
     }
+}
+
+/// Delete one scope: the file leaves the store in one commit, and the history
+/// keeps every version it had.
+///
+/// The implicit scopes have no file and cannot be deleted. A scope any memory
+/// still lists, or any other scope still implies, is refused with one problem
+/// per file that names it: deleting it would leave those files naming a scope
+/// that does not exist, which is a store `forgetmenot check` calls invalid, so
+/// the caller edits them first.
+///
+/// A context that has the scope on keeps it: a scope is a flag, and the flag now
+/// matches no memory. The memories delivered under it are reported as withdrawn
+/// at the next event, because they are no longer due.
+pub async fn scope_delete(
+    state: &AppState,
+    id: &ScopeId,
+    request: &DeleteRequest,
+) -> Result<WriteOutcome, OperationError> {
+    // Checked before the store is read: `global`, `machine:<name>` and
+    // `session:<machine>/<session-id>` exist without a file, so "not found" would
+    // be the wrong answer about them.
+    if id.is_implicit() {
+        return Err(OperationError::ImplicitScopeHasNoFile(id.clone()));
+    }
+    let catalog = state.store.snapshot().await?;
+    let path = id.repository_path();
+    let Some(entry) = catalog.scope(id) else {
+        return Err(OperationError::missing_scope(id));
+    };
+    let expected = match Oid::from_str(&request.base_version) {
+        Ok(version) if version == entry.version => version,
+        Ok(_) => return Err(scope_conflict(entry)),
+        Err(_) => return Err(OperationError::invalid(&path, UNREADABLE_BASE_VERSION)),
+    };
+
+    let mut errors = scope_references(&catalog, id);
+    if !is_valid_message_title(&request.message) {
+        errors.push(ValidationMessage {
+            path: path.clone(),
+            message: WriteError::BadMessage.to_string(),
+        });
+    }
+    if !errors.is_empty() {
+        return Err(OperationError::Invalid { errors });
+    }
+
+    let outcome = state
+        .store
+        .commit_documents(
+            &request.author,
+            &request.message,
+            &commit_body("scope", id.as_str(), &request.author),
+            // No content: the commit removes the file.
+            vec![(path.clone(), None)],
+            vec![(path.clone(), Some(expected))],
+        )
+        .await;
+
+    match outcome {
+        Ok(outcome) => Ok(write_outcome(&outcome, &path)),
+        Err(WriteError::VersionMismatch { .. }) => {
+            // The store moved between the version check above and the commit, so
+            // the answer is the document as it is now.
+            let catalog = state.store.snapshot().await?;
+            match catalog.scope(id) {
+                Some(entry) => Err(scope_conflict(entry)),
+                None => Err(OperationError::missing_scope(id)),
+            }
+        }
+        Err(error) => Err(write_error(&path, error)),
+    }
+}
+
+/// Every file that would be left naming `id` if its scope file were removed, as
+/// one refusal each, in the order a report reads them: the memories first, then
+/// the scopes.
+///
+/// The scope's own file is not counted: a scope that implies itself would
+/// otherwise block its own deletion, and after the deletion nothing is left to
+/// name anything.
+fn scope_references(catalog: &Catalog, id: &ScopeId) -> Vec<ValidationMessage> {
+    let mut errors = Vec::new();
+    for memory in catalog.memories() {
+        if memory.scopes().contains(id) {
+            errors.push(ValidationMessage {
+                path: memory.path.clone(),
+                message: format!(
+                    "lists the scope `{id}`, which cannot be deleted while a memory names it"
+                ),
+            });
+        }
+    }
+    for scope in catalog.scopes() {
+        if &scope.id != id && scope.document.implies.contains(id) {
+            errors.push(ValidationMessage {
+                path: scope.path.clone(),
+                message: format!(
+                    "implies the scope `{id}`, which cannot be deleted while a scope implies it"
+                ),
+            });
+        }
+    }
+    errors
 }
 
 fn scope_conflict(entry: &ScopeEntry) -> OperationError {
