@@ -8,7 +8,7 @@ forgetmenot is a memory server for LLM coding agents, for people who work on man
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
 - **Critical memories.** Critical memories are delivered in full whenever they apply; other memories are delivered as a one-line index and read on demand.
 - **Interception.** A tool call that brings a critical memory into play is held until the agent has been given that memory.
-- **Reminders.** Optionally, critical memories are delivered again after a set number of context tokens.
+- **Reminders.** Optionally, everything that applies is delivered again after a set number of context tokens: critical memories in full, the rest as the index.
 - **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one.
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
 - **Statistics.** Every trigger match, delivery and fetch is recorded, so unused memories are visible.
@@ -43,6 +43,7 @@ One server serves every machine on a network, and subagents receive the same mem
 The store is a git repository:
 
 ```
+config.yml
 scopes/<id>.yaml
 memories/<name>.md
 memories/sessions/<machine>/<session-id>/<name>.md
@@ -82,6 +83,21 @@ See [[rocketry-notes]].
 
 Every change to the store is a git commit with a title line. A write carries the version of the file it was based on, and is refused if someone else changed the file in between.
 
+### Settings
+
+Everything that changes what the agent experiences lives in `config.yml` at the root of the store, versioned like everything else; where the server listens, what it writes and how long it keeps it stay on the command line. A missing file means all defaults, and a commit changing the file takes effect at the next event in every session.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `reminder_tokens` | integer or null | `null` (off) | Re-deliver critical memories after this many context tokens |
+| `interrupt_on_critical` | bool | `true` | Hold a tool call when a critical memory is due and unseen |
+| `interrupt_exempt_tools` | list of strings | `[]` | Tool names never held, by exact match on the tool name |
+| `subagents_inherit_scopes` | bool | `true` | A subagent starts with its parent's active scopes |
+| `deliver_knowledge_index` | bool | `true` | Deliver knowledge memories as index lines; `false` fetches them on demand only |
+| `tool_result_match_limit` | integer | `262144` | Bytes of a tool result matched against triggers |
+
+An unknown key, or a value of the wrong type, is a validation error: `forgetmenot check` reports it and a write is refused. The settings are part of the store, so a branch may change them and land like any other change.
+
 ## Interfaces
 
 - `POST /hook`: the hook endpoint, called by `forgetmenot-hook` on every Claude Code hook event.
@@ -104,6 +120,13 @@ Memory tools read and change the store; every change is one commit.
 | `memory_set_fields` | Change the description, kind, scopes or source without touching the body |
 | `memory_rename` | Move a memory to a new id and update every `[[link]]` to it |
 | `memory_delete` | Remove a memory; its history stays in git |
+
+Settings tools read and change the store's behaviour settings; a change is one commit and is in force for every session.
+
+| Tool | What it does |
+|---|---|
+| `settings_get` | Report every setting with the value in force, its version and the schema |
+| `settings_set` | Change one setting, leaving the rest of the file as it is |
 
 Session tools change what the calling session receives and never touch the store.
 
@@ -141,7 +164,7 @@ forgetmenot serve --store /path/to/store --listen 0.0.0.0:7373 --web-dist web/di
 forgetmenot stats --stats-path /var/lib/forgetmenot/stats.sqlite
 ```
 
-`--allowed-host` lists every `Host` header value clients use to reach `/mcp`; loopback is always accepted. Critical memories are delivered again after 200000 context tokens (`--stale-tokens`). Session state and open branches are kept indefinitely unless `--context-retention-days` or `--branch-retention-days` is set. `forgetmenot stats` prints the same statistics the frontend shows, or JSON with `--json`.
+`--allowed-host` lists every `Host` header value clients use to reach `/mcp`; loopback is always accepted. Session state and open branches are kept indefinitely unless `--context-retention-days` or `--branch-retention-days` is set. How the server behaves towards the agent is the store's own [`config.yml`](#settings), not a flag. `forgetmenot stats` prints the same statistics the frontend shows, or JSON with `--json`.
 
 On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the hooks block from `examples/claude-code/settings-hooks.json` to Claude Code's settings with the server address and a machine name filled in, and register the MCP server with `claude mcp add --transport http forgetmenot http://SERVER/mcp`.
 
