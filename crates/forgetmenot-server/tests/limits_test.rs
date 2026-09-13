@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     TestServer, example_store_files, hook_fixture_payload, run_hook_client_binary,
-    write_transcript, write_transcript_with_custom_title,
+    write_subagent_meta, write_transcript, write_transcript_with_custom_title,
 };
 use serde_json::json;
 
@@ -41,6 +41,11 @@ const SESSION_START_CLIENT_LIMIT: Duration = Duration::from_millis(200);
 /// name read back cannot have come from anywhere else in the transcript, the
 /// event or the store.
 const SESSION_TITLE: &str = "Rebuild the vacuum former thermocouple rig";
+
+/// The subagent the timed tool call is made inside, as the recorded payload
+/// names it, and what its metadata file says it was asked to do.
+const SUBAGENT_ID: &str = "agent-7f3a";
+const SUBAGENT_TASK: &str = "Survey the rocketry crate and list its public functions";
 
 /// The transcript size the client limit is stated for. Source: the plan.
 const TRANSCRIPT_BYTES: u64 = 40 * 1024 * 1024;
@@ -131,10 +136,11 @@ fn the_hook_endpoint_answers_200_events_within_the_p99_limit() {
 ///
 /// Tolerance: the stated limit is 30 ms for one whole run, process spawn
 /// included. Measured on the development machine with the dev-profile binary
-/// against a real server: 2.5 to 3.6 ms, an order of magnitude under the limit,
-/// so the limit is asserted against the binary the test suite builds rather than
-/// against a release build only. `FORGETMENOT_RELEASE_BIN` runs the same check
-/// against another build of the client when one is wanted.
+/// against a real server: 4.4 to 4.8 ms with the subagent metadata read
+/// included (2026-09-13), an order of magnitude under the limit, so the limit is
+/// asserted against the binary the test suite builds rather than against a
+/// release build only. `FORGETMENOT_RELEASE_BIN` runs the same check against
+/// another build of the client when one is wanted.
 #[test]
 fn one_client_run_with_a_40_megabyte_transcript_stays_under_the_limit() {
     let server = TestServer::start(example_store_files(), |_| {});
@@ -150,7 +156,11 @@ fn one_client_run_with_a_40_megabyte_transcript_stays_under_the_limit() {
     );
     // A tool call, not a session start: this limit is the one for the events
     // that read the tail of the transcript, and a session start reads all of it.
-    let payload = hook_fixture_payload("pre_tool_use_bash", &transcript);
+    // The call is one made inside a subagent, which is the most a non-start
+    // event does: the transcript tail, the first prompt and the subagent's
+    // metadata file.
+    write_subagent_meta(&transcript, SUBAGENT_ID, SUBAGENT_TASK);
+    let payload = hook_fixture_payload("pre_tool_use_in_subagent", &transcript);
     let binary = match std::env::var_os("FORGETMENOT_RELEASE_BIN") {
         Some(path) => std::path::PathBuf::from(path),
         None => common::hook_client_binary(),

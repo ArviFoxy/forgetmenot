@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 /// from the transcript's last assistant message, `None` when the transcript is
 /// missing or carries no usage record yet. `session_title` and `first_prompt`
 /// are read from the same transcript and say what the session is, which no
-/// hook event carries.
+/// hook event carries. `task` is read from the subagent metadata file beside
+/// the transcript and says what a subagent was asked to do, which no hook event
+/// carries either.
 ///
 /// Everything but `machine` and `hook` defaults to absent, because a client
 /// older than the field it does not know still POSTs a body the server must
@@ -42,6 +44,12 @@ pub struct HookRequest {
     /// it. `None` when the transcript carries none yet.
     #[serde(default)]
     pub first_prompt: Option<String>,
+    /// The task the parent gave the subagent this event comes from, cut to 200
+    /// characters, as the client read it from the subagent's metadata file.
+    /// `None` for an event outside a subagent, and for one whose metadata file
+    /// is missing or unreadable.
+    #[serde(default)]
+    pub task: Option<String>,
     /// The hook event JSON, verbatim.
     pub hook: serde_json::Value,
 }
@@ -150,6 +158,11 @@ pub enum HookEvent {
     },
     /// A subagent started. Its `agent_id` identifies the child context; the
     /// event arrives on the parent session's `session_id`.
+    ///
+    /// The event says what kind of subagent started and nothing about what it
+    /// was asked to do: Claude Code 2.1.270 sends `agent_id` and `agent_type`
+    /// beside the common fields and no task at all, so the task reaches the
+    /// server through [`HookRequest::task`] instead.
     #[serde(rename = "SubagentStart")]
     SubagentStart {
         #[serde(flatten)]
@@ -158,8 +171,6 @@ pub enum HookEvent {
         agent_id: String,
         /// The subagent's type, for example `Explore`.
         agent_type: Option<String>,
-        /// The task the subagent was given.
-        task_description: Option<String>,
     },
     /// Any `hook_event_name` this crate does not know. The name itself is not
     /// kept, which is why [`HookEvent::common`] has nothing to return for it.
@@ -493,6 +504,50 @@ mod tests {
         assert!(
             matches!(post_compact, HookEvent::PostCompact { trigger: Some(ref t), .. } if t == "auto"),
             "PostCompact must keep its trigger and ignore compact_summary"
+        );
+    }
+
+    // Detects a SubagentStart that loses the agent type, and one that fails to
+    // parse because it expects a field the event does not carry: the type is
+    // the only thing the event says about what the subagent is, and a payload
+    // this crate refuses stops every subagent from being seen at all.
+    // Expectation source: the payload Claude Code 2.1.270 delivered to a
+    // SubagentStart hook on this machine on 2026-09-13, with its identifiers
+    // replaced; it carries no task field of any name.
+    #[test]
+    fn subagent_start_parses_the_observed_payload_and_keeps_the_agent_type() {
+        let payload = json!({
+            "session_id": "session-1",
+            "transcript_path": "/tmp/forgetmenot-test/session-1.jsonl",
+            "cwd": "/tmp/forgetmenot-test/work",
+            "permission_mode": "default",
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-7f3a",
+            "agent_type": "general-purpose"
+        });
+
+        let event: HookEvent = serde_json::from_value(payload).expect("SubagentStart must parse");
+
+        let HookEvent::SubagentStart {
+            common,
+            agent_id,
+            agent_type,
+        } = event
+        else {
+            panic!("a SubagentStart payload must parse as the SubagentStart variant");
+        };
+        assert_eq!(
+            agent_id, "agent-7f3a",
+            "the id of the subagent that started must come from the payload"
+        );
+        assert_eq!(
+            agent_type.as_deref(),
+            Some("general-purpose"),
+            "the agent type must be kept: it is all the event says about the subagent"
+        );
+        assert_eq!(
+            common.session_id, "session-1",
+            "the event arrives on the parent session, which must be readable"
         );
     }
 

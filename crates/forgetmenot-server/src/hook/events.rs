@@ -58,18 +58,31 @@ pub struct EventPlan {
     /// events that carry a directory worth matching: the session start, every
     /// tool call, and a change of the shell's directory.
     pub matches_directories: bool,
-    /// The task a subagent was given, for `SubagentStart` alone. It is also
+    /// The task a subagent was given, as the client read it from the subagent's
+    /// metadata file; absent outside a subagent. At `SubagentStart` it is also
     /// matched against the user-message triggers, because it is what the
     /// subagent was told to do; this field is what names the context.
     pub task: Option<String>,
+    /// The kind of subagent that started, for `SubagentStart` alone. It is what
+    /// names the context when nothing said what the task was.
+    pub agent_type: Option<String>,
 }
 
 /// What to do about `event`, or `None` for an event name this server does not
 /// know, which is answered with an empty object.
 ///
+/// `task` is what the request said the subagent this event comes from was asked
+/// to do; no hook event carries it, so it is the client's read of the
+/// subagent's metadata file or nothing.
+///
 /// `settings` are the store's, because how much of a tool result is matched
 /// against triggers is part of what the store says about its own behaviour.
-pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<EventPlan> {
+pub fn plan(
+    event: &HookEvent,
+    machine: &str,
+    task: Option<&str>,
+    settings: &Settings,
+) -> Option<EventPlan> {
     let event_name = event.event_name();
     let common = event.common()?;
     let mut plan = EventPlan {
@@ -83,7 +96,8 @@ pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<Eve
         session_start: false,
         cwd: common.cwd.clone(),
         matches_directories: false,
-        task: None,
+        task: task.filter(|task| !task.is_empty()).map(str::to_string),
+        agent_type: None,
     };
 
     match event {
@@ -144,18 +158,18 @@ pub fn plan(event: &HookEvent, machine: &str, settings: &Settings) -> Option<Eve
         }
         HookEvent::SubagentStart {
             agent_id,
-            task_description,
+            agent_type,
             ..
         } => {
             // The event arrives on the parent session but acts on the child,
             // whose id is the variant's own field.
             plan.key = ContextKey::subagent(machine, &common.session_id, agent_id);
-            plan.task = task_description.clone();
-            push_text(
-                &mut plan,
-                TriggerField::UserMessage,
-                task_description.as_deref(),
-            );
+            plan.agent_type = agent_type.clone();
+            // The task is what the subagent was told to do, so it is matched
+            // against the user-message triggers once, where the subagent
+            // begins, rather than again at every event inside it.
+            let task = plan.task.clone();
+            push_text(&mut plan, TriggerField::UserMessage, task.as_deref());
         }
         HookEvent::Unknown => return None,
     }
@@ -249,9 +263,9 @@ mod tests {
     }
 
     /// The plan for one event on `machine`, under a store that has said nothing
-    /// about its behaviour.
+    /// about its behaviour and a request that read no task.
     fn plan_of(event: &HookEvent, machine: &str) -> Option<EventPlan> {
-        plan(event, machine, &Settings::default())
+        plan(event, machine, None, &Settings::default())
     }
 
     /// Detects a tool input flattened in a way that loses a nested value, which
@@ -320,17 +334,25 @@ mod tests {
     }
 
     /// Detects a SubagentStart applied to the parent's context instead of the
-    /// child's, which would give the parent the child's deliveries.
+    /// child's, which would give the parent the child's deliveries, and a task
+    /// that never reaches the triggers, which would leave a subagent working
+    /// without the scopes its own task calls for.
+    ///
+    /// The payload is the shape Claude Code 2.1.270 sends, which carries no
+    /// task: the task comes with the request, from the subagent's metadata
+    /// file, so it is given here as the client would send it.
     #[test]
-    fn subagent_start_acts_on_the_child_context() {
-        let plan = plan_of(
+    fn subagent_start_acts_on_the_child_context_and_matches_the_task_it_was_given() {
+        let plan = plan(
             &event(json!({
                 "hook_event_name": "SubagentStart",
                 "session_id": "session-1",
                 "agent_id": "agent-7",
-                "task_description": "survey the widgets crate"
+                "agent_type": "general-purpose"
             })),
             "alpha",
+            Some("survey the widgets crate"),
+            &Settings::default(),
         )
         .expect("SubagentStart is a known event");
         assert_eq!(
@@ -343,6 +365,11 @@ mod tests {
                 TriggerField::UserMessage,
                 "survey the widgets crate".to_string()
             )]
+        );
+        assert_eq!(
+            plan.agent_type.as_deref(),
+            Some("general-purpose"),
+            "the kind of subagent that started must reach the context that records it"
         );
     }
 

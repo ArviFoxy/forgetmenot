@@ -18,8 +18,9 @@ mod common;
 use std::path::Path;
 
 use common::{
-    ClientRun, TestServer, additional_context, example_store_files, hook_fixture_names,
-    hook_fixture_payload, run_hook_client, write_transcript,
+    ClientRun, TestServer, additional_context, example_store_files, hook_fixture_agent_id,
+    hook_fixture_names, hook_fixture_payload, run_hook_client, write_subagent_meta,
+    write_transcript,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -55,6 +56,10 @@ fn run_fixture(
     run_hook_client(&server.url(), machine, &payload)
 }
 
+/// What a subagent's metadata file says the parent asked it to do, for the
+/// recorded payloads that come from inside one.
+const SUBAGENT_TASK: &str = "Survey the rocketry crate and list its public functions";
+
 /// Detects every way the chain can break on a payload Claude Code really sends:
 /// a client or server that cannot read the payload, a non-zero exit (Claude Code
 /// reports the hook as failed), anything on stdout that is not exactly one JSON
@@ -62,13 +67,18 @@ fn run_fixture(
 /// which the user sees as a broken hook.
 ///
 /// Every payload in the fixture directory is run, so a payload added there is
-/// covered without a change to this test.
+/// covered without a change to this test. A payload from inside a subagent gets
+/// the metadata file the client reads its task from, which is the file Claude
+/// Code writes beside the transcript.
 #[test]
 fn every_recorded_payload_through_the_client_exits_zero_with_one_json_object_on_stdout() {
     let directory = TempDir::new().expect("a temporary directory");
     let path = transcript(&directory, "session-1.jsonl", BASE_TOKENS);
 
     for fixture in hook_fixture_names() {
+        if let Some(agent_id) = hook_fixture_agent_id(&fixture) {
+            write_subagent_meta(&path, &agent_id, SUBAGENT_TASK);
+        }
         // A server per payload, so that what one payload delivered cannot
         // change what the next one is owed.
         let server = TestServer::start(example_store_files(), |_| {});

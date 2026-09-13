@@ -26,6 +26,7 @@ function context(key: string, active: string[]): ContextRow {
     first_prompt: null,
     parent: null,
     task: null,
+    agent_type: null,
     active_scopes: active,
     delivered_count: 0,
     last_seen: '2026-01-01T00:00:00Z',

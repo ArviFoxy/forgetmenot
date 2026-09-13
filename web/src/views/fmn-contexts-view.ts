@@ -71,7 +71,7 @@ export class FmnContextsView extends PageElement {
           <table class="data">
             <thead>
               <tr>
-                <th scope="col">Name</th>
+                <th scope="col" class="context-name">Name</th>
                 <th scope="col">Scopes</th>
                 <th scope="col">Id</th>
                 <th scope="col">Machine</th>
@@ -82,7 +82,11 @@ export class FmnContextsView extends PageElement {
             <tbody>
               ${FmnContextsView.grouped(loaded).map(
                 (row) => html`<tr>
-                  <td class=${(row.parent ?? null) === null ? '' : 'nested'}>${row.name}</td>
+                  <td
+                    class=${(row.parent ?? null) === null ? 'context-name' : 'context-name nested'}
+                  >
+                    ${row.name}
+                  </td>
                   <td>
                     <span class="chips"
                       >${[...row.active_scopes].sort().map(
@@ -93,7 +97,7 @@ export class FmnContextsView extends PageElement {
                       )}</span
                     >
                   </td>
-                  <td class="nowrap"><code>${idOf(row.key)}</code></td>
+                  <td class="nowrap"><code class="value-mono">${idOf(row.key)}</code></td>
                   <td class="nowrap">${machineOf(row.key)}</td>
                   <td class="number">${row.delivered_count}</td>
                   <td class="nowrap moment">${row.last_seen}</td>

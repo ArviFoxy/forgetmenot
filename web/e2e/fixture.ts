@@ -44,6 +44,12 @@ export interface HookPlay {
   /** A file under crates/forgetmenot-server/tests/fixtures/hooks. */
   fixture: string;
   contextTokens: number;
+  /**
+   * What the subagent the event comes from was asked to do. No hook event carries
+   * it: the client reads it from the subagent's metadata file and sends it beside
+   * the event, which is what is reproduced here.
+   */
+  task?: string;
 }
 
 /**
@@ -56,7 +62,12 @@ export const hookSequence: HookPlay[] = [
   { machine: 'alpha', fixture: 'user_prompt_submit', contextTokens: 1200 },
   { machine: 'alpha', fixture: 'pre_tool_use_bash', contextTokens: 2400 },
   { machine: 'alpha', fixture: 'post_tool_use', contextTokens: 3600 },
-  { machine: 'alpha', fixture: 'subagent_start', contextTokens: 3600 },
+  {
+    machine: 'alpha',
+    fixture: 'subagent_start',
+    contextTokens: 3600,
+    task: 'Survey the rocketry crate and list its public functions',
+  },
   { machine: 'beta', fixture: 'session_start', contextTokens: 0 },
   { machine: 'beta', fixture: 'user_prompt_submit', contextTokens: 800 },
   { machine: 'alpha', fixture: 'stop', contextTokens: 4800 },

@@ -61,7 +61,8 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
 
     // An event name this server does not know is acknowledged with an object
     // Claude Code reads as "nothing to do", not with an error.
-    let Some(plan) = events::plan(&event, &request.machine, settings) else {
+    let Some(plan) = events::plan(&event, &request.machine, request.task.as_deref(), settings)
+    else {
         return axum::Json(serde_json::json!({})).into_response();
     };
 
@@ -185,8 +186,14 @@ fn apply(
     if let Some(first_prompt) = named.first_prompt {
         context.first_prompt = Some(first_prompt.to_string());
     }
+    // The task and the kind of subagent are kept the same way and for the same
+    // reason: the event that carries one is not always the event that named the
+    // context, and an event that carries neither says nothing about either.
     if let Some(task) = &plan.task {
         context.task = Some(task.clone());
+    }
+    if let Some(agent_type) = &plan.agent_type {
+        context.agent_type = Some(agent_type.clone());
     }
 
     // The session directory is not in the plan's texts, because only the

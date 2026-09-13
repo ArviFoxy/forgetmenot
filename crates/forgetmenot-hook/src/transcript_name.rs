@@ -1,12 +1,17 @@
 //! Reading a session's name and first prompt out of a Claude Code transcript.
 //!
-//! Naming a session with `/rename` appends a line of its own to the transcript,
-//! `{"type":"custom-title","customTitle":"…","sessionId":"…"}`, and Claude Code
-//! re-emits that line later in the file, so the last one is the name in force.
-//! A session that was never named has no such line. The first prompt is in the
-//! first line of type `user` that carries the user's own words, which is not
-//! always the first user line of the file: the harness writes its own turns as
-//! user lines too.
+//! Three kinds of line carry a name. Naming a session with `/rename` appends
+//! `{"type":"custom-title","customTitle":"…","sessionId":"…"}`; Claude Code
+//! names a session itself with `{"type":"ai-title","aiTitle":"…",…}`; and a
+//! compaction writes `{"type":"summary","summary":"…",…}`. Each is appended and
+//! re-emitted as the file grows, so the last line of a kind is the one in force,
+//! and a session may carry any combination of them or none at all. Claude Code's
+//! own session picker prefers them in that order, which is the order
+//! [`session_title`] answers in.
+//!
+//! The first prompt is in the first line of type `user` that carries the user's
+//! own words, which is not always the first user line of the file: the harness
+//! writes its own turns as user lines too.
 //!
 //! Both reads are shaped by the same constraint as [`crate::transcript_tail`]:
 //! a transcript grows for the whole life of a session and reaches tens of
@@ -37,10 +42,35 @@ const FIRST_PROMPT_CAP_BYTES: u64 = 1024 * 1024;
 /// they are on, so this only trades read syscalls against memory.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
-/// What a title line starts with. Claude Code writes this object with `type`
-/// first, so a title line can be recognised from its first bytes and every
-/// other line can be skipped without being parsed.
-const TITLE_LINE_PREFIX: &[u8] = b"{\"type\":\"custom-title\"";
+/// One kind of line that carries a name for the session.
+///
+/// Claude Code writes all three objects with `type` first, so each kind is
+/// recognised from the line's first bytes and every other line is skipped
+/// without being parsed.
+struct TitleKind {
+    /// What a line of this kind starts with.
+    prefix: &'static [u8],
+    /// The field of that object holding the name.
+    field: &'static str,
+}
+
+/// The kinds of name a transcript carries, in the order Claude Code's own
+/// session picker prefers them: the name the user typed, then the one Claude
+/// Code generated, then a compaction summary.
+const TITLE_KINDS: [TitleKind; 3] = [
+    TitleKind {
+        prefix: b"{\"type\":\"custom-title\"",
+        field: "customTitle",
+    },
+    TitleKind {
+        prefix: b"{\"type\":\"ai-title\"",
+        field: "aiTitle",
+    },
+    TitleKind {
+        prefix: b"{\"type\":\"summary\"",
+        field: "summary",
+    },
+];
 
 /// A title line is about a hundred bytes. A line that starts like one and runs
 /// past this is not one, and is dropped rather than buffered: the scanner's
@@ -70,12 +100,17 @@ pub enum TitleScan {
     TailWindow,
 }
 
-/// The name the user gave the session whose transcript is at `path`, or `None`
-/// when the session was never named.
+/// What the session whose transcript is at `path` is called, or `None` when the
+/// transcript names it in none of the three ways.
+///
+/// The name the user typed wins over the one Claude Code generated, which wins
+/// over a compaction summary, and within each kind the last line of that kind
+/// is the one in force. A line that is not valid JSON, or that carries no name
+/// field, counts as absent, so a damaged line of one kind does not hide a name
+/// of another.
 ///
 /// `None` also covers every way the read can fail: a missing or unreadable
-/// file, a title line that is not valid JSON, and a title line the writer had
-/// not finished when the file was read.
+/// file, and a name line the writer had not finished when the file was read.
 pub fn session_title(path: impl AsRef<Path>, scan: TitleScan) -> Option<String> {
     let mut file = File::open(path.as_ref()).ok()?;
     let start = match scan {
@@ -102,9 +137,14 @@ pub fn session_title(path: impl AsRef<Path>, scan: TitleScan) -> Option<String> 
         scanner.consume(&chunk[..read]);
     }
 
-    let line = scanner.last_title_line?;
-    let parsed: serde_json::Value = serde_json::from_slice(&line).ok()?;
-    Some(parsed.get("customTitle")?.as_str()?.to_string())
+    scanner
+        .last_line_of_each_kind
+        .iter()
+        .zip(TITLE_KINDS.iter())
+        .find_map(|(line, kind)| {
+            let parsed: serde_json::Value = serde_json::from_slice(line.as_ref()?).ok()?;
+            Some(parsed.get(kind.field)?.as_str()?.to_string())
+        })
 }
 
 /// The first thing the user said in the session whose transcript is at `path`,
@@ -202,7 +242,7 @@ fn prompt_in_user_line(line: &[u8]) -> Option<String> {
 /// The first `limit` characters of `text`. Cutting by character rather than by
 /// byte is what keeps a prompt whose 200th character is not ASCII from being
 /// split down the middle of it.
-fn cut_to_characters(text: &str, limit: usize) -> String {
+pub(crate) fn cut_to_characters(text: &str, limit: usize) -> String {
     match text.char_indices().nth(limit) {
         Some((end_of_the_kept_part, _)) => text[..end_of_the_kept_part].to_string(),
         None => text.to_string(),
@@ -216,18 +256,19 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-/// The last line starting with [`TITLE_LINE_PREFIX`] in a byte stream fed to it
-/// in arbitrary pieces.
+/// The last line of each [`TITLE_KINDS`] kind in a byte stream fed to it in
+/// arbitrary pieces.
 ///
 /// It holds the current line only while that line can still turn out to be a
-/// title line, so a transcript of any size costs it a few hundred bytes.
+/// line of some kind, so a transcript of any size costs it a few hundred bytes.
 struct TitleLineScanner {
     /// The current line so far.
     line: Vec<u8>,
-    /// The current line cannot be a title line, so its bytes are dropped.
+    /// The current line cannot be a line of any kind, so its bytes are dropped.
     skipping: bool,
-    /// The last complete title line seen, kept unparsed.
-    last_title_line: Option<Vec<u8>>,
+    /// The last complete line seen of each kind, kept unparsed, in the order of
+    /// [`TITLE_KINDS`].
+    last_line_of_each_kind: [Option<Vec<u8>>; TITLE_KINDS.len()],
 }
 
 impl TitleLineScanner {
@@ -237,7 +278,7 @@ impl TitleLineScanner {
         TitleLineScanner {
             line: Vec::new(),
             skipping: starts_mid_line,
-            last_title_line: None,
+            last_line_of_each_kind: [const { None }; TITLE_KINDS.len()],
         }
     }
 
@@ -267,24 +308,32 @@ impl TitleLineScanner {
     /// A newline arrived. A line the stream ends in the middle of never gets
     /// here, which is how an unfinished last line is discarded.
     fn end_line(&mut self) {
-        if !self.skipping && self.line.starts_with(TITLE_LINE_PREFIX) {
-            self.last_title_line = Some(std::mem::take(&mut self.line));
+        if !self.skipping {
+            for (index, kind) in TITLE_KINDS.iter().enumerate() {
+                if self.line.starts_with(kind.prefix) {
+                    self.last_line_of_each_kind[index] = Some(std::mem::take(&mut self.line));
+                    break;
+                }
+            }
         }
         self.skipping = false;
         self.line.clear();
     }
 }
 
-/// Whether a line that begins with these bytes could still be a title line.
+/// Whether a line that begins with these bytes could still be a line of any
+/// kind that carries a name.
 fn can_still_be_a_title_line(line: &[u8]) -> bool {
     if line.len() > MAXIMUM_TITLE_LINE_BYTES {
         return false;
     }
-    if line.len() < TITLE_LINE_PREFIX.len() {
-        TITLE_LINE_PREFIX.starts_with(line)
-    } else {
-        line.starts_with(TITLE_LINE_PREFIX)
-    }
+    TITLE_KINDS.iter().any(|kind| {
+        if line.len() < kind.prefix.len() {
+            kind.prefix.starts_with(line)
+        } else {
+            line.starts_with(kind.prefix)
+        }
+    })
 }
 
 /// Offset of the next newline in `haystack`.

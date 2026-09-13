@@ -2,9 +2,11 @@
 //!
 //! Claude Code runs this binary for every hook event, with the event JSON on
 //! stdin, and injects whatever it writes to stdout. The client adds what the
-//! server cannot know by itself: the machine name, and what only the session's
-//! transcript says, the size of the session's context, the name the user gave
-//! the session and its first prompt. It POSTs the result to the server and
+//! server cannot know by itself: the machine name, what only the session's
+//! transcript says, the size of the session's context, what the session is
+//! called and its first prompt, and, inside a subagent, the task the subagent
+//! was given, which only its metadata file says. It POSTs the result to the
+//! server and
 //! copies the server's answer to stdout unchanged. It holds no state, so any
 //! number of them may run at once.
 //!
@@ -12,6 +14,7 @@
 //! stay off it: every failure path writes one line to stderr, nothing to
 //! stdout, and exits 1.
 
+pub mod subagent_meta;
 pub mod transcript_name;
 pub mod transcript_tail;
 
@@ -117,12 +120,23 @@ pub fn run(
     let session_title =
         transcript_path.and_then(|path| transcript_name::session_title(path, title_scan));
     let first_prompt = transcript_path.and_then(transcript_name::first_prompt);
+    // Only an event from inside a subagent has a task, and the event names the
+    // subagent whose metadata file carries it.
+    let agent_id = event
+        .get("agent_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|agent_id| !agent_id.is_empty());
+    let task = match (transcript_path, agent_id) {
+        (Some(path), Some(agent_id)) => subagent_meta::task(path, agent_id),
+        _ => None,
+    };
 
     let body = request_body(
         &parsed.machine,
         context_tokens,
         session_title.as_deref(),
         first_prompt.as_deref(),
+        task.as_deref(),
         hook_json,
     );
     let url = format!("{}/hook", parsed.server.trim_end_matches('/'));
@@ -178,6 +192,7 @@ fn request_body(
     context_tokens: Option<u64>,
     session_title: Option<&str>,
     first_prompt: Option<&str>,
+    task: Option<&str>,
     hook_json: &[u8],
 ) -> Vec<u8> {
     let mut body = Vec::with_capacity(hook_json.len() + 512);
@@ -192,6 +207,8 @@ fn request_body(
     write_optional_string(&mut body, session_title);
     body.extend_from_slice(b",\"first_prompt\":");
     write_optional_string(&mut body, first_prompt);
+    body.extend_from_slice(b",\"task\":");
+    write_optional_string(&mut body, task);
     body.extend_from_slice(b",\"hook\":");
     body.extend_from_slice(hook_json);
     body.extend_from_slice(b"}");

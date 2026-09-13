@@ -1187,6 +1187,7 @@ mod state_machine {
             session_title: None,
             first_prompt: None,
             task: None,
+            agent_type: None,
             last_seen: chrono::Utc::now(),
         }
     }

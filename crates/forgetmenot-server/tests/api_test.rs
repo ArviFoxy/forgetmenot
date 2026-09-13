@@ -1781,19 +1781,28 @@ fn the_contexts_page_names_an_unnamed_session_by_its_first_prompt_cut_at_a_word_
     );
 }
 
+/// The task the client reads for a subagent out of its metadata file, which is
+/// the only thing that says what a subagent is doing: a `SubagentStart` carries
+/// the subagent's id and type and no task at all.
+const SUBAGENT_TASK: &str = "Survey the rocketry crate and list its public functions";
+
 /// Detects a subagent listed as a session of its own: a subagent's row has to
 /// say which session it runs in, or the list cannot be put in order, and it has
 /// to be named for the task it was given, because a subagent has no title of
 /// its own and its session's first prompt says nothing about what it is doing.
+///
+/// The task is sent with the request and not in the event: the recorded payload
+/// is the one Claude Code 2.1.270 sends, which names no task.
 #[test]
 fn the_contexts_page_reports_a_subagents_parent_and_names_it_by_its_task() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let event = hook_fixture("subagent_start");
-    let task = event["task_description"]
-        .as_str()
-        .expect("the recorded payload carries a task")
-        .to_string();
-    server.hook_named("alpha", SOME_TOKENS, Some(GIVEN_TITLE), None, &event);
+
+    server.hook_tasked(
+        "alpha",
+        SOME_TOKENS,
+        Some(SUBAGENT_TASK),
+        &hook_fixture("subagent_start"),
+    );
 
     let (status, answer) = server.api("GET", "/api/contexts", None);
 
@@ -1806,8 +1815,74 @@ fn the_contexts_page_reports_a_subagents_parent_and_names_it_by_its_task() {
     );
     assert_eq!(
         row["name"],
-        json!(task),
+        json!(SUBAGENT_TASK),
         "a subagent must be named for the task it was given, not for its session, got {row}"
+    );
+}
+
+/// Detects a subagent whose task could not be read being listed under its
+/// session's name, or under nothing at all: the metadata file may be missing at
+/// the moment the subagent starts, and the kind of subagent is then the only
+/// thing the event says about it.
+#[test]
+fn the_contexts_page_names_a_subagent_with_no_task_by_the_kind_of_subagent_it_is() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let event = hook_fixture("subagent_start");
+    let agent_type = event["agent_type"]
+        .as_str()
+        .expect("the recorded payload names the kind of subagent")
+        .to_string();
+    // The session is named, so a subagent that falls through to its session's
+    // name is caught rather than passing on an empty string.
+    server.hook_named("alpha", SOME_TOKENS, Some(GIVEN_TITLE), None, &event);
+
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    let row = context_row(&answer, "alpha/session-1/agent-7f3a");
+    assert_eq!(
+        row["name"],
+        json!(agent_type),
+        "a subagent with no task must be named for what kind of subagent it is, got {row}"
+    );
+}
+
+/// Detects a task recorded only at the event that opens a subagent: the
+/// metadata file is written by Claude Code and may not be readable at the
+/// moment the subagent starts, so a subagent whose first events say nothing
+/// would stay nameless for its whole life although every later event carries
+/// the task.
+#[test]
+fn a_task_carried_by_a_later_event_names_a_subagent_its_start_left_nameless() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let mut start = hook_fixture("subagent_start");
+    // A start that says nothing about the subagent but its id, which is what a
+    // Claude Code that sends no agent_type gives.
+    start
+        .as_object_mut()
+        .expect("the payload is an object")
+        .remove("agent_type");
+    server.hook_tasked("alpha", SOME_TOKENS, None, &start);
+    let (_, before) = server.api("GET", "/api/contexts", None);
+
+    server.hook_tasked(
+        "alpha",
+        SOME_TOKENS,
+        Some(SUBAGENT_TASK),
+        &hook_fixture("pre_tool_use_in_subagent"),
+    );
+    let (status, after) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(status, 200, "the contexts must be readable, got {after}");
+    assert_eq!(
+        context_row(&before, "alpha/session-1/agent-7f3a")["name"],
+        json!(""),
+        "a subagent nothing has said anything about has no name to show, got {before}"
+    );
+    assert_eq!(
+        context_row(&after, "alpha/session-1/agent-7f3a")["name"],
+        json!(SUBAGENT_TASK),
+        "a task carried by an event inside the subagent must name it, got {after}"
     );
 }
 

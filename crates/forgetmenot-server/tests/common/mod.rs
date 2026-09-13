@@ -234,6 +234,26 @@ impl TestServer {
         )
     }
 
+    /// Send one hook event with the task the client read for the subagent the
+    /// event comes from, which no hook event carries.
+    pub fn hook_tasked(
+        &self,
+        machine: &str,
+        context_tokens: Option<u64>,
+        task: Option<&str>,
+        event: &Value,
+    ) -> (u16, Value) {
+        post_hook_body(
+            &self.url(),
+            &json!({
+                "machine": machine,
+                "context_tokens": context_tokens,
+                "task": task,
+                "hook": event,
+            }),
+        )
+    }
+
     /// Send one API request and read the status and the answer.
     ///
     /// `body` is sent as JSON for the methods that take one; the answer is
@@ -650,6 +670,56 @@ pub fn hook_fixture_payload(name: &str, transcript: &Path) -> Vec<u8> {
         transcript.to_str().expect("a utf-8 transcript path"),
     );
     format!("{}\n", text.trim_end()).into_bytes()
+}
+
+/// The agent id one recorded payload carries, or `None` when it is not an event
+/// from inside a subagent.
+pub fn hook_fixture_agent_id(name: &str) -> Option<String> {
+    hook_fixture(name)
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .filter(|agent_id| !agent_id.is_empty())
+        .map(str::to_string)
+}
+
+/// Write the metadata file Claude Code writes for one subagent of the session
+/// whose transcript is `session_transcript`, and report where it was written.
+///
+/// Expectation source: the files Claude Code 2.1.270 wrote on this machine on
+/// 2026-09-13. For a session transcript `<dir>/<session_id>.jsonl` the file is
+/// `<dir>/<session_id>/subagents/agent-<agent_id>.meta.json`, and its
+/// `description` is the label the parent gave the Agent tool.
+pub fn write_subagent_meta(
+    session_transcript: &Path,
+    agent_id: &str,
+    description: &str,
+) -> PathBuf {
+    let directory = session_transcript
+        .parent()
+        .expect("the transcript is in a directory")
+        .join(
+            session_transcript
+                .file_stem()
+                .expect("the transcript is named after its session"),
+        )
+        .join("subagents");
+    std::fs::create_dir_all(&directory).expect("the subagents directory must be creatable");
+    let path = directory.join(format!("agent-{agent_id}.meta.json"));
+    let meta = json!({
+        "agentType": "general-purpose",
+        "description": description,
+        "toolUseId": "toolu_01DDDDDDDDDDDDDDDDDDDDDD",
+        "spawnDepth": 1,
+        "requestShape": "foreground",
+        "requestNonInteractive": true,
+        "model": "haiku",
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_string(&meta).expect("the metadata serialises"),
+    )
+    .expect("the metadata file must be writable");
+    path
 }
 
 /// Write a transcript whose last assistant message reports `context_tokens`,

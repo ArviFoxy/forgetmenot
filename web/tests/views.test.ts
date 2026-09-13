@@ -109,6 +109,7 @@ function context(over: Partial<ContextRow> & { key: string }): ContextRow {
     first_prompt: null,
     parent: null,
     task: null,
+    agent_type: null,
     active_scopes: ['global'],
     delivered_count: 1,
     last_seen: '2026-01-02T03:04:05+00:00',

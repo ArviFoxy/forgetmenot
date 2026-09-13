@@ -73,6 +73,7 @@ async function playHooks(base: string): Promise<void> {
       body: JSON.stringify({
         machine: play.machine,
         context_tokens: play.contextTokens,
+        task: play.task ?? null,
         hook: payload,
       }),
     });

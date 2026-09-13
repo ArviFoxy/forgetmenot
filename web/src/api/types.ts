@@ -138,6 +138,8 @@ export interface ContextRow {
   parent: string | null;
   /** The task a subagent was given; null for a session itself. */
   task: string | null;
+  /** The kind of subagent, such as `general-purpose`; null for a session. */
+  agent_type: string | null;
   active_scopes: string[];
   delivered_count: number;
   last_seen: string;

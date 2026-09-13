@@ -1089,6 +1089,15 @@ table.data td.nested {
   padding-inline-start: var(--sl-spacing-large);
 }
 
+/* What a context row is read by is its name, so the name column keeps enough
+   width for a title to sit on a line or two while the scope chips wrap into
+   whatever is left: without a minimum, a row with many scopes squeezes the name
+   to a few characters a line. */
+table.data th.context-name,
+table.data td.context-name {
+  min-width: 22rem;
+}
+
 table.stats td,
 table.stats th {
   white-space: nowrap;

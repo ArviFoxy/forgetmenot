@@ -145,11 +145,17 @@ pub struct ContextState {
     /// transcript carries none.
     #[serde(default)]
     pub first_prompt: Option<String>,
-    /// The task a subagent was given at its `SubagentStart`, which is the only
-    /// thing that says what the subagent is for. `None` for a session's own
-    /// context, which is given no task.
+    /// The task a subagent was given, as the client last read it from the
+    /// subagent's metadata file, which is the only thing that says what the
+    /// subagent is for. `None` for a session's own context, which is given no
+    /// task, and for a subagent whose metadata file could not be read.
     #[serde(default)]
     pub task: Option<String>,
+    /// The kind of subagent this is, from its `SubagentStart`, for example
+    /// `general-purpose`. `None` for a session's own context, and for a
+    /// subagent first seen at an event other than its start.
+    #[serde(default)]
+    pub agent_type: Option<String>,
     pub last_seen: DateTime<Utc>,
 }
 
@@ -168,6 +174,7 @@ impl ContextState {
             session_title: None,
             first_prompt: None,
             task: None,
+            agent_type: None,
             last_seen: now,
         }
     }

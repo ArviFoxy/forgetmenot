@@ -487,6 +487,29 @@ fn title_line(title: &str) -> serde_json::Value {
     })
 }
 
+/// The line Claude Code appends when it has named a session itself.
+///
+/// Expectation source: a transcript written by Claude Code on this machine on
+/// 2026-09-13, whose generated-title lines are
+/// `{"type":"ai-title","aiTitle":"Memory system design via MCP","sessionId":"…"}`.
+fn ai_title_line(title: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "ai-title",
+        "aiTitle": title,
+        "sessionId": "session-1",
+    })
+}
+
+/// The line a compaction appends, which is the last thing that says what a
+/// session is about when nothing has named it.
+fn summary_line(summary: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "summary",
+        "summary": summary,
+        "leafUuid": "6f1d2c3e-0000-4000-8000-000000000001",
+    })
+}
+
 /// Write `lines` as a JSONL transcript, one line each, newline-terminated.
 fn write_transcript_lines(path: &Path, lines: &[serde_json::Value]) {
     let mut text = String::new();
@@ -629,6 +652,85 @@ fn client_sends_no_title_for_a_session_that_was_never_named() {
         request.first_prompt.as_deref(),
         Some("the very first prompt"),
         "an unnamed session must still be identified by its first prompt"
+    );
+}
+
+// Detects a client that takes the last name line of whatever kind: Claude Code
+// writes its own title after the user has typed one, so a session the user
+// named with /rename would travel under the generated name instead.
+// Expectation source: Claude Code's own session picker, which names a session
+// by its custom title, then its AI title, then a compaction summary, then its
+// first prompt (observed on this machine on 2026-09-13).
+#[test]
+fn client_sends_the_users_title_rather_than_the_generated_one_written_after_it() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[
+            user_line(serde_json::json!("the very first prompt")),
+            title_line("the name the user typed"),
+            ai_title_line("the name Claude Code wrote afterwards"),
+            summary_line("what a compaction made of it"),
+        ],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title.as_deref(),
+        Some("the name the user typed"),
+        "the name the user typed must win over the ones written for them"
+    );
+}
+
+// Detects a client that knows only the line /rename writes: Claude Code names
+// most sessions itself, and every one of them would be listed by its first
+// prompt while the harness shows it under a name of its own.
+#[test]
+fn client_sends_the_generated_title_of_a_session_the_user_never_named() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[
+            user_line(serde_json::json!("the very first prompt")),
+            ai_title_line("the name it was given first"),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant"}}),
+            ai_title_line("the generated name in force"),
+        ],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title.as_deref(),
+        Some("the generated name in force"),
+        "a session Claude Code named must travel under the last generated name"
+    );
+}
+
+// Detects a session with no title line of either kind being left nameless
+// although its transcript says what it is about: a compacted session that was
+// never named is exactly the long-running one worth telling apart in the list.
+#[test]
+fn client_sends_the_compaction_summary_of_a_session_with_no_title_line() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(
+        &transcript,
+        &[
+            user_line(serde_json::json!("the very first prompt")),
+            summary_line("Rebuilding the thermocouple rig"),
+        ],
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.session_title.as_deref(),
+        Some("Rebuilding the thermocouple rig"),
+        "a session named by nothing else must be named by its compaction summary"
     );
 }
 
@@ -968,6 +1070,10 @@ fn a_body_without_the_transcript_fields_still_reads_as_a_request() {
         request.first_prompt, None,
         "a body that names no first prompt must read as no first prompt"
     );
+    assert_eq!(
+        request.task, None,
+        "a body that names no task must read as no task"
+    );
 }
 
 // Detects a first prompt taken from the harness's own turns: Claude Code writes
@@ -1014,6 +1120,184 @@ fn client_skips_the_harness_turns_that_precede_the_first_prompt() {
         request.first_prompt.as_deref(),
         Some("please recover the memory of the last session"),
         "the prompt must be the first user line that is the user's own words"
+    );
+}
+
+/// The subagent the tests below are about, named as Claude Code names one.
+const AGENT_ID: &str = "agent-7f3a";
+
+/// What the parent asked that subagent to do, as its metadata file records it.
+const TASK: &str = "Survey the rocketry crate and list its public functions";
+
+/// Where Claude Code puts the metadata file of `agent_id` for a session whose
+/// transcript is `<directory>/<session>.jsonl`, and where the subagent's own
+/// transcript sits beside it.
+///
+/// Expectation source: the files Claude Code 2.1.270 wrote on this machine on
+/// 2026-09-13, `<dir>/<session_id>/subagents/agent-<agent_id>.meta.json` beside
+/// `<dir>/<session_id>/subagents/agent-<agent_id>.jsonl`.
+fn subagents_directory(directory: &Path, session: &str) -> std::path::PathBuf {
+    directory.join(session).join("subagents")
+}
+
+/// Write the metadata file Claude Code writes for one subagent.
+///
+/// Expectation source: the same files, whose content is
+/// `{"agentType":"general-purpose","description":"Name check: say done",
+/// "toolUseId":"…","spawnDepth":1,"requestShape":"foreground",
+/// "requestNonInteractive":true,"model":"haiku"}`. Every field is written, not
+/// only the one under test, so a client that sends the agent type or the model
+/// as the task is caught.
+fn write_subagent_meta(directory: &Path, agent_id: &str, description: &str) {
+    std::fs::create_dir_all(directory).expect("the subagents directory must be creatable");
+    let meta = serde_json::json!({
+        "agentType": "general-purpose",
+        "description": description,
+        "toolUseId": "toolu_01DDDDDDDDDDDDDDDDDDDDDD",
+        "spawnDepth": 1,
+        "requestShape": "foreground",
+        "requestNonInteractive": true,
+        "model": "haiku",
+    });
+    std::fs::write(
+        directory.join(format!("agent-{agent_id}.meta.json")),
+        serde_json::to_string(&meta).expect("the metadata serialises"),
+    )
+    .expect("the metadata file must be writable");
+}
+
+/// An event from inside a subagent, which is the only kind that carries an
+/// `agent_id`. `transcript` is whichever transcript the event reports.
+fn event_in_subagent(transcript: &Path, agent_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "session-1",
+        "transcript_path": transcript.to_str().expect("a utf-8 temp path"),
+        "agent_id": agent_id,
+        "tool_name": "Grep",
+        "tool_use_id": "toolu_1",
+        "tool_input": { "pattern": "pub fn" },
+    })
+}
+
+// Detects a task that never leaves the client: no hook event says what a
+// subagent was asked to do, so a server that is not sent the task has nothing
+// to name a subagent by. Also detects a client that sends another field of the
+// metadata file, such as the agent type, as the task.
+#[test]
+fn client_sends_the_task_from_the_metadata_file_of_the_subagent_the_event_comes_from() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(&transcript, &[user_line(serde_json::json!("the prompt"))]);
+    write_subagent_meta(
+        &subagents_directory(directory.path(), "session-1"),
+        AGENT_ID,
+        TASK,
+    );
+
+    let request = post_one_event(&event_in_subagent(&transcript, AGENT_ID));
+
+    assert_eq!(
+        request.task.as_deref(),
+        Some(TASK),
+        "the task must be the description of the metadata file of the event's own subagent"
+    );
+}
+
+// Detects a client that reads a metadata file for an event that is not a
+// subagent's: a session would be named for whatever subagent it last spawned,
+// and every event of every session would pay for the read.
+#[test]
+fn client_sends_no_task_for_an_event_outside_a_subagent() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(&transcript, &[user_line(serde_json::json!("the prompt"))]);
+    write_subagent_meta(
+        &subagents_directory(directory.path(), "session-1"),
+        AGENT_ID,
+        TASK,
+    );
+
+    let request = post_one_event(&stop_event(&transcript));
+
+    assert_eq!(
+        request.task, None,
+        "an event with no agent id is not a subagent's, whatever metadata files exist beside it"
+    );
+}
+
+// Detects a client that fails, or invents a task, when the metadata file is not
+// there: Claude Code may not have written it yet, or may stop writing it, and
+// either would otherwise take the hook down on every event of every subagent.
+#[test]
+fn client_sends_no_task_and_still_succeeds_when_the_subagent_has_no_metadata_file() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(&transcript, &[user_line(serde_json::json!("the prompt"))]);
+
+    // post_one_event fails the test on any exit code but 0.
+    let request = post_one_event(&event_in_subagent(&transcript, AGENT_ID));
+
+    assert_eq!(
+        request.task, None,
+        "a subagent with no metadata file has no task to send"
+    );
+}
+
+// Detects a client that only understands one of the two transcripts an event
+// inside a subagent may report: which one Claude Code sends is not something
+// this client is told, so a derivation that works from the session's transcript
+// alone loses every task the day the subagent's own is sent instead.
+#[test]
+fn client_finds_the_metadata_file_beside_a_subagents_own_transcript() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let subagents = subagents_directory(directory.path(), "session-1");
+    write_subagent_meta(&subagents, AGENT_ID, TASK);
+    let own_transcript = subagents.join(format!("agent-{AGENT_ID}.jsonl"));
+    write_transcript_lines(
+        &own_transcript,
+        &[user_line(serde_json::json!("the whole task prompt"))],
+    );
+
+    let request = post_one_event(&event_in_subagent(&own_transcript, AGENT_ID));
+
+    assert_eq!(
+        request.task.as_deref(),
+        Some(TASK),
+        "the metadata file beside the subagent's own transcript must be the one read"
+    );
+}
+
+// Detects a task sent whole, which would put a task with a pasted file in it
+// into every event of a subagent, and detects a cut made at byte 200 rather
+// than character 200: that splits a multi-byte character, which is a panic in
+// the client, on Claude Code's critical path. The expectation is arithmetic:
+// the first 150 characters are two bytes each, so byte 200 falls inside the
+// 101st of them.
+#[test]
+fn a_long_task_is_cut_to_two_hundred_characters_not_two_hundred_bytes() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(&transcript, &[user_line(serde_json::json!("the prompt"))]);
+    let description = format!("{}{}", "é".repeat(150), "a".repeat(150));
+    write_subagent_meta(
+        &subagents_directory(directory.path(), "session-1"),
+        AGENT_ID,
+        &description,
+    );
+    let expected = format!("{}{}", "é".repeat(150), "a".repeat(50));
+    assert_eq!(
+        expected.chars().count(),
+        200,
+        "the expected task is the first 200 characters of the written one"
+    );
+
+    let request = post_one_event(&event_in_subagent(&transcript, AGENT_ID));
+
+    assert_eq!(
+        request.task.as_deref(),
+        Some(expected.as_str()),
+        "the task must be cut after 200 characters, whatever they weigh in bytes"
     );
 }
 

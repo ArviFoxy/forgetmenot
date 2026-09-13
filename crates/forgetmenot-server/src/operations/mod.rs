@@ -304,6 +304,9 @@ pub struct ContextRow {
     pub parent: Option<String>,
     /// The task a subagent was given, absent for a session's own context.
     pub task: Option<String>,
+    /// The kind of subagent this is, for example `general-purpose`, absent for
+    /// a session's own context.
+    pub agent_type: Option<String>,
     pub active_scopes: Vec<ScopeId>,
     pub delivered_count: usize,
     /// ISO 8601.
@@ -1569,6 +1572,7 @@ pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<Con
             first_prompt: record.state.first_prompt,
             parent: record.state.parent.map(|parent| parent.to_string()),
             task: record.state.task,
+            agent_type: record.state.agent_type,
             active_scopes: record.state.active.into_iter().collect(),
             delivered_count: record.state.delivered.len(),
             last_seen: iso8601(record.state.last_seen),
@@ -1583,9 +1587,12 @@ const NAME_CHARACTERS: usize = 80;
 
 /// What to call one context in a list.
 ///
-/// The source text is, in order: for a subagent, the task it was given; else
-/// the name the user gave the session with `/rename`; else the user's first
-/// prompt; else nothing at all, which gives the empty string. Whitespace,
+/// The source text is, in order: for a subagent, the task it was given, else
+/// the kind of subagent it is; then the name the session goes by, whether the
+/// user typed it or Claude Code wrote it; else the user's first prompt; else
+/// nothing at all, which gives the empty string. A subagent falls through to
+/// its session's name only when nothing says what it is doing or what it is,
+/// because that name is the session's and not the subagent's. Whitespace,
 /// newlines included, collapses to single spaces and the text is trimmed,
 /// because the result is one cell of a table and a prompt is written over
 /// several lines.
@@ -1597,10 +1604,13 @@ const NAME_CHARACTERS: usize = 80;
 /// single `…` in place of what was dropped. The cut counts characters and never
 /// bytes, so no multi-byte character is split in half.
 fn context_name(record: &ContextRecord) -> String {
-    if record.key.is_subagent()
-        && let Some(task) = &record.state.task
-    {
-        return cut_at_word_boundary(&collapse_whitespace(task), NAME_CHARACTERS);
+    if record.key.is_subagent() {
+        if let Some(task) = &record.state.task {
+            return cut_at_word_boundary(&collapse_whitespace(task), NAME_CHARACTERS);
+        }
+        if let Some(agent_type) = &record.state.agent_type {
+            return collapse_whitespace(agent_type);
+        }
     }
     if let Some(title) = &record.state.session_title {
         return collapse_whitespace(title);
