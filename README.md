@@ -6,9 +6,9 @@ forgetmenot is a memory server for LLM coding agents, for people who work on man
 
 - **Scopes.** Every memory belongs to one or more scopes, such as a project, a topic, a machine or a session. A session receives only the memories of the scopes active in it.
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
-- **Critical memories.** Critical memories are delivered in full whenever they apply; other memories are delivered as a one-line index and read on demand.
+- **Critical memories.** Critical memories are delivered in full whenever they apply; other memories are delivered as their one-line description, and the full text only when the agent asks for it.
 - **Interception.** A tool call that brings a critical memory into play is held until the agent has been given that memory.
-- **Reminders.** Optionally, everything that applies is delivered again after a set number of context tokens: critical memories in full, the rest as the index.
+- **Reminders.** Optionally, everything that applies is delivered again after a set number of context tokens: critical memories in full, the rest as their descriptions.
 - **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one. Several agents and people can write at the same time: their changes are merged, and only edits to the same lines conflict.
 - **Backwards compatible.** Memory files use Claude Code's own auto-memory format, so an existing Claude Code memory directory can be imported directly, and migrating back to vanilla memory is easy as Claude Code can read forgetmenot's memory format (losing only the extended functionality).
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
@@ -90,11 +90,11 @@ Everything that changes what the agent experiences lives in `config.yml` at the 
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `reminder_tokens` | integer or null | `null` (off) | Deliver everything that applies again this many context tokens after it was last shown: critical memories in full, knowledge memories as their index line |
+| `reminder_tokens` | integer or null | `null` (off) | Deliver everything that applies again this many context tokens after it was last shown: critical memories in full, knowledge memories as their description |
 | `interrupt_on_critical` | bool | `true` | Hold a tool call when a critical memory is due and unseen |
 | `interrupt_exempt_tools` | list of strings | `[]` | Tool names never held, by exact match on the tool name |
 | `subagents_inherit_scopes` | bool | `true` | A subagent starts with its parent's active scopes |
-| `deliver_knowledge_index` | bool | `true` | Deliver knowledge memories as index lines; `false` fetches them on demand only |
+| `deliver_knowledge_index` | bool | `true` | Deliver the description of each knowledge memory that applies, so the agent knows it exists and can ask for the full text; `false` delivers nothing about knowledge memories, the agent has to list them itself |
 | `tool_result_match_limit` | integer | `262144` | Bytes of a tool result matched against triggers |
 
 An unknown key, or a value of the wrong type, is a validation error: `forgetmenot check` reports it and a write is refused. The settings are part of the store, so a branch may change them and land like any other change.
