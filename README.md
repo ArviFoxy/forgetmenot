@@ -26,7 +26,7 @@ One server serves every machine on a network, and subagents get the same memorie
 
 ## Concepts
 
-**Scope.** A flag with an id. A scope is either on or off in a context. Some scopes are implicit and need no file: `global` is always on, `machine:<name>` is on for sessions on that machine, `session:<machine>/<session-id>` is on for one session. File-backed scopes carry triggers and an `implies` list.
+**Scope.** A flag identified by its id. A scope is either on or off in a context, and the id is all it is: scopes carry no kind or label. The only scopes with special meaning are the implicit ones, which need no file: `global` is always on, `machine:<name>` is on for sessions on that machine, `session:<machine>/<session-id>` is on for one session. A file-backed scope's file carries just its `id`, an `implies` list and its `triggers`.
 
 **Trigger.** A regular expression over one of six strings the harness supplies: `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result`, `working_directory`. A match turns the trigger's scope on in the context where the text appeared. Triggers never turn scopes off. A trigger on `working_directory` may be qualified with a machine name.
 
@@ -55,7 +55,6 @@ memories/sessions/<machine>/<session-id>/<name>.md
 ```yaml
 # scopes/widgets.yaml
 id: widgets
-type: project
 implies: [rocketry]
 triggers:
   - on: tool_input

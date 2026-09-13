@@ -1,5 +1,4 @@
 id: widgets
-type: project
 implies:
 - rocketry
 triggers:

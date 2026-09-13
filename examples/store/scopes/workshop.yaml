@@ -1,5 +1,4 @@
 id: workshop
-type: directory
 triggers:
 - on: working_directory
   pattern: '/workshop(/|$)'

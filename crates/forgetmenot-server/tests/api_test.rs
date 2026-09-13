@@ -533,7 +533,6 @@ fn a_scope_write_with_a_pattern_that_does_not_compile_is_refused_and_makes_no_co
         "PUT",
         "/api/scopes/widgets",
         Some(&json!({
-            "type": scope["type"],
             "implies": scope["implies"],
             "triggers": [{ "on": "tool_input", "pattern": "(unclosed" }],
             "base_version": scope["version"],
@@ -556,6 +555,58 @@ fn a_scope_write_with_a_pattern_that_does_not_compile_is_refused_and_makes_no_co
         head(&server),
         before,
         "a refused write must leave the store as it was"
+    );
+}
+
+/// Detects a reader that rejects the `type` label scope files used to carry,
+/// which would make every scope of a store written before the label was dropped
+/// unreadable, and a writer that puts the label back into the file it saves.
+#[test]
+fn a_scope_file_with_a_legacy_type_key_loads_and_the_key_is_not_written_back() {
+    let mut files = example_store_files();
+    files.push((
+        "scopes/legacy.yaml".to_owned(),
+        Some(b"id: legacy\ntype: project\nimplies: [rocketry]\n".to_vec()),
+    ));
+    let server = TestServer::start(files, |_| {});
+
+    let (status, scope) = server.api("GET", "/api/scopes/legacy", None);
+    assert_eq!(
+        status, 200,
+        "a scope file carrying a legacy type key must still load, got {scope}"
+    );
+    assert_eq!(
+        scope["implies"],
+        json!(["rocketry"]),
+        "the keys the format defines must survive the legacy key, got {scope}"
+    );
+    assert!(
+        scope.get("type").is_none(),
+        "a scope must not report a type, got {scope}"
+    );
+
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/scopes/legacy",
+        Some(&json!({
+            "implies": ["rocketry"],
+            "triggers": [{ "on": "tool_input", "pattern": "legacy" }],
+            "base_version": scope["version"],
+            "author": AUTHOR,
+            "message": "add a trigger to the legacy scope",
+        })),
+    );
+    assert_eq!(status, 200, "the write must succeed, got {answer}");
+
+    let on_disk = std::fs::read_to_string(server.store().path().join("scopes/legacy.yaml"))
+        .expect("the saved scope file is readable");
+    assert!(
+        !on_disk.contains("type"),
+        "the saved file must not carry the legacy key, got {on_disk:?}"
+    );
+    assert!(
+        on_disk.contains("legacy"),
+        "the saved file must carry the write, got {on_disk:?}"
     );
 }
 

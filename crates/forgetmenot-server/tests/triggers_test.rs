@@ -192,13 +192,13 @@ fn fire_closed_adds_the_scopes_the_fired_scope_implies() {
     let store = store_with(&[
         (
             "scopes/widgets.yaml",
-            b"id: widgets\ntype: project\nimplies: [rocketry]\ntriggers:\n  - on: user_message\n    pattern: '\\bwidget\\b'\n",
+            b"id: widgets\nimplies: [rocketry]\ntriggers:\n  - on: user_message\n    pattern: '\\bwidget\\b'\n",
         ),
         (
             "scopes/rocketry.yaml",
-            b"id: rocketry\ntype: domain\nimplies: [metrology]\n",
+            b"id: rocketry\nimplies: [metrology]\n",
         ),
-        ("scopes/metrology.yaml", b"id: metrology\ntype: domain\n"),
+        ("scopes/metrology.yaml", b"id: metrology\n"),
     ]);
     let catalog = store.catalog();
     let activated =

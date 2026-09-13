@@ -27,7 +27,7 @@ use crate::store::git::{CommitSummary, GitError, GitRepo};
 use crate::store::memory::{
     MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource,
 };
-use crate::store::scope::{ScopeDocument, ScopeType, Trigger, TriggerField};
+use crate::store::scope::{ScopeDocument, Trigger, TriggerField};
 use crate::store::validate::{self, Candidate, ValidationError, WriteMode};
 use crate::store::{MemoryId, ScopeId};
 
@@ -201,9 +201,6 @@ pub struct MemoryDoc {
 #[derive(Clone, Debug, Serialize)]
 pub struct ScopeDoc {
     pub id: ScopeId,
-    /// `type` in the file and on the wire; `type` is a keyword in Rust.
-    #[serde(rename = "type")]
-    pub scope_type: ScopeType,
     pub implies: Vec<ScopeId>,
     pub triggers: Vec<Trigger>,
     pub version: String,
@@ -213,7 +210,6 @@ impl ScopeDoc {
     fn of(entry: &ScopeEntry) -> Self {
         Self {
             id: entry.id.clone(),
-            scope_type: entry.document.scope_type,
             implies: entry.document.implies.clone(),
             triggers: entry.document.triggers.clone(),
             version: entry.version.to_string(),
@@ -365,8 +361,6 @@ pub struct ArchiveRequest {
 /// A write of one scope.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ScopeWriteRequest {
-    #[serde(rename = "type")]
-    pub scope_type: ScopeType,
     pub implies: Vec<ScopeId>,
     pub triggers: Vec<Trigger>,
     #[serde(default)]
@@ -780,7 +774,6 @@ pub async fn scope_put(
 
     let document = ScopeDocument {
         id: id.clone(),
-        scope_type: request.scope_type,
         implies: request.implies.clone(),
         triggers: request.triggers.clone(),
     };

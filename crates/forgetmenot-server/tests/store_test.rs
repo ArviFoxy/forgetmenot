@@ -465,9 +465,9 @@ fn diff_for_path_shows_a_newly_created_file_as_entirely_added() {
 #[test]
 fn the_implies_closure_is_transitive() {
     let store = store_with(&[
-        ("scopes/a.yaml", b"id: a\ntype: project\nimplies: [b]\n"),
-        ("scopes/b.yaml", b"id: b\ntype: domain\nimplies: [c]\n"),
-        ("scopes/c.yaml", b"id: c\ntype: domain\n"),
+        ("scopes/a.yaml", b"id: a\nimplies: [b]\n"),
+        ("scopes/b.yaml", b"id: b\nimplies: [c]\n"),
+        ("scopes/c.yaml", b"id: c\n"),
     ]);
     let closed = store
         .catalog()
@@ -484,8 +484,8 @@ fn the_implies_closure_is_transitive() {
 #[test]
 fn an_implies_cycle_terminates_and_keeps_both_scopes() {
     let store = store_with(&[
-        ("scopes/a.yaml", b"id: a\ntype: project\nimplies: [b]\n"),
-        ("scopes/b.yaml", b"id: b\ntype: domain\nimplies: [a]\n"),
+        ("scopes/a.yaml", b"id: a\nimplies: [b]\n"),
+        ("scopes/b.yaml", b"id: b\nimplies: [a]\n"),
     ]);
     let closed = store
         .catalog()
@@ -501,7 +501,7 @@ fn an_implies_cycle_terminates_and_keeps_both_scopes() {
 /// all in the global scope, plus one memory in a scope of its own.
 fn store_for_due() -> TempStore {
     store_with(&[
-        ("scopes/widgets.yaml", b"id: widgets\ntype: project\n"),
+        ("scopes/widgets.yaml", b"id: widgets\n"),
         (
             "memories/b-critical.md",
             &memory_with_metadata(
@@ -667,7 +667,7 @@ fn an_implicit_scope_is_not_reported_as_unknown() {
 fn an_unknown_implies_target_is_reported() {
     let store = store_with(&[(
         "scopes/widgets.yaml",
-        b"id: widgets\ntype: project\nimplies: [no-such-scope]\n",
+        b"id: widgets\nimplies: [no-such-scope]\n",
     )]);
     assert_reports(
         &validate(&store.catalog()),
@@ -682,7 +682,7 @@ fn an_unknown_implies_target_is_reported() {
 fn a_trigger_pattern_that_does_not_compile_is_reported_with_its_error() {
     let store = store_with(&[(
         "scopes/widgets.yaml",
-        b"id: widgets\ntype: project\ntriggers:\n  - on: user_message\n    pattern: '[unclosed'\n",
+        b"id: widgets\ntriggers:\n  - on: user_message\n    pattern: '[unclosed'\n",
     )]);
     let catalog = store.catalog();
     assert_reports(&validate(&catalog), "invalid trigger pattern", |error| {
@@ -705,7 +705,7 @@ fn a_trigger_pattern_that_does_not_compile_is_reported_with_its_error() {
 fn a_machine_qualifier_outside_working_directory_is_reported() {
     let store = store_with(&[(
         "scopes/widgets.yaml",
-        b"id: widgets\ntype: project\ntriggers:\n  - on: user_message\n    pattern: widget\n    machine: alpha\n",
+        b"id: widgets\ntriggers:\n  - on: user_message\n    pattern: widget\n    machine: alpha\n",
     )]);
     assert_reports(
         &validate(&store.catalog()),
@@ -718,7 +718,7 @@ fn a_machine_qualifier_outside_working_directory_is_reported() {
 /// make every reference to it resolve to one or the other unpredictably.
 #[test]
 fn a_scope_id_that_differs_from_its_file_stem_is_reported() {
-    let store = store_with(&[("scopes/widgets.yaml", b"id: gadgets\ntype: project\n")]);
+    let store = store_with(&[("scopes/widgets.yaml", b"id: gadgets\n")]);
     assert_reports(
         &validate(&store.catalog()),
         "scope id mismatch",
@@ -730,7 +730,7 @@ fn a_scope_id_that_differs_from_its_file_stem_is_reported() {
 /// implicit `machine:` and `session:` forms or with a file name on disk.
 #[test]
 fn a_scope_id_that_breaks_the_id_pattern_is_reported() {
-    let store = store_with(&[("scopes/Widgets.yaml", b"id: Widgets\ntype: project\n")]);
+    let store = store_with(&[("scopes/Widgets.yaml", b"id: Widgets\n")]);
     assert_reports(
         &validate(&store.catalog()),
         "invalid scope id",
@@ -1028,7 +1028,7 @@ fn check_exits_zero_and_reports_counts_on_the_example_store() {
 fn check_exits_one_and_names_the_file_holding_a_bad_regex() {
     let store = store_with(&[(
         "scopes/widgets.yaml",
-        b"id: widgets\ntype: project\ntriggers:\n  - on: user_message\n    pattern: '[unclosed'\n",
+        b"id: widgets\ntriggers:\n  - on: user_message\n    pattern: '[unclosed'\n",
     )]);
     let output = run_check(store.path());
     assert_eq!(

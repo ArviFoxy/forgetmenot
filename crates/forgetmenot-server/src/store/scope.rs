@@ -5,19 +5,6 @@ use serde::{Deserialize, Serialize};
 use super::ScopeId;
 use super::frontmatter::FrontmatterError;
 
-/// The label a scope carries. It has no effect on delivery; it exists so that
-/// a person reading the index knows what kind of thing the scope stands for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScopeType {
-    Global,
-    Machine,
-    Session,
-    Project,
-    Domain,
-    Directory,
-}
-
 /// The string a trigger regex is matched against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,12 +71,14 @@ pub struct Trigger {
 }
 
 /// A parsed scope file.
+///
+/// A scope is a flag identified by its id. Keys the format no longer defines,
+/// such as the `type` label older stores wrote, are ignored on parse and are
+/// not written back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeDocument {
     /// Must equal the file stem.
     pub id: ScopeId,
-    #[serde(rename = "type")]
-    pub scope_type: ScopeType,
     /// Scopes that are on whenever this one is.
     #[serde(default)]
     pub implies: Vec<ScopeId>,
@@ -145,10 +134,10 @@ mod tests {
     }
 
     /// Detects `implies` or `triggers` being required, which would reject the
-    /// common scope file that only labels a scope.
+    /// common scope file that only names a scope.
     #[test]
     fn implies_and_triggers_default_to_empty() {
-        let scope = ScopeDocument::parse(b"id: widgets\ntype: project\n").unwrap();
+        let scope = ScopeDocument::parse(b"id: widgets\n").unwrap();
         assert!(scope.implies.is_empty());
         assert!(scope.triggers.is_empty());
     }
