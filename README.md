@@ -147,14 +147,16 @@ On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the
 
 ## State the server holds
 
-| State | Mechanism | Survives restart |
+*Persistence* says where the state lives and when it is written. *Durability* says what an unexpected stop, a crash or a power loss, can cost; a normal restart loses nothing in any row.
+
+| State | Persistence | Durability |
 |---|---|---|
-| Scopes and memories | git repository, one commit per write, working tree checked out | yes |
-| Open branches and what they hold | git refs under `tx/` and their commits in the store repository, the source of truth | yes |
-| Parsed catalog with compiled triggers | in-memory cache of HEAD, rebuilt when HEAD moves | rebuilt |
-| Context state (active scopes, shown record) | in-memory map, atomic JSON snapshot on change and on SIGTERM | best effort; loss costs one redundant delivery |
-| Statistics (events, trigger fires, deliveries, tool calls) | sqlite, append-only | yes |
-| MCP transport sessions | in-memory | no; clients reconnect |
+| Scopes, memories and settings | git repository; every change is a commit, written before the request is answered | Durable once answered. Like git itself, a power loss within the operating system's write-back window can lose the newest commits |
+| Open branches and their commits | git refs and objects in the same repository | Same as above |
+| Parsed catalog and compiled triggers | in memory, derived from the repository's head; rebuilt whenever it moves | Nothing to lose; rebuilt on start |
+| Context state (active scopes, what each context has seen) | in memory; snapshot to a JSON file about a second after each change and on shutdown | A crash loses at most the last second of changes. The cost is one redundant delivery per affected context, never a missed one |
+| Statistics | sqlite in write-ahead-log mode; each record committed as it is written | Durable once written; a crash can lose only records still in the queue |
+| MCP transport sessions | in memory | Lost; clients reconnect |
 
 ## Runtime limits
 
