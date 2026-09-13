@@ -34,6 +34,18 @@ impl TempStore {
         Catalog::load(&self.repository).expect("the store's catalog loads")
     }
 
+    /// The text of one file at the store's head, failing the test when the
+    /// head's tree has no such file.
+    pub fn file_text(&self, path: &str) -> String {
+        let head = self.repository.head_oid().expect("the store has a head");
+        let bytes = self
+            .repository
+            .blob_at(head, path)
+            .unwrap_or_else(|error| panic!("reading {path} failed: {error}"))
+            .unwrap_or_else(|| panic!("the store's head has no {path}"));
+        String::from_utf8(bytes).unwrap_or_else(|error| panic!("{path} is not utf-8: {error}"))
+    }
+
     /// Commit one more set of changes, failing the test on error.
     pub fn commit(&self, title: &str, files: Vec<(String, Option<Vec<u8>>)>) {
         let head = self.repository.head_oid().expect("the store has a head");

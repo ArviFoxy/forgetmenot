@@ -41,6 +41,10 @@ export function withMachine(trigger: Trigger, machine: string): Trigger {
 }
 
 export const memoryKinds: MemoryKind[] = ['critical', 'knowledge'];
+/**
+ * The sources a memory is usually written by, offered as suggestions. A source is
+ * free text, so a memory may carry a word that is not on this list.
+ */
 export const memorySources: MemorySource[] = ['user', 'assistant'];
 
 /** A comma-separated list of ids, as the id fields take them. */

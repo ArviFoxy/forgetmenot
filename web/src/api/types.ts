@@ -2,7 +2,12 @@
 // Field names are the JSON field names and stay in snake_case.
 
 export type MemoryKind = 'critical' | 'knowledge';
-export type MemorySource = 'user' | 'assistant';
+/**
+ * Who wrote the memory. `user` and `assistant` are the conventional values; any
+ * other string a person or another tool keeps in the file is stored and read back
+ * as it was written.
+ */
+export type MemorySource = string;
 /**
  * Which of the hook's texts a trigger matches. `any` is not one of the texts: it
  * stands for every one of them, and is what a trigger without an `on` line means.
@@ -46,6 +51,8 @@ export interface MemoryDoc {
   kind: MemoryKind;
   scopes: string[];
   source: MemorySource;
+  /** The `metadata` keys forgetmenot does not interpret, Claude Code's own `type` among them. */
+  metadata: Record<string, unknown>;
   created: string | null;
   modified: string | null;
   author: string | null;
@@ -202,6 +209,11 @@ export interface WriteRequest {
   kind: MemoryKind;
   scopes: string[];
   source: MemorySource;
+  /**
+   * The `metadata` keys forgetmenot does not interpret, replacing the ones the memory
+   * carries. Absent leaves them as they are.
+   */
+  metadata?: Record<string, unknown>;
   body: string;
   base_version?: string;
   author: string;

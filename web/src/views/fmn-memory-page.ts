@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { RequestFailed, api } from '../api/client';
-import type { Commit, HistoryEntry, MemoryDoc, MemoryKind, MemorySource } from '../api/types';
+import type { Commit, HistoryEntry, MemoryDoc, MemoryKind } from '../api/types';
 import { suggestScopes } from '../model/tagField';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
@@ -38,6 +38,7 @@ export function blankMemory(scope: string): MemoryDoc {
     kind: 'knowledge',
     scopes: scope === '' ? [] : [scope],
     source: 'user',
+    metadata: {},
     created: null,
     modified: null,
     author: null,
@@ -370,15 +371,15 @@ export class FmnMemoryPage extends PageElement {
         'source',
         'Source',
         html`<span class="value-text">${draft.source}</span>`,
-        () => html`<sl-select
-          size="small"
-          value=${draft.source}
-          hoist
-          @sl-change=${(event: Event) =>
-            this.change({ source: (event.target as HTMLInputElement).value as MemorySource })}
-        >
-          ${memorySources.map((source) => html`<sl-option value=${source}>${source}</sl-option>`)}
-        </sl-select>`,
+        () => html`<fmn-tag-field
+          single
+          label="Source"
+          placeholder="user, assistant, or another word"
+          .value=${draft.source === '' ? [] : [draft.source]}
+          .suggestions=${memorySources}
+          @fmn-tags-change=${(event: CustomEvent<TagsChange>) =>
+            this.change({ source: event.detail.value[0] ?? '' })}
+        ></fmn-tag-field>`,
       )}
       ${this.creating
         ? nothing

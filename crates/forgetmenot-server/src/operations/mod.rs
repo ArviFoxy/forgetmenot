@@ -240,6 +240,9 @@ pub struct MemoryDoc {
     pub kind: MemoryKind,
     pub scopes: Vec<ScopeId>,
     pub source: MemorySource,
+    /// The `metadata` keys this server does not interpret, Claude Code's own
+    /// `type` among them, as the file carries them.
+    pub metadata: serde_json::Map<String, serde_json::Value>,
     pub created: Option<String>,
     pub modified: Option<String>,
     pub author: Option<String>,
@@ -404,6 +407,11 @@ pub struct MemoryWriteRequest {
     pub kind: MemoryKind,
     pub scopes: Vec<ScopeId>,
     pub source: MemorySource,
+    /// The `metadata` keys this server does not interpret, which replace the
+    /// ones the memory carries. Absent leaves them as they are, so a caller
+    /// that knows nothing about them cannot delete them by not sending them.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
     pub body: String,
     /// The version the caller read. Required when replacing a document, absent
     /// when creating one.
@@ -453,6 +461,11 @@ pub struct SetFieldsRequest {
     pub scopes: Option<Vec<ScopeId>>,
     #[serde(default)]
     pub source: Option<MemorySource>,
+    /// The `metadata` keys this server does not interpret, merged into the ones
+    /// the memory carries: a key given is added or replaced, a key given as
+    /// `null` is removed, and a key not given keeps its value.
+    #[serde(default)]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
     /// The version the caller read; the current one when absent.
     #[serde(default)]
     pub base_version: Option<String>,
@@ -468,6 +481,7 @@ impl SetFieldsRequest {
             && self.kind.is_none()
             && self.scopes.is_none()
             && self.source.is_none()
+            && self.metadata.as_ref().is_none_or(serde_json::Map::is_empty)
     }
 }
 
@@ -652,8 +666,15 @@ pub async fn memory_put(
     document.frontmatter.modified = Some(now);
     document.frontmatter.metadata.kind = Some(request.kind);
     document.frontmatter.metadata.scopes = Some(request.scopes.clone());
-    document.frontmatter.metadata.source = Some(request.source);
+    document.frontmatter.metadata.source = Some(request.source.clone());
     document.frontmatter.metadata.author = Some(request.author.clone());
+    if let Some(metadata) = &request.metadata {
+        document
+            .frontmatter
+            .metadata
+            .replace_extra(metadata)
+            .map_err(|error| OperationError::invalid(&path, &error.to_string()))?;
+    }
     document.body = with_final_newline(&request.body);
 
     commit_memory(
@@ -825,8 +846,15 @@ pub async fn memory_set_fields(
     if let Some(scopes) = &request.scopes {
         document.frontmatter.metadata.scopes = Some(scopes.clone());
     }
-    if let Some(source) = request.source {
-        document.frontmatter.metadata.source = Some(source);
+    if let Some(source) = &request.source {
+        document.frontmatter.metadata.source = Some(source.clone());
+    }
+    if let Some(metadata) = &request.metadata {
+        document
+            .frontmatter
+            .metadata
+            .merge_extra(metadata)
+            .map_err(|error| OperationError::invalid(&path, &error.to_string()))?;
     }
     document.frontmatter.modified = Some(now);
     document.frontmatter.metadata.author = Some(request.author.clone());
@@ -1110,6 +1138,7 @@ async fn memory_doc(
         kind: entry.kind(),
         scopes: entry.scopes().to_vec(),
         source: entry.document.source(),
+        metadata: entry.document.frontmatter.metadata.extra_as_json(),
         created: entry.document.created().map(iso8601),
         modified: entry.document.modified().map(iso8601),
         author: entry.document.author().map(str::to_string),

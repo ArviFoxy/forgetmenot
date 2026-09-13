@@ -47,6 +47,7 @@ const serverDoc: MemoryDoc = {
   name: 'widgets',
   title: 'Widgets',
   ...memoryFields,
+  metadata: {},
   created: '2026-01-02T03:04:05Z',
   modified: '2026-01-02T03:04:05Z',
   author: 'wiki',

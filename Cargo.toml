@@ -15,7 +15,10 @@ rust-version = "1.88"
 [workspace.dependencies]
 forgetmenot-types = { path = "crates/forgetmenot-types", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
+# `preserve_order`: the extra `metadata` keys of a memory are written to the
+# file in the order the write gave them, and a JSON object only keeps that order
+# with this feature on.
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 yaml_serde = "0.10"
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs"] }
 tokio-util = "0.7"

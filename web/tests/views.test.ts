@@ -14,6 +14,7 @@ const serverDoc: MemoryDoc = {
   kind: 'critical',
   scopes: ['widgets'],
   source: 'user',
+  metadata: {},
   created: null,
   modified: null,
   author: 'wiki',

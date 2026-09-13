@@ -80,7 +80,7 @@ Cut releases from `main` only, and only after `cargo test --workspace` is green.
 See [[rocketry-notes]].
 ```
 
-`kind` is `critical` or `knowledge` and defaults to `knowledge`; `scopes` defaults to `[global]`; `source` records whether the user or the assistant wrote the memory. Any other key is preserved untouched, so an existing Claude Code memory directory becomes a valid store the moment it is a git repository.
+`kind` is `critical` or `knowledge` and defaults to `knowledge`; `scopes` defaults to `[global]`; `source` records who wrote the memory, `user` or `assistant` by convention; any other value is kept. Any other key is preserved untouched, so an existing Claude Code memory directory becomes a valid store the moment it is a git repository.
 
 Every change to the store is a git commit with a title line. A write carries the version of the file it was based on, and is refused if someone else changed the file in between.
 
@@ -116,9 +116,9 @@ Memory tools read and change the store; every change is one commit.
 |---|---|
 | `memory_index` | List memories with their descriptions, kinds and scopes |
 | `memory_get` | Read one memory |
-| `memory_put` | Create a memory or replace one whole |
+| `memory_put` | Create a memory or replace one whole, including any extra metadata keys |
 | `memory_replace_text` | Replace one exact snippet in a body, leaving the rest as it is |
-| `memory_set_fields` | Change the description, kind, scopes or source without touching the body |
+| `memory_set_fields` | Change the description, kind, scopes, source or extra metadata keys without touching the body |
 | `memory_rename` | Move a memory to a new id and update every `[[link]]` to it |
 | `memory_delete` | Remove a memory; its history stays in git |
 

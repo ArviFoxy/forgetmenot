@@ -30,7 +30,12 @@ use super::{MemoryId, ScopeId};
 pub const DEFAULT_KIND: MemoryKind = MemoryKind::Knowledge;
 
 /// The source of a memory with no `metadata.source`.
-pub const DEFAULT_SOURCE: MemorySource = MemorySource::Assistant;
+pub const DEFAULT_SOURCE: &str = "assistant";
+
+/// The `metadata` keys this server owns. Each has a field of its own on every
+/// write, so a write that carries one inside `metadata` is refused rather than
+/// setting it twice from two places.
+pub const OWNED_METADATA_KEYS: [&str; 5] = ["kind", "scopes", "source", "created", "author"];
 
 /// The scopes of a memory with no `metadata.scopes`.
 static DEFAULT_SCOPES: LazyLock<[ScopeId; 1]> = LazyLock::new(|| [ScopeId::global()]);
@@ -50,12 +55,30 @@ pub enum MemoryKind {
     Knowledge,
 }
 
-/// Who wrote the memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemorySource {
-    User,
-    Assistant,
+/// Who wrote the memory: `user` or `assistant` by convention, and whatever
+/// else a person or another tool wrote there.
+///
+/// Not an enum, because the value belongs to whoever keeps the file: a memory
+/// directory in use carries sources this server never invented, `derived`
+/// among them, and a value it could not hold would be lost on the first write.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MemorySource(String);
+
+impl MemorySource {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for MemorySource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 /// The `metadata` block of a memory file.
@@ -83,7 +106,85 @@ pub struct MemoryMetadata {
     pub extra: yaml_serde::Mapping,
 }
 
+/// Why a write's `metadata` could not be taken.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum MetadataError {
+    #[error(
+        "`{0}` is forgetmenot's own field: send it as the `{0}` field of the write, \
+         not inside `metadata`"
+    )]
+    OwnedKey(String),
+    /// A value the write carried that cannot be written into a YAML file. JSON
+    /// values all can, so this is the failure of a caller sending something
+    /// else, not of a memory file.
+    #[error("the `metadata` value for `{key}` cannot be written to a memory file: {message}")]
+    Unwritable { key: String, message: String },
+}
+
 impl MemoryMetadata {
+    /// The extra keys as JSON, which is the form the API and the MCP tools
+    /// report them in.
+    ///
+    /// A key or a value that YAML holds and JSON does not, a mapping key that
+    /// is not a string among them, is reported as the YAML text the file
+    /// carries, so a reader is shown what the file says rather than nothing.
+    pub fn extra_as_json(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut reported = serde_json::Map::new();
+        for (key, value) in self.extra.iter() {
+            let name = match key {
+                yaml_serde::Value::String(name) => name.clone(),
+                other => yaml_text(other),
+            };
+            let value = serde_json::to_value(value)
+                .unwrap_or_else(|_| serde_json::Value::String(yaml_text(value)));
+            reported.insert(name, value);
+        }
+        reported
+    }
+
+    /// Replace every extra key with the ones given, in the order given: what a
+    /// write of the whole memory does, so the file ends up carrying exactly the
+    /// keys the write named.
+    pub fn replace_extra(
+        &mut self,
+        given: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), MetadataError> {
+        let mut replacement = yaml_serde::Mapping::new();
+        for (key, value) in given {
+            check_owned(key)?;
+            replacement.insert(
+                yaml_serde::Value::String(key.clone()),
+                yaml_value(key, value)?,
+            );
+        }
+        self.extra = replacement;
+        Ok(())
+    }
+
+    /// Merge the keys given into the extra keys: a key given is added or
+    /// replaced, a key given as `null` is removed, and a key not given keeps
+    /// the value it has. A replaced key keeps its place in the file, so setting
+    /// one key does not reshuffle the others.
+    pub fn merge_extra(
+        &mut self,
+        given: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), MetadataError> {
+        for key in given.keys() {
+            check_owned(key)?;
+        }
+        for (key, value) in given {
+            if value.is_null() {
+                self.extra.shift_remove(key.as_str());
+                continue;
+            }
+            self.extra.insert(
+                yaml_serde::Value::String(key.clone()),
+                yaml_value(key, value)?,
+            );
+        }
+        Ok(())
+    }
+
     /// Whether the block holds nothing, in which case it is not written at all.
     pub fn is_empty(&self) -> bool {
         self.kind.is_none()
@@ -93,6 +194,30 @@ impl MemoryMetadata {
             && self.author.is_none()
             && self.extra.is_empty()
     }
+}
+
+/// Refuse a key this server writes from a field of its own.
+fn check_owned(key: &str) -> Result<(), MetadataError> {
+    if OWNED_METADATA_KEYS.contains(&key) {
+        return Err(MetadataError::OwnedKey(key.to_string()));
+    }
+    Ok(())
+}
+
+/// One `metadata` value as a memory file holds it.
+fn yaml_value(key: &str, value: &serde_json::Value) -> Result<yaml_serde::Value, MetadataError> {
+    yaml_serde::to_value(value).map_err(|error| MetadataError::Unwritable {
+        key: key.to_string(),
+        message: error.to_string(),
+    })
+}
+
+/// One YAML value as the text a file would carry for it, for the values JSON
+/// cannot hold.
+fn yaml_text(value: &yaml_serde::Value) -> String {
+    yaml_serde::to_string(value)
+        .map(|text| text.trim_end().to_string())
+        .unwrap_or_default()
 }
 
 /// The frontmatter of a memory file.
@@ -185,7 +310,11 @@ impl MemoryDocument {
     }
 
     pub fn source(&self) -> MemorySource {
-        self.frontmatter.metadata.source.unwrap_or(DEFAULT_SOURCE)
+        self.frontmatter
+            .metadata
+            .source
+            .clone()
+            .unwrap_or_else(|| MemorySource::new(DEFAULT_SOURCE))
     }
 
     pub fn created(&self) -> Option<DateTime<Utc>> {
@@ -432,7 +561,7 @@ mod tests {
         );
         assert_eq!(
             document.source(),
-            MemorySource::Assistant,
+            MemorySource::new("assistant"),
             "the default source is wrong"
         );
         assert_eq!(document.description(), "Releases are cut from main only");
@@ -468,7 +597,166 @@ mod tests {
         ));
         assert_eq!(document.kind(), MemoryKind::Critical);
         assert_eq!(document.scopes(), [ScopeId::new("widgets")]);
-        assert_eq!(document.source(), MemorySource::User);
+        assert_eq!(document.source(), MemorySource::new("user"));
+    }
+
+    /// Detects a `source` that only accepts the two conventional values: a
+    /// memory directory in use carries others, and a reader that refuses them
+    /// or rewrites them makes the file unreadable or changes what it says.
+    #[test]
+    fn a_source_that_is_neither_user_nor_assistant_is_read_and_written_back_as_it_was() {
+        let text = concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: Releases are cut from main only\n",
+            "metadata:\n",
+            "  source: derived\n",
+            "---\n",
+            "Body.\n",
+        );
+        let document = parse(text);
+        assert_eq!(document.source(), MemorySource::new("derived"));
+        assert_eq!(
+            document.render().expect("the memory renders"),
+            text,
+            "the file changed when it was written back"
+        );
+    }
+
+    /// Detects a replace that keeps keys the write did not name, which would
+    /// leave a memory carrying metadata its author had just taken out, and one
+    /// that reorders the keys it was given.
+    #[test]
+    fn replacing_the_extra_metadata_writes_exactly_the_keys_given_in_the_order_given() {
+        let mut document = parse(concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: d\n",
+            "metadata:\n",
+            "  kind: critical\n",
+            "  legacy: keep me out\n",
+            "---\n",
+            "Body.\n",
+        ));
+        let given = serde_json::json!({ "type": "feedback", "strength": "hard" });
+        document
+            .frontmatter
+            .metadata
+            .replace_extra(given.as_object().expect("the fixture is an object"))
+            .expect("neither key is forgetmenot's own");
+
+        let rendered = document.render().expect("the memory renders");
+        assert!(
+            !rendered.contains("legacy"),
+            "a key the write did not name was kept:\n{rendered}"
+        );
+        assert_eq!(
+            document.frontmatter.metadata.kind,
+            Some(MemoryKind::Critical),
+            "replacing the extra keys must not touch forgetmenot's own"
+        );
+        let type_at = rendered
+            .find("type:")
+            .expect("the given key is in the file");
+        let strength_at = rendered
+            .find("strength:")
+            .expect("the given key is in the file");
+        assert!(
+            type_at < strength_at,
+            "the keys must be written in the order they were given:\n{rendered}"
+        );
+        assert!(
+            rendered.find("kind:").expect("kind is in the file") < type_at,
+            "forgetmenot's own keys come first:\n{rendered}"
+        );
+    }
+
+    /// Detects a merge that drops the keys it was not given, one that moves a
+    /// replaced key to the end of the file, and a `null` that writes a null
+    /// value instead of taking the key out.
+    #[test]
+    fn merging_extra_metadata_adds_replaces_and_removes_only_the_keys_given() {
+        let mut document = parse(concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: d\n",
+            "metadata:\n",
+            "  type: feedback\n",
+            "  strength: hard\n",
+            "  node_type: rule\n",
+            "---\n",
+            "Body.\n",
+        ));
+        let given =
+            serde_json::json!({ "type": "reference", "node_type": null, "originSessionId": "s-1" });
+        document
+            .frontmatter
+            .metadata
+            .merge_extra(given.as_object().expect("the fixture is an object"))
+            .expect("none of the keys is forgetmenot's own");
+
+        let rendered = document.render().expect("the memory renders");
+        assert!(
+            rendered.contains("strength: hard"),
+            "a key the merge did not name was lost:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("type: reference"),
+            "the given key was not replaced:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("node_type"),
+            "the key given as null was not removed:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("originSessionId: s-1"),
+            "the new key was not added:\n{rendered}"
+        );
+        assert!(
+            rendered.find("type:").expect("type is in the file")
+                < rendered.find("strength:").expect("strength is in the file"),
+            "a replaced key must keep its place in the file:\n{rendered}"
+        );
+    }
+
+    /// Detects a write that takes one of forgetmenot's own fields from inside
+    /// `metadata`, which would set it from two places at once and silently
+    /// overrule the field the caller sent.
+    #[test]
+    fn a_write_that_puts_one_of_forgetmenots_own_keys_inside_metadata_is_refused_naming_it() {
+        for key in OWNED_METADATA_KEYS {
+            let mut metadata = MemoryMetadata::default();
+            let given = serde_json::json!({ key: "whatever" });
+            let given = given.as_object().expect("the fixture is an object");
+            for refusal in [metadata.replace_extra(given), metadata.merge_extra(given)] {
+                let error = refusal.expect_err(&format!("`{key}` is forgetmenot's own field"));
+                assert!(
+                    error.to_string().contains(key),
+                    "the refusal must name the key, got {error}"
+                );
+            }
+            assert!(
+                metadata.extra.is_empty(),
+                "a refused write must leave the metadata alone"
+            );
+        }
+    }
+
+    /// Detects a nested value flattened or dropped on the way in or out, which
+    /// would rewrite a mapping somebody keeps in the frontmatter.
+    #[test]
+    fn a_nested_metadata_value_survives_the_way_in_and_the_way_out() {
+        let mut metadata = MemoryMetadata::default();
+        let given = serde_json::json!({ "review": { "by": "2026-12-01", "every": 90 } });
+        metadata
+            .replace_extra(given.as_object().expect("the fixture is an object"))
+            .expect("`review` is not forgetmenot's own field");
+
+        assert_eq!(
+            serde_json::Value::Object(metadata.extra_as_json()),
+            given,
+            "the nested value read back differently from the way it was written"
+        );
     }
 
     /// Detects unknown keys being dropped, at the top level or inside

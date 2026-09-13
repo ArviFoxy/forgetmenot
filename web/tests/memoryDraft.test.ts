@@ -20,6 +20,7 @@ const doc: MemoryDoc = {
   kind: 'knowledge',
   scopes: ['global'],
   source: 'user',
+  metadata: {},
   created: null,
   modified: null,
   author: 'wiki',

@@ -16,6 +16,8 @@ mod common;
 use std::collections::BTreeSet;
 
 use forgetmenot_server::stats::Table;
+use forgetmenot_server::store::MemoryId;
+use forgetmenot_server::store::memory::MemoryDocument;
 use rmcp::model::ErrorCode;
 use rmcp::service::ServiceError;
 use serde_json::{Value, json};
@@ -92,6 +94,38 @@ const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 /// The index entry of the session memory in the example store's silo.
 const SESSION_NOTES_DESCRIPTION: &str =
     "Working notes for the bracket rework, measured in millimetres";
+
+/// A memory file in the shape Claude Code's auto-memory writes: its own `type`,
+/// a `source` that is neither of the two conventional values, the strength its
+/// keeper marks rules with, and Claude Code's bookkeeping keys. The content is
+/// invented; the shape is the one such a directory carries.
+const CLAUDE_CODE_MEMORY: &str = concat!(
+    "---\n",
+    "name: lathe-collets\n",
+    "description: Collets go back in the rack by size after every job\n",
+    "metadata:\n",
+    "  node_type: memory\n",
+    "  type: feedback\n",
+    "  source: derived\n",
+    "  strength: hard\n",
+    "  originSessionId: 6f3c0a12-7b41-4e2b-9a55-0c1d2e3f4a5b\n",
+    "  modified: 2026-09-12T13:33:29.156Z\n",
+    "---\n",
+    "# Collets go back in the rack\n\nEvery collet goes back in its own slot, by size, before the\nnext job is set up.\n",
+);
+
+/// The keys of [`CLAUDE_CODE_MEMORY`] that forgetmenot does not interpret,
+/// written out here so that what the import has to preserve is stated apart
+/// from whatever the reader makes of the file.
+fn claude_code_metadata() -> Value {
+    json!({
+        "node_type": "memory",
+        "type": "feedback",
+        "strength": "hard",
+        "originSessionId": "6f3c0a12-7b41-4e2b-9a55-0c1d2e3f4a5b",
+        "modified": "2026-09-12T13:33:29.156Z",
+    })
+}
 
 /// The text a hook answer injects, or the empty string when it injects nothing.
 fn context_of(answer: &Value) -> &str {
@@ -349,6 +383,168 @@ fn a_memory_written_through_mcp_is_one_commit_by_the_calling_session_and_reads_b
     );
 }
 
+/// Detects a `memory_put` that drops the `metadata` keys it was given, or reads
+/// them back from nowhere: importing a Claude Code memory directory through
+/// this tool would silently lose Claude Code's own `type` and every key the
+/// person keeping the files added, and the files would come out saying less
+/// than they said going in.
+#[test]
+fn metadata_keys_given_to_memory_put_are_read_back_and_are_in_the_file() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let written = session.call(
+        "memory_put",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "bracket-torque",
+            "description": "Bracket bolts are torqued to 9 Nm, in two passes",
+            "kind": "knowledge",
+            "scopes": ["global"],
+            "source": "user",
+            "metadata": { "type": "feedback", "strength": "hard" },
+            "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
+            "message": "record the bracket torque"
+        }),
+    );
+
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "a write carrying metadata must be answered as done, got {}",
+        tool_text(&written)
+    );
+    let document = tool_json(&session.call("memory_get", json!({ "id": "bracket-torque" })));
+    assert_eq!(
+        document["metadata"],
+        json!({ "type": "feedback", "strength": "hard" }),
+        "the memory must read back with the metadata keys it was written with, got {document}"
+    );
+
+    // The file is read for the keys and their order; how the renderer quotes a
+    // value is its own business, and what the values are is asserted above.
+    let file = server.store().file_text("memories/bracket-torque.md");
+    let key_at = |key: &str| {
+        file.find(key)
+            .unwrap_or_else(|| panic!("the file must carry {key}, got:\n{file}"))
+    };
+    assert!(
+        key_at("\n  source:") < key_at("\n  type:").min(key_at("\n  strength:")),
+        "forgetmenot's own metadata keys come first in the file, got:\n{file}"
+    );
+    assert!(
+        key_at("\n  type:") < key_at("\n  strength:"),
+        "the extra keys must be written in the order they were given, got:\n{file}"
+    );
+}
+
+/// Detects a write that takes one of forgetmenot's own fields from inside
+/// `metadata`: the memory would be filed under a kind or a scope the write's
+/// own fields never named, and the two places would disagree with no way to
+/// tell which won.
+#[test]
+fn a_put_with_one_of_forgetmenots_own_keys_inside_metadata_is_refused_naming_it_and_makes_no_commit()
+ {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let revision_before = store_revision(&server);
+
+    let refused = session.call(
+        "memory_put",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "bracket-torque",
+            "description": "Bracket bolts are torqued to 9 Nm, in two passes",
+            "kind": "knowledge",
+            "scopes": ["global"],
+            "source": "user",
+            "metadata": { "kind": "critical" },
+            "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
+            "message": "record the bracket torque"
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a metadata block carrying one of forgetmenot's own fields must be refused, got {}",
+        tool_text(&refused)
+    );
+    assert!(
+        tool_text(&refused).contains("kind"),
+        "the refusal must name the key that cannot be set there, got {:?}",
+        tool_text(&refused)
+    );
+    assert_eq!(
+        store_revision(&server),
+        revision_before,
+        "a refused write must not move the store"
+    );
+    let (status, answer) = server.api("GET", "/api/memories/bracket-torque", None);
+    assert_eq!(
+        status, 404,
+        "the refused memory must not be in the store, got {answer}"
+    );
+}
+
+/// Detects a write path that cannot carry a Claude Code memory whole: its own
+/// classification, the source a store in use carries, and its bookkeeping keys
+/// would be dropped on the way in, and the memory that came out of an import
+/// would say less than the file that went in.
+#[test]
+fn a_claude_code_memory_written_through_mcp_reads_back_with_every_key_it_had() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let document = MemoryDocument::parse(
+        MemoryId::new("lathe-collets"),
+        CLAUDE_CODE_MEMORY.as_bytes(),
+    )
+    .expect("the fixture is a memory file");
+
+    let written = session.call(
+        "memory_put",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "lathe-collets",
+            "description": document.description(),
+            "kind": "knowledge",
+            "scopes": ["global"],
+            "source": document.source().as_str(),
+            "metadata": claude_code_metadata(),
+            "body": document.body,
+            "message": "import the collet rule from the memory directory"
+        }),
+    );
+
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "the imported memory must be written, got {}",
+        tool_text(&written)
+    );
+    let read_back = tool_json(&session.call("memory_get", json!({ "id": "lathe-collets" })));
+    assert_eq!(
+        read_back["metadata"],
+        claude_code_metadata(),
+        "every metadata key and value of the imported file must read back equal, got {read_back}"
+    );
+    assert_eq!(
+        read_back["source"],
+        json!("derived"),
+        "the source of the imported file must read back as it was, got {read_back}"
+    );
+    assert_eq!(
+        read_back["description"],
+        json!(document.description()),
+        "the description of the imported file must read back as it was, got {read_back}"
+    );
+    assert_eq!(
+        read_back["body"],
+        json!(document.body),
+        "the body of the imported file must read back as it was, got {read_back}"
+    );
+}
+
 /// Detects a write that overwrites a version it never read: two sessions editing
 /// one memory would silently lose one of the two edits. The current version has
 /// to be in the answer, because that is what the model needs to read and write
@@ -502,7 +698,7 @@ fn a_scope_turned_on_through_mcp_delivers_that_scopes_memories_at_the_next_hook_
 /// to the session: the model would go on acting on a rule it asked to stop
 /// working under.
 #[test]
-fn a_scope_turned_off_through_mcp_is_reported_as_scope_off_at_the_next_hook_event() {
+fn a_scope_turned_off_through_mcp_leaves_its_memories_reported_as_out_of_scope() {
     let server = TestServer::start(example_store_files(), |_| {});
     let session = server.mcp();
     session.call(

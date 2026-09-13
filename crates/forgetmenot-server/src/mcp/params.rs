@@ -35,23 +35,23 @@ impl From<RequestedKind> for MemoryKind {
 }
 
 /// Who a memory came from.
-#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RequestedSource {
-    /// The person, who did not ask for it to be rewritten.
-    User,
-    /// The model itself.
-    Assistant,
-}
+///
+/// Free text rather than a choice of two: the conventional values are `user`,
+/// the person who did not ask for it to be rewritten, and `assistant`, the
+/// model itself, and any other value a person or another tool keeps in the file
+/// is stored and read back as it was written.
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct RequestedSource(String);
 
 impl From<RequestedSource> for MemorySource {
     fn from(source: RequestedSource) -> Self {
-        match source {
-            RequestedSource::User => MemorySource::User,
-            RequestedSource::Assistant => MemorySource::Assistant,
-        }
+        MemorySource::new(source.0)
     }
 }
+
+/// The `metadata` keys forgetmenot does not interpret, as a write sends them.
+pub type RequestedMetadata = serde_json::Map<String, serde_json::Value>;
 
 /// Which memories to list.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -92,7 +92,14 @@ pub struct MemoryPutParams {
     /// The scope ids this memory is delivered in. A memory under
     /// `sessions/<machine>/<session-id>/` takes exactly its own session scope.
     pub scopes: Vec<String>,
+    /// Who the memory came from: `user` or `assistant` by convention, and any
+    /// other value is kept as it was written.
     pub source: RequestedSource,
+    /// The other `metadata` keys of the memory's file, Claude Code's own `type`
+    /// and any other key a person or a tool keeps in the frontmatter, which
+    /// replace the ones the memory carries. Leave it out to keep them.
+    #[serde(default)]
+    pub metadata: Option<RequestedMetadata>,
     /// The memory itself, as markdown. `[[name]]` links to another memory.
     pub body: String,
     /// The commit's title line: one line, at most 72 characters, saying what
@@ -173,8 +180,16 @@ pub struct MemorySetFieldsParams {
     /// The scope ids this memory is delivered in, replacing the ones it has.
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
+    /// Who the memory came from: `user` or `assistant` by convention, and any
+    /// other value is kept as it was written.
     #[serde(default)]
     pub source: Option<RequestedSource>,
+    /// The other `metadata` keys of the memory's file, Claude Code's own `type`
+    /// and any other key a person or a tool keeps in the frontmatter. A key
+    /// given is added or replaced, a key given as null is removed, and a key
+    /// not given keeps its value.
+    #[serde(default)]
+    pub metadata: Option<RequestedMetadata>,
     /// The commit's title line: one line, at most 72 characters.
     pub message: String,
     /// The version this write replaces. Absent edits whatever version the store

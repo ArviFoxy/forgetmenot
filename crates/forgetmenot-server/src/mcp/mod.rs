@@ -158,7 +158,9 @@ impl ToolServer {
                        delivered to every session its scopes cover. Leave base_version out to \
                        create a memory at an id that is free; to change one that exists, send \
                        the version memory_get reported, and if it is no longer current the write \
-                       is refused and the current version is named."
+                       is refused and the current version is named. metadata carries the other \
+                       frontmatter keys of the memory's file, Claude Code's own type and any \
+                       other key a person or a tool keeps there."
     )]
     async fn memory_put(
         &self,
@@ -187,6 +189,7 @@ impl ToolServer {
             kind: params.kind.into(),
             scopes: params.scopes.into_iter().map(ScopeId::new).collect(),
             source: params.source.into(),
+            metadata: params.metadata,
             body: params.body,
             base_version: params.base_version,
             author: author.to_string(),
@@ -280,7 +283,9 @@ impl ToolServer {
         description = "Memory management family: set some of one memory's fields in the shared \
                        store, as one git commit authored by session_key. The body is not touched \
                        at all, and a field that is not sent keeps the value it has, so this is \
-                       how a memory changes scope or kind without its text being sent back."
+                       how a memory changes scope or kind without its text being sent back. \
+                       metadata carries the other frontmatter keys of the memory's file, Claude \
+                       Code's own type and any other key a person or a tool keeps there."
     )]
     async fn memory_set_fields(
         &self,
@@ -298,6 +303,7 @@ impl ToolServer {
                 .scopes
                 .map(|scopes| scopes.into_iter().map(ScopeId::new).collect()),
             source: params.source.map(Into::into),
+            metadata: params.metadata,
             base_version: params.base_version,
             author: author.to_string(),
             message: params.message,

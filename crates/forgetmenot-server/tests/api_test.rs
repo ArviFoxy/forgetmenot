@@ -153,6 +153,66 @@ fn context_of(answer: &Value) -> &str {
     additional_context(answer).unwrap_or_default()
 }
 
+/// A memory whose file carries keys forgetmenot does not interpret and a source
+/// that is neither of the two conventional values: the shape of a file written
+/// by Claude Code and kept by hand. The content is invented.
+const KEPT_METADATA_MEMORY: &str = concat!(
+    "---\n",
+    "name: collet-rack\n",
+    "description: Collets go back in the rack by size after every job\n",
+    "metadata:\n",
+    "  kind: knowledge\n",
+    "  scopes:\n",
+    "  - global\n",
+    "  source: derived\n",
+    "  type: feedback\n",
+    "  strength: hard\n",
+    "---\n",
+    "# Collets go back in the rack\n",
+    "\n",
+    "Every collet goes back in its own slot, by size, before the next job is\n",
+    "set up.\n",
+);
+
+const KEPT_METADATA_PATH: &str = "memories/collet-rack.md";
+
+/// The example store with that memory in it.
+fn store_with_kept_metadata() -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = example_store_files();
+    files.push((
+        KEPT_METADATA_PATH.to_string(),
+        Some(KEPT_METADATA_MEMORY.as_bytes().to_vec()),
+    ));
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// The one line of a memory file that starts with `prefix`, as it stands, so
+/// that a line a write did not name can be compared byte for byte afterwards.
+fn line_with(file: &str, prefix: &str) -> String {
+    let mut found = file.lines().filter(|line| line.starts_with(prefix));
+    let line = found
+        .next()
+        .unwrap_or_else(|| panic!("no line starts with {prefix:?} in:\n{file}"));
+    assert!(
+        found.next().is_none(),
+        "more than one line starts with {prefix:?} in:\n{file}"
+    );
+    format!("\n{line}\n")
+}
+
+/// The bytes of a memory file after its frontmatter, which a write that only
+/// sets fields must leave exactly as they were.
+fn body_of(file: &str) -> &str {
+    let after_open = file
+        .strip_prefix("---\n")
+        .unwrap_or_else(|| panic!("a memory file opens its frontmatter, got:\n{file}"));
+    let end = after_open
+        .find("\n---\n")
+        .unwrap_or_else(|| panic!("a memory file closes its frontmatter, got:\n{file}"));
+    &after_open[end + "\n---\n".len()..]
+}
+
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
@@ -426,6 +486,177 @@ fn a_created_memory_is_stamped_and_listed_only_under_its_own_scope() {
     assert!(
         !index_ids(&server, "?scope=rocketry").contains(&"bracket-tolerances".to_string()),
         "a memory must not appear under a scope it does not name"
+    );
+}
+
+/// Detects a field write that rewrites the keys it was not given, or the body:
+/// a session adding one key to a memory it did not write would silently drop
+/// the keys its keeper put there and reformat text nobody edited.
+#[test]
+fn setting_one_metadata_key_leaves_the_body_and_the_other_metadata_keys_as_they_were() {
+    let server = TestServer::start(store_with_kept_metadata(), |_| {});
+    let before = server.store().file_text(KEPT_METADATA_PATH);
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/memories/collet-rack/fields",
+        Some(&json!({
+            "metadata": { "node_type": "memory" },
+            "author": AUTHOR,
+            "message": "record where the collet rule came from",
+        })),
+    );
+
+    assert_eq!(
+        status, 200,
+        "the field write must be accepted, got {answer}"
+    );
+    let after = server.store().file_text(KEPT_METADATA_PATH);
+    assert_eq!(
+        body_of(&after),
+        body_of(&before),
+        "the body must be the bytes it was, got:\n{after}"
+    );
+    for kept in ["  type:", "  strength:"] {
+        let was = line_with(&before, kept);
+        assert!(
+            after.contains(&was),
+            "the line {was:?} was not given and must be the bytes it was, got:\n{after}"
+        );
+    }
+    assert_eq!(
+        document(&server, "collet-rack")["metadata"],
+        json!({ "type": "feedback", "strength": "hard", "node_type": "memory" }),
+        "the memory must read back with the key added and the others kept"
+    );
+}
+
+/// Detects a `null` written into the file as a value, or one that clears the
+/// whole metadata block: the key the write asked to remove is the only one that
+/// may go, and a key left behind with a null value is a key still in the file.
+#[test]
+fn a_metadata_key_set_to_null_is_the_only_key_removed() {
+    let server = TestServer::start(store_with_kept_metadata(), |_| {});
+    let before = server.store().file_text(KEPT_METADATA_PATH);
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/memories/collet-rack/fields",
+        Some(&json!({
+            "metadata": { "strength": null },
+            "author": AUTHOR,
+            "message": "the collet rule is no longer a hard rule",
+        })),
+    );
+
+    assert_eq!(
+        status, 200,
+        "the field write must be accepted, got {answer}"
+    );
+    let after = server.store().file_text(KEPT_METADATA_PATH);
+    assert!(
+        !after.contains("strength"),
+        "the key set to null must be out of the file, got:\n{after}"
+    );
+    let kept = line_with(&before, "  type:");
+    assert!(
+        after.contains(&kept),
+        "the line {kept:?} was not named by the write and must be the bytes it was, got:\n{after}"
+    );
+    assert_eq!(
+        body_of(&after),
+        body_of(&before),
+        "the body must be the bytes it was, got:\n{after}"
+    );
+    assert_eq!(
+        document(&server, "collet-rack")["metadata"],
+        json!({ "type": "feedback" }),
+        "only the key set to null may be removed"
+    );
+}
+
+/// Detects a `source` restricted to the two conventional values: a memory
+/// directory in use carries others, and a write that refused one, or stored it
+/// as something else, would either fail the import or change what the file
+/// says. `forgetmenot check` has to accept the file it leaves behind, because a
+/// store it calls invalid is one no session can be delivered from.
+#[test]
+fn a_source_that_is_neither_user_nor_assistant_is_written_read_back_and_accepted_by_check() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let current = document(&server, "bench-power");
+
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/memories/bench-power",
+        Some(&json!({
+            "description": current["description"],
+            "kind": current["kind"],
+            "scopes": current["scopes"],
+            "source": "derived",
+            "body": current["body"],
+            "base_version": current["version"],
+            "author": AUTHOR,
+            "message": "record that the bench rule was derived",
+        })),
+    );
+
+    assert_eq!(status, 200, "the write must be accepted, got {answer}");
+    assert_eq!(
+        document(&server, "bench-power")["source"],
+        json!("derived"),
+        "the source must read back as it was written"
+    );
+    let checked = std::process::Command::new(common::binary_path())
+        .args(["check", "--store"])
+        .arg(server.store().path())
+        .output()
+        .expect("the forgetmenot binary runs");
+    assert!(
+        checked.status.success(),
+        "check must accept a store whose memory carries this source, got {}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr)
+    );
+}
+
+/// Detects a memory moved out of every scope a session works in being withdrawn
+/// as a scope the session turned off: no scope was turned off, and a session
+/// told otherwise would look for a change it never made. Detects a move that
+/// never reaches the contexts the memory was delivered to as well.
+#[test]
+fn a_memory_moved_out_of_every_active_scope_is_withdrawn_as_one_no_active_scope_covers() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    // bench-power is the example store's global critical memory, so it arrives
+    // in full at a session start, before it is moved anywhere.
+    let (_, delivered) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    assert!(
+        context_of(&delivered).contains(BENCH_POWER_BODY),
+        "the memory has to have been delivered before it can be withdrawn, got {delivered}"
+    );
+
+    // `widgets` is a scope of the example store that this session has not
+    // turned on, so the memory is covered by no scope it works in.
+    let (status, answer) = server.api(
+        "POST",
+        "/api/memories/bench-power/fields",
+        Some(&json!({
+            "scopes": ["widgets"],
+            "author": AUTHOR,
+            "message": "the bench rule belongs to the widgets work",
+        })),
+    );
+    assert_eq!(status, 200, "the move must be accepted, got {answer}");
+
+    let (status, withdrawn) = server.hook("alpha", SOME_TOKENS, &hook_fixture("stop"));
+    assert_eq!(status, 200, "the next event must be answered");
+    let text = context_of(&withdrawn);
+    assert!(
+        has_retracted_line(text, "bench-power", "no longer in an active scope"),
+        "the memory must be reported as one no active scope covers, got {text:?}"
+    );
+    assert!(
+        !has_retracted_line(text, "bench-power", "deleted"),
+        "a memory still in the store must not be reported as deleted, got {text:?}"
     );
 }
 
