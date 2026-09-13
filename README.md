@@ -2,7 +2,7 @@
 
 Trigger-based, scoped LLM memory.
 
-forgetmenot is a memory server for LLM coding agents, built for people who work on many things at once. It works with Claude Code today. Memories are organised by scope, so a session on one project sees that project's rules and notes and not another's, and the same store serves every machine and every session on the network. Scopes are turned on by simple keyword triggers on what the agent reads and writes, and critical memories are delivered whole and re-delivered as the context grows, so the rules that matter are in front of the agent without anyone having to ask for them.
+forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
 
 - **Scoped memories.** Every memory belongs to scopes: a project, a domain, a machine, a session. A session only sees what applies to it, so the context stays small and relevant.
 - **Triggers turn scopes on.** Regular expressions over the user's messages, the agent's commands and tool calls, its output and its working directory activate scopes automatically. Nobody has to remember to load the right memory.
