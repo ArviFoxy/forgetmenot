@@ -153,7 +153,7 @@ On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the
 | Scopes, memories and settings | git repository; every change is a commit, written before the request is answered | Durable once the files have been flushed to disk |
 | Open branches and their commits | git refs and objects in the same repository | Same as above |
 | Parsed catalog and compiled triggers | in memory, derived from the repository's head; rebuilt whenever it moves | Nothing to lose; rebuilt on start |
-| Context state (active scopes, what each context has seen) | in memory; snapshot to a JSON file about a second after each change and on shutdown | A crash loses at most the last second of changes. The cost is one redundant delivery per affected context, never a missed one |
+| Context state (active scopes, what each context has seen) | in memory; snapshot to a JSON file about a second after each change and on shutdown | A crash loses at most the last second of changes |
 | Statistics | sqlite in write-ahead-log mode; each record committed as it is written | Durable once written; a crash can lose only records still in the queue |
 | MCP transport sessions | in memory | Lost; clients reconnect |
 
