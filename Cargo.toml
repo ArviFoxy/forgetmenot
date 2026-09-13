@@ -13,7 +13,7 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.88"
 
 [workspace.dependencies]
-forgetmenot-types = { path = "crates/forgetmenot-types" }
+forgetmenot-types = { path = "crates/forgetmenot-types", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 yaml_serde = "0.10"

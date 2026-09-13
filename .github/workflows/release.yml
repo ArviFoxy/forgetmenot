@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Build ${{ matrix.target }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --workspace
+      - name: Package
+        run: |
+          set -e
+          out=forgetmenot-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir -p "$out"
+          cp target/release/forgetmenot target/release/forgetmenot-hook "$out"/
+          cp README.md LICENSE-MIT LICENSE-APACHE "$out"/
+          tar -czf "$out.tar.gz" "$out"
+          sha256sum "$out.tar.gz" > "$out.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: forgetmenot-*.tar.gz*
+
+  frontend:
+    name: Build the frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm run build
+      - name: Package
+        run: |
+          set -e
+          out=forgetmenot-web-${GITHUB_REF_NAME}
+          tar -czf "$out.tar.gz" -C web dist
+          sha256sum "$out.tar.gz" > "$out.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: forgetmenot-web-*.tar.gz*
+
+  publish:
+    name: Publish the release
+    runs-on: ubuntu-latest
+    needs: [binaries, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes artifacts/*
+        env:
+          GH_TOKEN: ${{ github.token }}
