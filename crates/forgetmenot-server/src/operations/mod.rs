@@ -18,7 +18,7 @@
 pub mod branches;
 pub mod settings;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, SubsecRound, Utc};
@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::context::ContextKey;
-use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance};
+use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance, RegistrySnapshot};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
-use crate::stats::ToolCallRecord;
+use crate::stats::{StatsError, ToolCallRecord};
 use crate::store::branch::{BranchName, BranchNameError};
 use crate::store::catalog::{Catalog, MemoryEntry, ScopeEntry};
 use crate::store::frontmatter::FrontmatterError;
@@ -39,7 +39,7 @@ use crate::store::memory::{
 };
 use crate::store::scope::{ScopeDocument, Trigger, TriggerField};
 use crate::store::validate::{self, Candidate, CrossDocumentRules, ValidationError, WriteMode};
-use crate::store::{MemoryId, ScopeId};
+use crate::store::{MemoryId, ScopeId, ScopeKind};
 
 // ---------------------------------------------------------------------------
 // Failures
@@ -98,6 +98,8 @@ pub enum OperationError {
 
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Stats(#[from] StatsError),
     #[error(transparent)]
     Git(#[from] GitError),
     #[error("the document could not be written out: {0}")]
@@ -272,6 +274,31 @@ impl ScopeDoc {
             implies: entry.document.implies.clone(),
             triggers: entry.document.triggers.clone(),
             version: entry.version.to_string(),
+        }
+    }
+}
+
+/// One scope that exists, in the index.
+#[derive(Clone, Debug, Serialize)]
+pub struct ScopeRow {
+    pub id: ScopeId,
+    pub kind: ScopeKind,
+    /// What to call a session, from its context, the same name the contexts
+    /// page shows; absent for the other kinds and for a session with no live
+    /// context.
+    pub name: Option<String>,
+    /// The scope's file, for the `file` kind: what a client edits and deletes.
+    pub file: Option<ScopeDoc>,
+}
+
+impl ScopeRow {
+    /// The row of a scope with no file, whose kind its id decides.
+    fn of(id: ScopeId) -> Self {
+        Self {
+            kind: id.kind(),
+            id,
+            name: None,
+            file: None,
         }
     }
 }
@@ -1252,9 +1279,81 @@ fn empty_memory(id: &MemoryId, now: DateTime<Utc>) -> MemoryDocument {
 // Scopes
 // ---------------------------------------------------------------------------
 
-/// Every scope that has a file, ordered by id.
-pub fn scope_index(catalog: &Catalog) -> Vec<ScopeDoc> {
-    catalog.scopes().map(ScopeDoc::of).collect()
+/// Every scope that exists, ordered by id.
+///
+/// A scope with a file exists by its file; `global` exists always; a machine or
+/// a session scope exists once the server has seen that machine or that
+/// session, or a store file names it. A reference alone creates no scope of the
+/// file kind, so a memory's `scopes`, a scope's `implies` and a context's active
+/// set may all name a scope that is not here.
+///
+/// One catalog snapshot and one registry snapshot answer the whole index, so
+/// every row comes from the same store revision and the same set of contexts.
+pub async fn scope_index(state: &AppState) -> Result<Vec<ScopeRow>, OperationError> {
+    let catalog = state.store.snapshot().await?;
+    let recorded = crate::stats::read(&state.stats, &state.config.stats_path, |reader| {
+        reader.machines()
+    })
+    .await?;
+    let contexts = state.contexts.snapshot(state.clock.now()).await;
+
+    let mut rows: BTreeMap<ScopeId, ScopeRow> = BTreeMap::new();
+    for entry in catalog.scopes() {
+        rows.insert(
+            entry.id.clone(),
+            ScopeRow {
+                kind: entry.id.kind(),
+                id: entry.id.clone(),
+                name: None,
+                file: Some(ScopeDoc::of(entry)),
+            },
+        );
+    }
+    note_scope(&mut rows, ScopeId::global());
+    for machine in machine_names(&contexts, recorded) {
+        note_scope(&mut rows, ScopeId::machine(&machine));
+    }
+    for record in &contexts.contexts {
+        // A subagent works in its session's scope, so it adds no scope of its
+        // own, and the name is the session's, as the contexts page shows it.
+        if record.key.is_subagent() {
+            continue;
+        }
+        // A context with nothing to name it by has no name, rather than an
+        // empty one.
+        let name = Some(context_name(record)).filter(|name| !name.is_empty());
+        note_scope(&mut rows, record.key.session_scope()).name = name;
+    }
+    // A session with a silo has notes in the store, whether or not any context
+    // of it is live.
+    for memory in catalog.memories() {
+        if let Some((machine, session_id)) =
+            memory.id.session_key().and_then(|key| key.split_once('/'))
+        {
+            note_scope(&mut rows, ScopeId::session(machine, session_id));
+        }
+    }
+    // A machine or a session a store file names is one the store has a record
+    // of, which is what makes it exist; a file-kind id is a reference to a
+    // scope file, and a file is the only thing that can create that scope.
+    let named = catalog
+        .memories()
+        .flat_map(|memory| memory.scopes())
+        .chain(catalog.scopes().flat_map(|entry| &entry.document.implies));
+    for id in named {
+        match id.kind() {
+            ScopeKind::Machine | ScopeKind::Session => {
+                note_scope(&mut rows, id.clone());
+            }
+            ScopeKind::Global | ScopeKind::File => {}
+        }
+    }
+    Ok(rows.into_values().collect())
+}
+
+/// The row of `id`, added to the index when it is not there yet.
+fn note_scope(rows: &mut BTreeMap<ScopeId, ScopeRow>, id: ScopeId) -> &mut ScopeRow {
+    rows.entry(id.clone()).or_insert_with(|| ScopeRow::of(id))
 }
 
 /// One scope. The implicit scopes have no file and so are not readable here.
@@ -1578,18 +1677,26 @@ pub async fn machines(
     now: DateTime<Utc>,
     recorded: impl IntoIterator<Item = String>,
 ) -> MachineList {
+    let contexts = registry.snapshot(now).await;
+    MachineList {
+        machines: machine_names(&contexts, recorded).into_iter().collect(),
+    }
+}
+
+/// The machines of one registry snapshot together with the ones a statistics
+/// log recorded, sorted and without repeats.
+fn machine_names(
+    contexts: &RegistrySnapshot,
+    recorded: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
     let mut machines: BTreeSet<String> = recorded.into_iter().collect();
     machines.extend(
-        registry
-            .snapshot(now)
-            .await
+        contexts
             .contexts
-            .into_iter()
-            .map(|record| record.key.machine),
+            .iter()
+            .map(|record| record.key.machine.clone()),
     );
-    MachineList {
-        machines: machines.into_iter().collect(),
-    }
+    machines
 }
 
 /// Every context the server knows about, ordered by key.

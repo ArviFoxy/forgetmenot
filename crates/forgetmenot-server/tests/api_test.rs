@@ -116,16 +116,36 @@ fn index_ids(server: &TestServer, query: &str) -> Vec<String> {
         .collect()
 }
 
-/// The ids the scope index reports.
-fn scope_ids(server: &TestServer) -> Vec<String> {
+/// The scope index, failing the test when it cannot be read.
+fn scope_index(server: &TestServer) -> Value {
     let (status, answer) = server.api("GET", "/api/scopes", None);
     assert_eq!(status, 200, "the scopes must be readable, got {answer}");
     answer
+}
+
+/// The ids the scope index reports, in the order it reports them.
+fn scope_ids(server: &TestServer) -> Vec<String> {
+    index_row_ids(&scope_index(server))
+}
+
+/// The ids of an index answer, in the order it lists them.
+fn index_row_ids(index: &Value) -> Vec<String> {
+    index
         .as_array()
         .expect("the scope index is a list")
         .iter()
-        .map(|entry| entry["id"].as_str().expect("an id is text").to_string())
+        .map(|row| row["id"].as_str().expect("an id is text").to_string())
         .collect()
+}
+
+/// The row one scope has in an index answer.
+fn index_row<'index>(index: &'index Value, id: &str) -> &'index Value {
+    index
+        .as_array()
+        .expect("the scope index is a list")
+        .iter()
+        .find(|row| row["id"] == json!(id))
+        .unwrap_or_else(|| panic!("{id} must be listed, got {index}"))
 }
 
 /// One scope as the API reports it, failing the test when it cannot be read.
@@ -1237,6 +1257,210 @@ fn deleting_an_implicit_scope_is_refused_as_a_bad_request() {
     );
 }
 
+/// The name the user gave the session of the scope index tests, which is what
+/// the index reports for that session's scope.
+const INDEX_SESSION_TITLE: &str = "Bracket rework on the vacuum former";
+
+/// A memory of a machine the server has never heard from, for the test that a
+/// store file is enough to make that machine's scope exist. The content is
+/// invented.
+const GAMMA_MEMORY: &str = concat!(
+    "---\n",
+    "name: lathe-coolant\n",
+    "description: The lathe on gamma runs on neat cutting oil, never emulsion\n",
+    "metadata:\n",
+    "  kind: knowledge\n",
+    "  scopes:\n",
+    "  - machine:gamma\n",
+    "  source: user\n",
+    "---\n",
+    "# The lathe on gamma runs on neat cutting oil\n",
+    "\n",
+    "The lathe takes neat cutting oil; emulsion is for the mill.\n",
+);
+
+/// Detects an index that reports one family of scopes only: a page that offers
+/// the file-backed scopes alone cannot show what a session is working under,
+/// and one that reports no kind cannot tell a scope that has a file to edit
+/// from one that has none. It also detects an id invented for a row, which
+/// would offer a scope that no file and no context names.
+///
+/// Source: a scope with a file exists by its file, `global` exists always, and
+/// a machine or a session scope exists once the server has seen that machine or
+/// that session or a store file names it. The example store has three scope
+/// files and a memory in the silo of `alpha/session-1`; the event below is the
+/// only one this server has ever had.
+#[test]
+fn the_scope_index_lists_every_existing_scope_with_its_kind() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook_named(
+        "alpha",
+        SOME_TOKENS,
+        Some(INDEX_SESSION_TITLE),
+        None,
+        &hook_fixture("session_start"),
+    );
+
+    let index = scope_index(&server);
+
+    assert_eq!(
+        index_row_ids(&index),
+        vec![
+            "global",
+            "machine:alpha",
+            "rocketry",
+            "session:alpha/session-1",
+            "widgets",
+            "workshop",
+        ],
+        "the index must list every scope that exists, each once and in order of \
+         id, and nothing else, got {index}"
+    );
+    let global = index_row(&index, "global");
+    assert_eq!(
+        global["kind"],
+        json!("global"),
+        "the scope every session starts in must be reported as such, got {global}"
+    );
+    assert_eq!(
+        global["file"],
+        json!(null),
+        "a scope with no file must carry none, got {global}"
+    );
+    assert_eq!(
+        index_row(&index, "machine:alpha")["kind"],
+        json!("machine"),
+        "the scope of the machine that sent the event must be reported as a \
+         machine, got {index}"
+    );
+    let session = index_row(&index, "session:alpha/session-1");
+    assert_eq!(
+        session["kind"],
+        json!("session"),
+        "the scope of the session that sent the event must be reported as a \
+         session, got {session}"
+    );
+    assert_eq!(
+        session["name"],
+        json!(INDEX_SESSION_TITLE),
+        "a session with a live context must be named as the contexts page names \
+         it, got {session}"
+    );
+    for id in ["rocketry", "widgets", "workshop"] {
+        let row = index_row(&index, id);
+        assert_eq!(
+            row["kind"],
+            json!("file"),
+            "a scope with a file must be reported as such, got {row}"
+        );
+        assert!(
+            row["file"]["version"].is_string(),
+            "a file row must carry the version a write goes against, got {row}"
+        );
+        assert!(
+            row["file"]["implies"].is_array() && row["file"]["triggers"].is_array(),
+            "a file row must carry what the scope file says, got {row}"
+        );
+    }
+}
+
+/// Detects an index that takes a context's active set as a source of scopes: a
+/// scope that was deleted has no file and nothing else names it, so it exists
+/// no longer, and an index that listed it would offer a scope that cannot be
+/// read, edited or deleted. The context's own set is reported as it stands,
+/// because that is what the session is working under.
+///
+/// Source: a reference never creates a scope of the file kind. `workshop` is
+/// the example store's scope that no memory lists and no other scope implies,
+/// and its directory trigger turns it on for a session on `alpha`.
+#[test]
+fn a_deleted_scope_leaves_the_index_while_a_context_still_names_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let mut start = hook_fixture("session_start");
+    start["cwd"] = json!("/workshop/bench");
+    server.hook("alpha", SOME_TOKENS, &start);
+    assert!(
+        active_scopes(&server, "alpha/session-1").contains("workshop"),
+        "the directory must turn the scope on, or there is nothing to delete \
+         under the session"
+    );
+
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/workshop",
+        Some(&json!({
+            "base_version": scope(&server, "workshop")["version"],
+            "author": AUTHOR,
+            "message": "the workshop directory moved off this machine",
+        })),
+    );
+    assert_eq!(status, 200, "the delete must be accepted, got {answer}");
+
+    let index = scope_index(&server);
+    assert!(
+        !index_row_ids(&index).contains(&"workshop".to_string()),
+        "a scope whose file is gone must leave the index, whatever a context \
+         still has on, got {index}"
+    );
+    assert!(
+        active_scopes(&server, "alpha/session-1").contains("workshop"),
+        "the context must be reported with the scopes it has on, as they stand"
+    );
+}
+
+/// Detects a session scope listed only while a context is live: the session a
+/// silo belongs to exists as long as its notes are in the store, and a page
+/// that dropped it would leave those notes under a scope nobody can find. It
+/// also detects a name invented for a session nothing is known about.
+///
+/// Source: a session scope exists once the server has seen that session or a
+/// store file names it; the example store carries the memory
+/// `sessions/alpha/session-1/notes` and this server has had no event at all.
+#[test]
+fn a_session_with_a_silo_memory_is_listed_without_a_live_context() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let index = scope_index(&server);
+
+    let row = index_row(&index, "session:alpha/session-1");
+    assert_eq!(
+        row["kind"],
+        json!("session"),
+        "the scope of the session the silo belongs to must be reported as a \
+         session, got {row}"
+    );
+    assert_eq!(
+        row["name"],
+        json!(null),
+        "a session with no live context has nothing to be named by, got {row}"
+    );
+}
+
+/// Detects a machine list read from the events alone: a memory written for a
+/// machine that has sent nothing names a scope that exists, and an index
+/// without it would report the memory as belonging to no scope in the store.
+///
+/// Source: a machine scope exists once the server has seen that machine or a
+/// store file names it; no event in this test comes from `gamma`.
+#[test]
+fn a_machine_named_only_by_a_memory_is_listed() {
+    let mut files = example_store_files();
+    files.push((
+        "memories/lathe-coolant.md".to_owned(),
+        Some(GAMMA_MEMORY.as_bytes().to_vec()),
+    ));
+    let server = TestServer::start(files, |_| {});
+
+    let index = scope_index(&server);
+
+    assert_eq!(
+        index_row(&index, "machine:gamma")["kind"],
+        json!("machine"),
+        "the scope of the machine the memory names must be listed as a machine, \
+         got {index}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -1726,6 +1950,18 @@ fn context_row<'answer>(answer: &'answer Value, key: &str) -> &'answer Value {
         .iter()
         .find(|row| row["key"] == json!(key))
         .unwrap_or_else(|| panic!("{key} must be listed, got {answer}"))
+}
+
+/// The scopes one context has active, as `GET /api/contexts` reports them.
+fn active_scopes(server: &TestServer, key: &str) -> BTreeSet<String> {
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    context_row(&answer, key)["active_scopes"]
+        .as_array()
+        .expect("the active scopes are a list")
+        .iter()
+        .map(|scope| scope.as_str().expect("a scope is text").to_string())
+        .collect()
 }
 
 /// Detects a contexts page that lists sessions by their identifiers alone: the

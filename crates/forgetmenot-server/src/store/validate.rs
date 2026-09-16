@@ -382,10 +382,10 @@ fn validate_memory_document(
             });
         }
     }
-    if let Some(session_key) = id.session_key() {
+    if let Some((machine, session_id)) = id.session_key().and_then(|key| key.split_once('/')) {
         // A memory in a silo belongs to exactly one session; extra scopes would
         // deliver it to contexts that cannot see the silo it links inside.
-        let expected = ScopeId::new(format!("session:{session_key}"));
+        let expected = ScopeId::session(machine, session_id);
         if document.scopes() != [expected.clone()] {
             report.push(ValidationError::SessionMemoryScopes {
                 path: path.to_string(),

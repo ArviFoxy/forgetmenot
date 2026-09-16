@@ -119,6 +119,16 @@ impl fmt::Display for MemoryId {
     }
 }
 
+/// What a scope id names, decided by its form alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeKind {
+    Global,
+    Machine,
+    Session,
+    File,
+}
+
 /// Identifier of a scope.
 ///
 /// Most scopes have a file at `scopes/<id>.yaml` and an id matching
@@ -169,16 +179,30 @@ impl ScopeId {
         Some(key)
     }
 
+    /// What this id names.
+    ///
+    /// An id that is not one of the three implicit forms is the id of a scope
+    /// that could exist only by a file, a malformed `machine:a/b` among them.
+    pub fn kind(&self) -> ScopeKind {
+        if self.0 == "global" {
+            return ScopeKind::Global;
+        }
+        if let Some(machine) = self.0.strip_prefix("machine:")
+            && !machine.is_empty()
+            && !machine.contains('/')
+        {
+            return ScopeKind::Machine;
+        }
+        if self.is_session() {
+            return ScopeKind::Session;
+        }
+        ScopeKind::File
+    }
+
     /// Whether this scope exists without a file: `global`, a well-formed
     /// `machine:<name>` or a well-formed `session:<machine>/<session-id>`.
     pub fn is_implicit(&self) -> bool {
-        if self.0 == "global" {
-            return true;
-        }
-        if let Some(machine) = self.0.strip_prefix("machine:") {
-            return !machine.is_empty() && !machine.contains('/');
-        }
-        self.is_session()
+        self.kind() != ScopeKind::File
     }
 
     /// The path of this scope's file inside the repository.
@@ -281,5 +305,24 @@ mod tests {
         assert!(!ScopeId::new("session:alpha").is_implicit());
         assert!(!ScopeId::new("machine:").is_implicit());
         assert!(!ScopeId::new("widgets").is_implicit());
+    }
+
+    /// Detects an id read as the wrong kind, which would put a scope in the
+    /// wrong family of the index: a malformed prefix taken for a machine or a
+    /// session names a scope that could exist only by a file.
+    ///
+    /// Source: the rule that the kind of a scope id follows from its form.
+    #[test]
+    fn a_scope_id_names_its_kind_by_its_form() {
+        assert_eq!(ScopeId::global().kind(), ScopeKind::Global);
+        assert_eq!(ScopeId::machine("alpha").kind(), ScopeKind::Machine);
+        assert_eq!(
+            ScopeId::session("alpha", "session-1").kind(),
+            ScopeKind::Session
+        );
+        assert_eq!(ScopeId::new("widgets").kind(), ScopeKind::File);
+        assert_eq!(ScopeId::new("machine:a/b").kind(), ScopeKind::File);
+        assert_eq!(ScopeId::new("session:alpha").kind(), ScopeKind::File);
+        assert_eq!(ScopeId::new("machine:").kind(), ScopeKind::File);
     }
 }

@@ -153,6 +153,34 @@ impl StatsWriter {
     }
 }
 
+/// Run `query` against the log at `path`, with everything `writer` has queued
+/// written first.
+///
+/// The flush is what makes an answer cover the requests answered before it: the
+/// statistics are written off the hot path, so without it a reader can miss the
+/// event it was opened to look at. sqlite is a blocking API, so the query itself
+/// does not run on an async worker.
+pub async fn read<Answer: Send + 'static>(
+    writer: &StatsWriter,
+    path: &Path,
+    query: impl FnOnce(&StatsReader) -> Result<Answer, StatsError> + Send + 'static,
+) -> Result<Answer, StatsError> {
+    writer.flush().await;
+    let path = path.to_path_buf();
+    match tokio::task::spawn_blocking({
+        let path = path.clone();
+        move || query(&StatsReader::open(&path)?)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(StatsError::Sqlite {
+            path,
+            source: rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error))),
+        }),
+    }
+}
+
 /// Reads the statistics database: the aggregates the JSON API and
 /// `forgetmenot stats` report, and the counts the tests of the write path need.
 pub struct StatsReader {

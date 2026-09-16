@@ -74,30 +74,12 @@ async fn active_scope_sets(state: &Arc<AppState>) -> Vec<BTreeSet<ScopeId>> {
         .collect()
 }
 
-/// Flush what the hot path has queued, then run `query` on a blocking thread.
-///
-/// The flush is what makes a report cover the requests answered before it: the
-/// statistics are written off the hot path, so without it a reader can miss the
-/// event it was opened to look at. sqlite is a blocking API, so the query
-/// itself does not run on an async worker.
+/// Run one query against this server's own statistics log.
 pub(crate) async fn read<T: Send + 'static>(
-    state: &Arc<AppState>,
+    state: &AppState,
     query: impl FnOnce(&StatsReader) -> Result<T, StatsError> + Send + 'static,
 ) -> Result<T, StatsError> {
-    state.stats.flush().await;
-    let path = state.config.stats_path.clone();
-    match tokio::task::spawn_blocking({
-        let path = path.clone();
-        move || query(&StatsReader::open(&path)?)
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => Err(StatsError::Sqlite {
-            path,
-            source: rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error))),
-        }),
-    }
+    crate::stats::read(&state.stats, &state.config.stats_path, query).await
 }
 
 /// The rows as JSON, or a 500 in the shape every other failure of the API takes.

@@ -166,7 +166,10 @@ impl IntoResponse for OperationError {
             | OperationError::UnknownSession(_) => {
                 error_response(StatusCode::BAD_REQUEST, &self.to_string())
             }
-            OperationError::Store(_) | OperationError::Git(_) | OperationError::Render(_) => {
+            OperationError::Store(_)
+            | OperationError::Git(_)
+            | OperationError::Stats(_)
+            | OperationError::Render(_) => {
                 // The caller cannot act on these, so the detail goes to the log
                 // as well as into the answer.
                 tracing::error!("an API request failed: {self}");

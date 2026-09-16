@@ -18,7 +18,7 @@ use crate::operations::{
 use crate::store::ScopeId;
 use crate::store::validate::WriteMode;
 
-use super::{BranchQuery, answer, parse_body, resource};
+use super::{BranchQuery, answer, parse_body};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -30,11 +30,7 @@ pub fn router() -> Router<Arc<AppState>> {
 
 /// `GET /api/scopes`
 async fn index(State(state): State<Arc<AppState>>) -> Response {
-    let catalog = match state.store.snapshot().await {
-        Ok(catalog) => catalog,
-        Err(error) => return OperationError::from(error).into_response(),
-    };
-    resource(operations::scope_index(&catalog))
+    answer(operations::scope_index(&state).await)
 }
 
 /// `GET /api/scopes/{id}`
