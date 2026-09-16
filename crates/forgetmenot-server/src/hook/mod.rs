@@ -91,6 +91,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
             needs: &outcome.needs,
             active: &outcome.active,
             session_start: plan.session_start,
+            answer_file_threshold: settings.answer_file_threshold,
         });
         if deny {
             HookResponse::deny(plan.event_name, DENY_REASON, text)

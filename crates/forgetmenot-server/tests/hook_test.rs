@@ -560,6 +560,122 @@ fn a_trigger_past_the_stores_tool_result_limit_does_not_fire_while_one_before_it
     );
 }
 
+/// A store whose only files are one global critical memory with `body` and a
+/// settings file with `answer_file_threshold` set to `threshold`, so that the
+/// whole answer to a session start is that memory and nothing else.
+fn store_with_answer_threshold(threshold: &str, body: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    vec![
+        (
+            "memories/long-rule.md".to_string(),
+            Some(
+                format!(
+                    "---\nname: long-rule\ndescription: A rule long enough to test the answer \
+                     notice\nmetadata:\n  kind: critical\n  scopes:\n  - global\n---\n{body}\n"
+                )
+                .into_bytes(),
+            ),
+        ),
+        (
+            "config.yml".to_string(),
+            Some(format!("answer_file_threshold: {threshold}\n").into_bytes()),
+        ),
+    ]
+}
+
+/// The first line of the answer's text, which is the only part of a persisted
+/// answer that Claude Code is sure to show the model.
+fn first_line(answer: &Value) -> &str {
+    context_of(answer).lines().next().unwrap_or("")
+}
+
+/// Detects a notice that is missing, that comes after content Claude Code's
+/// preview cut would remove, or that replaces the answer: past the threshold
+/// the model sees only the first lines and the file path, so the first line
+/// has to tell it to read the file, and the file has to still hold the memory.
+/// Source: the setting's documented meaning and the preview rule in the README.
+#[test]
+fn an_answer_past_the_stores_threshold_opens_with_the_notice_and_still_carries_the_memory() {
+    let body = "Stop the run and read the log. ".repeat(20);
+    let server = TestServer::start(store_with_answer_threshold("200", &body), |_| {});
+
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let opening = first_line(&answer);
+    assert!(
+        opening.contains("READ THE FILE FIRST") && opening.contains("Read tool"),
+        "the first line must tell the model to read the file, got {opening:?}"
+    );
+    assert!(
+        context_of(&answer).contains(body.trim_end()),
+        "the memory must still be in the answer in full, got {}",
+        context_of(&answer)
+    );
+}
+
+/// Detects a notice sent whatever the length: an answer Claude Code shows whole
+/// must not send the model looking for a file Claude Code never wrote.
+/// Source: Claude Code persists an answer only past the threshold.
+#[test]
+fn an_answer_within_the_stores_threshold_carries_no_notice() {
+    let body = "Stop the run and read the log.";
+    let server = TestServer::start(store_with_answer_threshold("100000", body), |_| {});
+
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    assert!(
+        !context_of(&answer).contains("READ THE FILE"),
+        "an answer within the threshold must carry no notice, got {}",
+        context_of(&answer)
+    );
+    assert!(
+        first_line(&answer).starts_with("[forgetmenot] context"),
+        "the answer must open with its context line as before, got {:?}",
+        first_line(&answer)
+    );
+}
+
+/// Detects the null setting read as a threshold of zero: null means no notice,
+/// however long the answer.
+#[test]
+fn a_store_that_turns_the_threshold_off_sends_no_notice_for_a_long_answer() {
+    let body = "Stop the run and read the log. ".repeat(20);
+    let server = TestServer::start(store_with_answer_threshold("null", &body), |_| {});
+
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    assert!(
+        !context_of(&answer).contains("READ THE FILE"),
+        "a null threshold must send no notice, got {}",
+        context_of(&answer)
+    );
+}
+
+/// Detects the answer measured in bytes: Claude Code compares its own string
+/// length, in UTF-16 code units, so an answer of three-byte characters that is
+/// past the threshold in bytes and within it in characters is shown whole and
+/// must carry no notice.
+#[test]
+fn an_answer_past_the_threshold_in_bytes_but_not_in_characters_carries_no_notice() {
+    // 120 characters of three bytes each: 360 bytes, 120 UTF-16 code units.
+    let body = "\u{20AC}".repeat(120);
+    let context_line_and_headers = 200;
+    let threshold = (120 + context_line_and_headers).to_string();
+    let server = TestServer::start(store_with_answer_threshold(&threshold, &body), |_| {});
+
+    let (_, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let text = context_of(&answer);
+    assert!(
+        text.len() as u64 > 120 + context_line_and_headers,
+        "the fixture must be past the threshold in bytes, got {} bytes",
+        text.len()
+    );
+    assert!(
+        !text.contains("READ THE FILE"),
+        "an answer within the threshold in characters must carry no notice, got {text}"
+    );
+}
+
 /// Detects a compaction that leaves the delivery record standing: everything
 /// delivered before it is gone from the context, so the next event has to
 /// deliver it all again.

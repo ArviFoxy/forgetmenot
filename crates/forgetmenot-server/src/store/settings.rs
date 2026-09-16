@@ -24,6 +24,13 @@ pub const SETTINGS_PATH: &str = "config.yml";
 /// a 10 MB regex pass on the hot path.
 pub const DEFAULT_TOOL_RESULT_MATCH_LIMIT: u64 = 256 * 1024;
 
+/// The characters of a hook answer above which Claude Code writes the answer
+/// to a file and shows the model a preview of it instead of the whole text.
+/// Read from Claude Code 2.1.270 (`HEr = 1e4`, compared against the JavaScript
+/// string length, so UTF-16 code units). A newer Claude Code may move it, which
+/// is why the store can set it rather than the server fixing it.
+pub const DEFAULT_ANSWER_FILE_THRESHOLD: u64 = 10_000;
+
 /// The type one setting takes, as the schema reports it and as a write is
 /// checked against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,16 +70,18 @@ pub enum SettingKey {
     SubagentsInheritScopes,
     DeliverKnowledgeIndex,
     ToolResultMatchLimit,
+    AnswerFileThreshold,
 }
 
 /// Every key the settings file may carry, in the order the schema lists them.
-pub const KEYS: [SettingKey; 6] = [
+pub const KEYS: [SettingKey; 7] = [
     SettingKey::ReminderTokens,
     SettingKey::InterruptOnCritical,
     SettingKey::InterruptExemptTools,
     SettingKey::SubagentsInheritScopes,
     SettingKey::DeliverKnowledgeIndex,
     SettingKey::ToolResultMatchLimit,
+    SettingKey::AnswerFileThreshold,
 ];
 
 impl SettingKey {
@@ -85,6 +94,7 @@ impl SettingKey {
             SettingKey::SubagentsInheritScopes => "subagents_inherit_scopes",
             SettingKey::DeliverKnowledgeIndex => "deliver_knowledge_index",
             SettingKey::ToolResultMatchLimit => "tool_result_match_limit",
+            SettingKey::AnswerFileThreshold => "answer_file_threshold",
         }
     }
 
@@ -95,7 +105,9 @@ impl SettingKey {
 
     pub fn value_type(self) -> SettingType {
         match self {
-            SettingKey::ReminderTokens => SettingType::IntegerOrNull,
+            SettingKey::ReminderTokens | SettingKey::AnswerFileThreshold => {
+                SettingType::IntegerOrNull
+            }
             SettingKey::InterruptOnCritical
             | SettingKey::SubagentsInheritScopes
             | SettingKey::DeliverKnowledgeIndex => SettingType::Boolean,
@@ -130,6 +142,11 @@ impl SettingKey {
             SettingKey::ToolResultMatchLimit => {
                 "Bytes of a tool result matched against triggers; the rest is not matched"
             }
+            SettingKey::AnswerFileThreshold => {
+                "Characters of a hook answer above which Claude Code saves it to a file and \
+                 shows the model a preview; an answer past this opens with a notice to read \
+                 the file; null turns the notice off"
+            }
         }
     }
 }
@@ -156,6 +173,10 @@ pub struct Settings {
     pub deliver_knowledge_index: bool,
     /// Bytes of a tool result matched against triggers.
     pub tool_result_match_limit: u64,
+    /// Characters of a hook answer above which Claude Code shows the model a
+    /// preview and a file path instead of the answer, so the answer opens with
+    /// a notice to read the file; `None` sends no notice.
+    pub answer_file_threshold: Option<u64>,
 }
 
 impl Default for Settings {
@@ -167,6 +188,7 @@ impl Default for Settings {
             subagents_inherit_scopes: true,
             deliver_knowledge_index: true,
             tool_result_match_limit: DEFAULT_TOOL_RESULT_MATCH_LIMIT,
+            answer_file_threshold: Some(DEFAULT_ANSWER_FILE_THRESHOLD),
         }
     }
 }
@@ -184,6 +206,10 @@ impl Settings {
             SettingKey::SubagentsInheritScopes => Json::from(self.subagents_inherit_scopes),
             SettingKey::DeliverKnowledgeIndex => Json::from(self.deliver_knowledge_index),
             SettingKey::ToolResultMatchLimit => Json::from(self.tool_result_match_limit),
+            SettingKey::AnswerFileThreshold => match self.answer_file_threshold {
+                Some(characters) => Json::from(characters),
+                None => Json::Null,
+            },
         }
     }
 
@@ -224,6 +250,12 @@ impl Settings {
             }
             SettingKey::ToolResultMatchLimit => {
                 self.tool_result_match_limit = value.as_u64().ok_or_else(mismatch)?;
+            }
+            SettingKey::AnswerFileThreshold => {
+                self.answer_file_threshold = match value {
+                    Json::Null => None,
+                    _ => Some(value.as_u64().ok_or_else(mismatch)?),
+                };
             }
         }
         Ok(())

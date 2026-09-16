@@ -1275,6 +1275,7 @@ fn the_settings_of_a_store_without_a_file_are_the_defaults_at_no_version() {
             "subagents_inherit_scopes": true,
             "deliver_knowledge_index": true,
             "tool_result_match_limit": 262_144,
+            "answer_file_threshold": 10_000,
         }),
         "the defaults must be the documented ones, got {answer}"
     );

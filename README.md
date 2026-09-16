@@ -96,12 +96,15 @@ Everything that changes what the agent experiences lives in `config.yml` at the 
 | `subagents_inherit_scopes` | bool | `true` | A subagent starts with its parent's active scopes |
 | `deliver_knowledge_index` | bool | `true` | Deliver the description of each knowledge memory that applies, so the agent knows it exists and can ask for the full text; `false` delivers nothing about knowledge memories, the agent has to list them itself |
 | `tool_result_match_limit` | integer | `262144` | Bytes of a tool result matched against triggers |
+| `answer_file_threshold` | integer or null | `10000` | Characters of a hook answer above which Claude Code saves it to a file and shows the model a preview; an answer past this opens with a notice to read the file; `null` sends no notice |
 
 An unknown key, or a value of the wrong type, is a validation error: `forgetmenot check` reports it and a write is refused. The settings are part of the store, so a branch may change them and land like any other change.
 
 ## Interfaces
 
 - `POST /hook`: the hook endpoint, called by `forgetmenot-hook` on every Claude Code hook event.
+
+Claude Code does not show the model a long hook answer. Past 10 000 characters (Claude Code 2.1.270; the length in UTF-16 code units) it writes the answer to a file under the session's `tool-results` directory and shows the model the file's path and the first 2000 characters, cut back to the last newline when that lies past the first 1000. An answer longer than `answer_file_threshold` therefore opens with a short notice telling the model to read the file in full before doing anything else; the notice sits inside the part of the preview that is never cut. The notice is a workaround: the server still records every memory in such an answer as delivered, and the fix, an answer budget with the rest carried to the next event, is [issue 19](https://github.com/ArviFoxy/forgetmenot/issues/19).
 - `/mcp`: MCP over streamable HTTP, for the agent.
 - `/api/*`: the JSON API used by the frontend.
 - `/`: the frontend, served from `web/dist`.
