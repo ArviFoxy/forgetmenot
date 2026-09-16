@@ -2,7 +2,7 @@ import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'l
 import { api } from '../api/client';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
-import { buildTree, filterTree, keysToReveal, scopeKind, type TreeNode } from '../model/tree';
+import { buildTree, filterTree, keysToReveal, type TreeNode } from '../model/tree';
 import { currentPath, navigate, onLocationChange, onStoreChange } from '../navigation';
 import { requestDelete } from '../intent';
 import { paths, resolve } from '../routes';
@@ -13,12 +13,16 @@ const openKeysStorage = 'fmn-tree-open';
 /** The icon says what kind of scope a row is, which the flat list does not group by. */
 function nodeIcon(node: TreeNode): string {
   if (node.kind === 'category') return node.key === 'category:sessions' ? 'terminal' : 'device-desktop';
-  if (node.scopeId === undefined) return 'folder';
-  const kind = scopeKind(node.scopeId);
-  if (kind === 'global') return 'world';
-  if (kind === 'machine') return 'device-desktop';
-  if (kind === 'session') return 'terminal';
-  return 'folder';
+  switch (node.scope?.kind) {
+    case 'global':
+      return 'world';
+    case 'machine':
+      return 'device-desktop';
+    case 'session':
+      return 'terminal';
+    default:
+      return 'folder';
+  }
 }
 
 function readOpenKeys(): Set<string> {
@@ -47,6 +51,28 @@ const newItems: MenuItem[] = [
   { value: 'new-scope', label: 'New scope', icon: 'folder' },
   { value: 'new-memory', label: 'New memory', icon: 'file-text' },
 ];
+
+/** What a right click offers on a node, and on the empty space below the tree. */
+export function menuItemsFor(node: TreeNode | null): MenuItem[] {
+  if (node === null || node.kind === 'category') return newItems;
+  const memory = node.memory;
+  if (memory !== undefined) {
+    return [
+      { value: `history:${memory.id}`, label: 'Open history', icon: 'clock' },
+      { value: `delete:${memory.id}`, label: 'Delete memory', icon: 'trash' },
+    ];
+  }
+  const scope = node.scopeId ?? '';
+  const inThis =
+    node.scope?.kind === 'session' ? 'New memory in this session' : 'New memory in this scope';
+  // Only a scope with a file can be deleted; the other kinds have none.
+  const file = node.scope?.file ?? null;
+  return [
+    { value: `new-memory:${scope}`, label: inThis, icon: 'file-text' },
+    ...newItems,
+    ...(file === null ? [] : [{ value: `delete-scope:${scope}`, label: 'Delete scope', icon: 'trash' }]),
+  ];
+}
 
 /** The hierarchy: the scopes, the memories in each, and the session scopes together. */
 export class FmnSidebar extends PageElement {
@@ -79,29 +105,8 @@ export class FmnSidebar extends PageElement {
 
   private load(): Promise<void> {
     return this.tree.load(async () => {
-      const [scopes, memories, contexts] = await Promise.all([
-        api.scopeIndex(),
-        api.memoryIndex(),
-        api.contexts(),
-      ]);
-      // Only a session's own context names the session: a subagent's row is
-      // named for the task it was given, which is not what the session is.
-      const names = new Map(
-        contexts
-          .filter(
-            (context) =>
-              (context.parent ?? null) === null &&
-              context.key.indexOf('/') === context.key.lastIndexOf('/') &&
-              context.name !== '',
-          )
-          .map((context) => [`session:${context.key}`, context.name] as const),
-      );
-      return buildTree(
-        scopes,
-        memories,
-        contexts.flatMap((context) => context.active_scopes),
-        names,
-      );
+      const [scopes, memories] = await Promise.all([api.scopeIndex(), api.memoryIndex()]);
+      return buildTree(scopes, memories);
     });
   }
 
@@ -116,32 +121,10 @@ export class FmnSidebar extends PageElement {
     window.localStorage.setItem(openKeysStorage, JSON.stringify([...this.openKeys]));
   }
 
-  /** What a right click offers on a node, and on the empty space below the tree. */
-  private itemsFor(node: TreeNode | null): MenuItem[] {
-    if (node === null || node.kind === 'category') return newItems;
-    const memory = node.memory;
-    if (memory !== undefined) {
-      return [
-        { value: `history:${memory.id}`, label: 'Open history', icon: 'clock' },
-        { value: `delete:${memory.id}`, label: 'Delete memory', icon: 'trash' },
-      ];
-    }
-    const scope = node.scopeId ?? '';
-    const inThis = scopeKind(scope) === 'session' ? 'New memory in this session' : 'New memory in this scope';
-    return [
-      { value: `new-memory:${scope}`, label: inThis, icon: 'file-text' },
-      ...newItems,
-      // Only a scope with a file can be deleted; the implicit ones have none.
-      ...(node.implicit === true
-        ? []
-        : [{ value: `delete-scope:${scope}`, label: 'Delete scope', icon: 'trash' }]),
-    ];
-  }
-
   private openMenu(event: MouseEvent, node: TreeNode | null): void {
     event.preventDefault();
     event.stopPropagation();
-    this.menu = { x: event.clientX, y: event.clientY, items: this.itemsFor(node) };
+    this.menu = { x: event.clientX, y: event.clientY, items: menuItemsFor(node) };
   }
 
   private runMenu(value: string): void {

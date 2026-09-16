@@ -121,6 +121,19 @@ export interface ScopeDoc {
   version: string;
 }
 
+/** What a scope id names, decided by the server. */
+export type ScopeKind = 'global' | 'machine' | 'session' | 'file';
+
+/** One scope that exists, as the scope index lists it. */
+export interface ScopeRow {
+  id: string;
+  kind: ScopeKind;
+  /** What to call a session, from its context; null for the other kinds and for a session with no live context. */
+  name: string | null;
+  /** The scope's file, for the kind `file`; null for the other kinds. */
+  file: ScopeDoc | null;
+}
+
 export interface HistoryEntry {
   commit: Commit;
   content: string;

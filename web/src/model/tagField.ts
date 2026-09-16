@@ -1,7 +1,6 @@
 // The rules a tag field follows, apart from the controls that show them.
 
-import type { ContextRow, ScopeDoc } from '../api/types';
-import { scopeKind } from './tree';
+import type { ScopeRow } from '../api/types';
 
 /** An id is one token: no commas, no surrounding space. */
 export function cleanTag(text: string): string {
@@ -45,24 +44,15 @@ export function filterSuggestions(all: string[], chosen: string[], text: string)
 }
 
 /**
- * The scope ids worth offering: every scope with a file, `global`, the machine
- * scopes the live contexts have on, and any session scope the item already carries.
- * A session scope is one per session and is never offered on its own.
+ * The scope ids worth offering: the scopes with a file, `global` and the machines,
+ * as the index lists them, together with the ids the item already carries. There is
+ * one session scope per session, so a session is offered only when it is carried.
  */
-export function suggestScopes(
-  scopes: ScopeDoc[],
-  contexts: ContextRow[],
-  chosen: string[] = [],
-): string[] {
-  const offered = new Set<string>(['global']);
-  for (const scope of scopes) offered.add(scope.id);
-  for (const context of contexts) {
-    for (const active of context.active_scopes) {
-      if (scopeKind(active) === 'machine') offered.add(active);
-    }
+export function suggestScopes(rows: ScopeRow[], chosen: string[] = []): string[] {
+  const offered = new Set<string>();
+  for (const row of rows) {
+    if (row.kind !== 'session') offered.add(row.id);
   }
-  for (const scope of chosen) {
-    if (scopeKind(scope) === 'session') offered.add(scope);
-  }
+  for (const scope of chosen) offered.add(scope);
   return [...offered].sort((left, right) => left.localeCompare(right));
 }

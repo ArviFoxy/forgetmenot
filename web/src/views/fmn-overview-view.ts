@@ -27,7 +27,9 @@ export class FmnOverviewView extends PageElement {
 
   private load(): void {
     void this.memories.load(() => api.memoryIndex());
-    void this.scopes.load(() => api.scopeIndex());
+    void this.scopes.load(async () =>
+      (await api.scopeIndex()).flatMap((row) => (row.file === null ? [] : [row.file])),
+    );
   }
 
   override updated(): void {

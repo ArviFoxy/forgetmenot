@@ -1,7 +1,7 @@
-// The navigation tree: categories at the top, then scopes, then the memories in
+// The navigation tree: one node per scope the server lists, then the memories in
 // each scope. A memory in several scopes appears under each of them.
 
-import type { MemorySummary, ScopeDoc } from '../api/types';
+import type { MemorySummary, ScopeRow } from '../api/types';
 
 export type NodeKind = 'category' | 'scope' | 'memory';
 
@@ -13,8 +13,8 @@ export interface TreeNode {
   label: string;
   /** The scope this node opens, for a scope node. */
   scopeId?: string;
-  /** True for a scope with no file: `global`, `machine:…`, `session:…`. */
-  implicit?: boolean;
+  /** The row this node draws, for a scope node. */
+  scope?: ScopeRow;
   /** The memory this node opens, for a memory node. */
   memory?: MemorySummary;
   children: TreeNode[];
@@ -22,35 +22,11 @@ export interface TreeNode {
   count: number;
 }
 
-/** The scope that is on in every context, so it is always in the tree. */
-const globalScope = 'global';
-
-/**
- * What kind of scope an id names. The implicit scopes are the only special ones:
- * everything else is an ordinary scope with a file.
- */
-export type ScopeKind = 'global' | 'machine' | 'session' | 'plain';
-
-export function scopeKind(id: string): ScopeKind {
-  if (id === globalScope) return 'global';
-  if (id.startsWith('machine:')) return 'machine';
-  if (id.startsWith('session:')) return 'session';
-  return 'plain';
-}
-
-// The scopes are one list. A scope's `type` is a label on the scope, not a place in
+// The scopes are one list. A scope's kind is a label on the scope, not a place in
 // the tree, so it does not group anything here. The one exception is the session
 // scopes: there is one per session and they would bury the rest, so they sit under a
 // "Sessions" node, by machine.
 const sessionsCategory = { key: 'category:sessions', label: 'Sessions' };
-
-interface ScopeEntry {
-  id: string;
-  kind: ScopeKind;
-  /** True when the scope has no file: `global`, `machine:…`, `session:…`. */
-  implicit: boolean;
-  memories: MemorySummary[];
-}
 
 function byLabel(left: TreeNode, right: TreeNode): number {
   return left.label.localeCompare(right.label);
@@ -67,22 +43,26 @@ function memoryNode(scopeId: string, memory: MemorySummary): TreeNode {
   };
 }
 
-function scopeNode(entry: ScopeEntry, label: string): TreeNode {
-  const children = [...entry.memories]
+function scopeNode(row: ScopeRow, memories: MemorySummary[], label: string): TreeNode {
+  const children = [...memories]
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    .map((memory) => memoryNode(entry.id, memory));
+    .map((memory) => memoryNode(row.id, memory));
   return {
     kind: 'scope',
-    key: `scope:${entry.id}`,
+    key: `scope:${row.id}`,
     label,
-    scopeId: entry.id,
-    implicit: entry.implicit,
+    scopeId: row.id,
+    scope: row,
     children,
     count: children.length,
   };
 }
 
-/** `session:<machine>/<id>` splits into the machine and the session. */
+/**
+ * `session:<machine>/<id>` splits into the machine and the session. The only place
+ * the frontend reads a scope id apart: what a scope is comes from its row, and this
+ * is the one grouping the tree makes.
+ */
 function sessionParts(id: string): { machine: string; session: string } {
   const rest = id.slice('session:'.length);
   const slash = rest.indexOf('/');
@@ -91,17 +71,20 @@ function sessionParts(id: string): { machine: string; session: string } {
 }
 
 /**
- * Sessions are two levels: the machine, then the sessions on it. A session known
- * by a name is labelled with its id and that name, because the id says nothing
- * about what the session is and the name is what the user recognises.
+ * Sessions are two levels: the machine, then the sessions on it. A session its
+ * context names is labelled with that name, which is what the user recognises; a
+ * session with no name is labelled with the session part of its id.
  */
-function sessionNodes(entries: ScopeEntry[], names: ReadonlyMap<string, string>): TreeNode[] {
+function sessionNodes(
+  rows: ScopeRow[],
+  memoriesOf: (id: string) => MemorySummary[],
+): TreeNode[] {
   const machines = new Map<string, TreeNode[]>();
-  for (const entry of entries) {
-    const { machine, session } = sessionParts(entry.id);
-    const name = names.get(entry.id) ?? '';
+  for (const row of rows) {
+    const { machine, session } = sessionParts(row.id);
+    const name = row.name ?? '';
     const nodes = machines.get(machine) ?? [];
-    nodes.push(scopeNode(entry, name === '' ? session : `${session} ${name}`));
+    nodes.push(scopeNode(row, memoriesOf(row.id), name === '' ? session : name));
     machines.set(machine, nodes);
   }
   return [...machines.entries()]
@@ -116,57 +99,34 @@ function sessionNodes(entries: ScopeEntry[], names: ReadonlyMap<string, string>)
 }
 
 /**
- * Builds the tree from the scope index, the memory index and the scopes the live
- * contexts have on. Scopes with a file are included even when no memory names them;
- * scopes without a file are included when a memory or a context names them, and
- * `global` always is.
- *
- * `sessionNames` maps a session scope id, `session:<machine>/<id>`, to what to
- * call that session; a session it does not name is labelled by its id alone.
+ * Builds the tree from the scope index and the memory index: one scope node per
+ * row and nothing else, holding the memories whose `scopes` name that row. A
+ * memory that names no listed row is in the tree nowhere.
  */
-export function buildTree(
-  scopes: ScopeDoc[],
-  memories: MemorySummary[],
-  activeScopes: string[] = [],
-  sessionNames: ReadonlyMap<string, string> = new Map(),
-): TreeNode[] {
-  const entries = new Map<string, ScopeEntry>();
-  const entry = (id: string): ScopeEntry => {
-    const found = entries.get(id);
-    if (found !== undefined) return found;
-    const fresh: ScopeEntry = { id, kind: scopeKind(id), implicit: true, memories: [] };
-    entries.set(id, fresh);
-    return fresh;
-  };
-
-  entry(globalScope);
-  for (const scope of scopes) {
-    entry(scope.id).implicit = false;
-  }
+export function buildTree(rows: ScopeRow[], memories: MemorySummary[]): TreeNode[] {
+  const held = new Map<string, MemorySummary[]>();
+  for (const row of rows) held.set(row.id, []);
   for (const memory of memories) {
-    for (const scope of memory.scopes) entry(scope).memories.push(memory);
+    for (const scope of memory.scopes) held.get(scope)?.push(memory);
   }
-  for (const scope of activeScopes) entry(scope);
+  const memoriesOf = (id: string): MemorySummary[] => held.get(id) ?? [];
 
   const flat: TreeNode[] = [];
-  const sessions: ScopeEntry[] = [];
-  for (const found of [...entries.values()].sort((left, right) => left.id.localeCompare(right.id))) {
-    if (found.kind === 'session') {
-      sessions.push(found);
-      continue;
-    }
-    flat.push(scopeNode(found, found.id));
+  const sessions: ScopeRow[] = [];
+  for (const row of rows) {
+    if (row.kind === 'session') sessions.push(row);
+    else flat.push(scopeNode(row, memoriesOf(row.id), row.id));
   }
 
   // The global scope leads, because it is on in every context; the rest follow by id.
   flat.sort((left, right) => {
-    if (left.scopeId === globalScope) return -1;
-    if (right.scopeId === globalScope) return 1;
+    if (left.scope?.kind === 'global') return -1;
+    if (right.scope?.kind === 'global') return 1;
     return byLabel(left, right);
   });
 
   if (sessions.length === 0) return flat;
-  const children = sessionNodes(sessions, sessionNames);
+  const children = sessionNodes(sessions, memoriesOf);
   return [
     ...flat,
     {

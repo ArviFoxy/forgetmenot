@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
-import { RequestFailed, api } from '../api/client';
-import type { MemorySummary, ScopeDoc, Trigger, ValidationError } from '../api/types';
+import { api } from '../api/client';
+import type { MemorySummary, ScopeDoc, ScopeRow, Trigger, ValidationError } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
 import { frontendAuthor } from '../model/author';
@@ -20,6 +20,11 @@ import type { TagsChange } from '../components/fmn-tag-field';
 /** A scope that is being written and has no file yet. */
 export function blankScope(): ScopeDoc {
   return { id: '', implies: [], triggers: [], version: '' };
+}
+
+/** The row of the scope being created: a file scope whose file is still empty. */
+function blankRow(): ScopeRow {
+  return { id: '', kind: 'file', name: null, file: blankScope() };
 }
 
 interface ScopeDraft {
@@ -61,10 +66,6 @@ function triggersEqual(left: Trigger[], right: Trigger[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function missingStatus(error: Error): 'failed' | 'missing' {
-  return error instanceof RequestFailed && error.status === 404 ? 'missing' : 'failed';
-}
-
 export type ScopeMode = 'scope' | 'new';
 
 /**
@@ -89,9 +90,8 @@ export class FmnScopePage extends PageElement {
   scopeId = '';
   mode: ScopeMode = 'scope';
 
-  private readonly scope = new Resource<ScopeDoc>(() => this.requestUpdate(), {
-    classify: missingStatus,
-  });
+  /** The scope index row of this id, or null when no scope has it. */
+  private readonly row = new Resource<ScopeRow | null>(() => this.requestUpdate());
   private readonly memories = new Resource<MemorySummary[]>(() => this.requestUpdate());
   /** The scope ids the Implies field offers: the other scopes with a file. */
   private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
@@ -134,7 +134,9 @@ export class FmnScopePage extends PageElement {
     if (!this.loadedOptions) {
       this.loadedOptions = true;
       void this.scopeOptions.load(async () =>
-        (await api.scopeIndex()).map((scope) => scope.id).filter((id) => id !== this.scopeId),
+        (await api.scopeIndex())
+          .filter((row) => row.file !== null && row.id !== this.scopeId)
+          .map((row) => row.id),
       );
       void this.machines.load(() => api.machineIndex());
     }
@@ -144,16 +146,19 @@ export class FmnScopePage extends PageElement {
       this.loadedId = wanted;
       this.draft = null;
       if (this.creating) {
-        void this.scope.load(() => Promise.resolve(blankScope()));
+        void this.row.load(() => Promise.resolve(blankRow()));
         this.memories.reset();
       } else {
-        void this.scope.load(() => api.scope(this.scopeId));
+        void this.row.load(async () => {
+          const rows = await api.scopeIndex();
+          return rows.find((row) => row.id === this.scopeId) ?? null;
+        });
         void this.memories.load(() => api.memoryIndex({ scope: this.scopeId }));
       }
     }
-    const scope = this.scope.value;
-    if (scope !== null && (this.draft === null || this.draft.baseVersion !== scope.version)) {
-      this.draft = draftOf(scope);
+    const file = this.row.value?.file ?? null;
+    if (file !== null && (this.draft === null || this.draft.baseVersion !== file.version)) {
+      this.draft = draftOf(file);
     }
     if (!this.creating && this.scopeId !== '' && takeDeleteIntent('scope', this.scopeId)) {
       this.deleteOpen = true;
@@ -459,14 +464,20 @@ export class FmnScopePage extends PageElement {
     `;
   }
 
-  /** A scope with no file: its memories are all there is to show. */
-  private renderImplicit(): TemplateResult {
+  /** A scope with no file: what the index says about it, and its memories. */
+  private renderWithoutFile(row: ScopeRow): TemplateResult {
     return html`
       <div class="infobox">
         <div class="field">
-          <span class="field-label">File</span>
-          <div class="field-value"><span class="value-text">none</span></div>
+          <span class="field-label">Kind</span>
+          <div class="field-value"><span class="value-text">${row.kind}</span></div>
         </div>
+        ${row.name === null
+          ? nothing
+          : html`<div class="field">
+              <span class="field-label">Name</span>
+              <div class="field-value"><span class="value-text">${row.name}</span></div>
+            </div>`}
       </div>
       <h2>Memories</h2>
       ${this.renderMemories()}
@@ -482,10 +493,12 @@ export class FmnScopePage extends PageElement {
         </div>
         <h1>${this.creating ? (this.newId === '' ? 'New scope' : this.newId) : this.scopeId}</h1>
       </header>
-      ${gate(
-        this.scope.state,
-        (scope) => this.renderScope(scope),
-        () => this.renderImplicit(),
+      ${gate(this.row.state, (row) =>
+        row === null
+          ? html`<p class="empty">No scope has this id</p>`
+          : row.file === null
+            ? this.renderWithoutFile(row)
+            : this.renderScope(row.file),
       )}
     `;
   }

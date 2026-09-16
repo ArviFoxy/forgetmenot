@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, test, vi } from 'vitest';
-import type { ContextRow, MemoryDoc, MemoryStatsRow } from '../src/api/types';
+import type { ContextRow, MemoryDoc, MemoryStatsRow, ScopeRow } from '../src/api/types';
+import type { TreeNode } from '../src/model/tree';
 
 // The source of these expectations is what the pages promise: every address the app
 // links to has an element to show it, the statistics keep index-line and full
@@ -24,6 +25,17 @@ const serverDoc: MemoryDoc = {
   backlinks: [],
   last_commit: null,
 };
+
+/** The scopes the index lists: one with a file, one without. */
+const scopeRows: ScopeRow[] = [
+  { id: 'global', kind: 'global', name: null, file: null },
+  {
+    id: 'widgets',
+    kind: 'file',
+    name: null,
+    file: { id: 'widgets', implies: [], triggers: [], version: 'v' },
+  },
+];
 
 const memoryRow: MemoryStatsRow = {
   memory: 'widget-naming',
@@ -62,7 +74,7 @@ vi.mock('../src/api/client', () => ({
     deleteMemory: () => Promise.resolve({ kind: 'written' }),
     memoryHistory: () => Promise.resolve([]),
     memoryHistoryEntry: () => Promise.resolve({ commit: {}, content: '', diff: '' }),
-    scopeIndex: () => Promise.resolve([]),
+    scopeIndex: () => Promise.resolve(scopeRows),
     scope: () =>
       Promise.resolve({ id: 'widgets', implies: [], triggers: [], version: 'v' }),
     putScope: () => Promise.resolve({ kind: 'written' }),
@@ -86,6 +98,7 @@ vi.mock('../src/api/client', () => ({
 }));
 
 const { paths, resolve } = await import('../src/routes');
+const { menuItemsFor } = await import('../src/components/fmn-sidebar');
 await import('../src/components/fmn-app');
 
 /** Waits for the element and everything it loads to settle. */
@@ -206,4 +219,48 @@ test('a subagent is listed in the order it arrived, or level with the session it
   expect(rows.map((row) => cellsOf(row)[0])).toEqual([session.name, subagent.name]);
   expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
   expect(rows[0]?.querySelector('td')?.classList.contains('nested')).toBe(false);
+});
+
+// The source of these two expectations is what the tree menu can act on: the file is
+// the only thing a delete removes, and a memory made from a session scope belongs to
+// that session.
+
+/** The tree node of one scope row, as the tree draws it. */
+function scopeNode(row: ScopeRow): TreeNode {
+  return {
+    kind: 'scope',
+    key: `scope:${row.id}`,
+    label: row.id,
+    scopeId: row.id,
+    scope: row,
+    children: [],
+    count: 0,
+  };
+}
+
+function menuLabels(node: TreeNode): string[] {
+  return menuItemsFor(node).map((item) => item.label);
+}
+
+test('the tree menu offers to delete a scope that has no file to delete', () => {
+  const session: ScopeRow = {
+    id: 'session:alpha/session-1',
+    kind: 'session',
+    name: 'Rebuild the thermocouple rig',
+    file: null,
+  };
+  expect(menuLabels(scopeNode(session))).not.toContain('Delete scope');
+  expect(menuLabels(scopeNode(scopeRows[0]!))).not.toContain('Delete scope');
+  expect(menuLabels(scopeNode(scopeRows[1]!))).toContain('Delete scope');
+});
+
+test('the tree menu makes a memory in this scope out of a session', () => {
+  const session: ScopeRow = {
+    id: 'session:alpha/session-1',
+    kind: 'session',
+    name: null,
+    file: null,
+  };
+  expect(menuLabels(scopeNode(session))).toContain('New memory in this session');
+  expect(menuLabels(scopeNode(scopeRows[1]!))).toContain('New memory in this scope');
 });

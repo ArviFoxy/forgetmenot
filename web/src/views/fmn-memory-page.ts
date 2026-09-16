@@ -124,10 +124,9 @@ export class FmnMemoryPage extends PageElement {
   override updated(): void {
     if (!this.loadedOptions) {
       this.loadedOptions = true;
-      void this.scopeOptions.load(async () => {
-        const [scopes, contexts] = await Promise.all([api.scopeIndex(), api.contexts()]);
-        return suggestScopes(scopes, contexts, this.doc.value?.scopes ?? []);
-      });
+      void this.scopeOptions.load(async () =>
+        suggestScopes(await api.scopeIndex(), this.doc.value?.scopes ?? []),
+      );
     }
     // The key a load is remembered by: a new memory is loaded once, from nothing.
     const wanted = this.creating ? 'new' : this.memoryId;

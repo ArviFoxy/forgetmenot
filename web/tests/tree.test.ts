@@ -1,12 +1,12 @@
 import { expect, test } from 'vitest';
-import type { MemorySummary, ScopeDoc } from '../src/api/types';
+import type { MemorySummary, ScopeRow } from '../src/api/types';
 import { buildTree, filterTree, keysToReveal, type TreeNode } from '../src/model/tree';
 
 // The source of these expectations is the data model in the README together with the
-// shape the navigation promises: one list of scopes, each holding its memories, with
-// the session scopes gathered under a "Sessions" node by machine because there is one
-// per session. A scope's type is a label on the scope and groups nothing. `global` is
-// always on; `machine:<name>` and `session:<machine>/<id>` are scopes with no file.
+// shape the navigation promises: the server lists every scope that exists, one row
+// each, and the tree draws one node per row holding the memories that name it, with
+// the session rows gathered under a "Sessions" node by machine because there is one
+// row per session.
 
 function memory(id: string, scopes: string[], over: Partial<MemorySummary> = {}): MemorySummary {
   return {
@@ -23,17 +23,25 @@ function memory(id: string, scopes: string[], over: Partial<MemorySummary> = {})
   };
 }
 
-function scope(id: string, over: Partial<ScopeDoc> = {}): ScopeDoc {
-  return { id, implies: [], triggers: [], version: 'v', ...over };
+/** The index row of a scope with a file. */
+function fileRow(id: string): ScopeRow {
+  return { id, kind: 'file', name: null, file: { id, implies: [], triggers: [], version: 'v' } };
+}
+
+const globalRow: ScopeRow = { id: 'global', kind: 'global', name: null, file: null };
+
+function machineRow(machine: string): ScopeRow {
+  return { id: `machine:${machine}`, kind: 'machine', name: null, file: null };
+}
+
+function sessionRow(machine: string, session: string, name: string | null = null): ScopeRow {
+  return { id: `session:${machine}/${session}`, kind: 'session', name, file: null };
 }
 
 function find(nodes: TreeNode[], label: string): TreeNode {
-  for (const node of nodes) {
-    if (node.label === label) return node;
-    const below = node.children.length > 0 ? findOrNull(node.children, label) : null;
-    if (below !== null) return below;
-  }
-  throw new Error(`no node labelled ${label}`);
+  const found = findOrNull(nodes, label);
+  if (found === null) throw new Error(`no node labelled ${label}`);
+  return found;
 }
 
 function findOrNull(nodes: TreeNode[], label: string): TreeNode | null {
@@ -49,21 +57,29 @@ function labels(nodes: TreeNode[]): string[] {
   return nodes.map((node) => node.label);
 }
 
+/** The scope ids of every scope node in the tree, wherever it sits. */
+function scopeIds(nodes: TreeNode[]): string[] {
+  return nodes.flatMap((node) => [
+    ...(node.kind === 'scope' ? [node.scopeId ?? ''] : []),
+    ...scopeIds(node.children),
+  ]);
+}
+
 test('a scope with a file is grouped instead of listed with the others', () => {
-  const nodes = buildTree([scope('widgets'), scope('rocketry'), scope('shed')], []);
+  const nodes = buildTree([globalRow, fileRow('widgets'), fileRow('rocketry'), fileRow('shed')], []);
   // One list, and nothing between the root and a scope.
   expect(labels(nodes)).toEqual(['global', 'rocketry', 'shed', 'widgets']);
 });
 
 test('the global scope is listed among the others instead of leading', () => {
-  const nodes = buildTree([scope('alpha-project')], [memory('bench-power', ['global'])]);
+  const nodes = buildTree([fileRow('alpha-project'), globalRow], [memory('bench-power', ['global'])]);
   expect(labels(nodes)[0]).toBe('global');
   expect(labels(find(nodes, 'global').children)).toEqual(['bench-power']);
 });
 
 test('a session memory is listed outside the Sessions category and its machine', () => {
   const nodes = buildTree(
-    [],
+    [sessionRow('alpha', 'session-1')],
     [memory('sessions/alpha/session-1/notes', ['session:alpha/session-1'])],
   );
   const sessions = find(nodes, 'Sessions');
@@ -73,37 +89,48 @@ test('a session memory is listed outside the Sessions category and its machine',
   expect(labels(find(machine.children, 'session-1').children)).toEqual(['notes']);
 });
 
-test('a session known by a name is still listed by its id alone', () => {
-  // The name a session is known by, which the contexts the sidebar loads report.
-  const nodes = buildTree(
-    [],
-    [],
-    ['session:alpha/session-1'],
-    new Map([['session:alpha/session-1', 'the thermocouple rig']]),
-  );
+test('a session the index names is listed by its id rather than by that name', () => {
+  const nodes = buildTree([sessionRow('alpha', 'session-1', 'the thermocouple rig')], []);
 
   const listed = find(nodes, 'alpha').children;
   expect(listed).toHaveLength(1);
   expect(listed[0]?.scopeId).toBe('session:alpha/session-1');
-  expect(listed[0]?.label).toContain('session-1');
-  expect(listed[0]?.label).toContain('the thermocouple rig');
+  expect(listed[0]?.label).toBe('the thermocouple rig');
 });
 
 test('a machine scope is put under a category instead of in the list with the rest', () => {
-  const nodes = buildTree([scope('widgets')], [], ['machine:alpha', 'global']);
+  const nodes = buildTree([globalRow, machineRow('alpha'), fileRow('widgets')], []);
   expect(labels(nodes)).toEqual(['global', 'machine:alpha', 'widgets']);
 });
 
-test('a scope with no file is reported as one that has a file, so the tree offers to delete it', () => {
-  const nodes = buildTree([scope('widgets')], [], ['machine:alpha']);
-  expect(find(nodes, 'widgets').implicit).toBe(false);
-  expect(find(nodes, 'machine:alpha').implicit).toBe(true);
-  expect(find(nodes, 'global').implicit).toBe(true);
+test('a memory that names an id the index does not list is drawn as a scope of its own', () => {
+  const nodes = buildTree([globalRow], [memory('stray', ['not-a-real-scope'])]);
+  expect(labels(nodes)).toEqual(['global']);
+  expect(find(nodes, 'global').children).toEqual([]);
+  expect(findOrNull(nodes, 'stray')).toBeNull();
+});
+
+test('the tree drops a row the index lists, or draws a scope node for something else', () => {
+  const rows = [
+    globalRow,
+    machineRow('alpha'),
+    fileRow('widgets'),
+    sessionRow('alpha', 'session-1'),
+    sessionRow('beta', 'session-2', 'the bracket rework'),
+  ];
+  const drawn = scopeIds(buildTree(rows, [memory('widget-naming', ['widgets', 'global'])]));
+  expect([...drawn].sort()).toEqual(rows.map((row) => row.id).sort());
+});
+
+test('the tree reads a context active scope, so an id no row lists can reach it', () => {
+  // The rows and the memories are the whole input: there is no third parameter a
+  // context's active set could come in through.
+  expect(buildTree).toHaveLength(2);
 });
 
 test('a memory in two scopes appears under one of them only', () => {
   const nodes = buildTree(
-    [scope('widgets'), scope('rocketry')],
+    [fileRow('widgets'), fileRow('rocketry')],
     [memory('widget-naming', ['widgets', 'rocketry'])],
   );
   expect(labels(find(nodes, 'widgets').children)).toEqual(['widget-naming']);
@@ -112,7 +139,7 @@ test('a memory in two scopes appears under one of them only', () => {
 
 test('a count reports the node itself rather than the memories under it', () => {
   const nodes = buildTree(
-    [scope('widgets')],
+    [fileRow('widgets'), sessionRow('alpha', 'session-1')],
     [
       memory('a', ['widgets']),
       memory('b', ['widgets']),
@@ -124,17 +151,11 @@ test('a count reports the node itself rather than the memories under it', () => 
   expect(find(nodes, 'alpha').count).toBe(1);
 });
 
-test('a scope id a memory names that is neither a file nor implicit is dropped', () => {
-  const nodes = buildTree([], [memory('stray', ['not-a-real-scope'])]);
-  expect(labels(nodes)).toEqual(['global', 'not-a-real-scope']);
-  expect(labels(find(nodes, 'not-a-real-scope').children)).toEqual(['stray']);
-});
-
 // The filter is what the search box does: case-insensitive, literal, no pattern
 // matching and no fuzzy matching.
 
 const hierarchy = buildTree(
-  [scope('widgets'), scope('rocketry')],
+  [globalRow, fileRow('widgets'), fileRow('rocketry')],
   [
     memory('widget-naming', ['widgets']),
     memory('rocket-stages', ['rocketry']),
@@ -157,7 +178,7 @@ test('a match drops the node above it, so it cannot be found', () => {
 
 test('a session memory that matches loses the Sessions node above it', () => {
   const withSession = buildTree(
-    [],
+    [sessionRow('alpha', 'session-1')],
     [memory('sessions/alpha/session-1/notes', ['session:alpha/session-1'])],
   );
   const shown = filterTree(withSession, 'notes');
@@ -187,7 +208,7 @@ test('the open memory is left buried, with the scope above it collapsed', () => 
 
 test('a session memory is left buried, with Sessions and its machine collapsed', () => {
   const withSession = buildTree(
-    [],
+    [sessionRow('alpha', 'session-1')],
     [memory('sessions/alpha/session-1/notes', ['session:alpha/session-1'])],
   );
   const keys = keysToReveal(withSession, 'sessions/alpha/session-1/notes', '');

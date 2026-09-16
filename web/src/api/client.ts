@@ -17,6 +17,7 @@ import type {
   ReviewReport,
   ScopeCreateRequest,
   ScopeDoc,
+  ScopeRow,
   ScopeStatsRow,
   ScopeWriteRequest,
   SettingsDoc,
@@ -79,7 +80,7 @@ export interface ApiClient {
   deleteMemory(id: string, request: DeleteRequest): Promise<WriteOutcome<MemoryDoc, DeleteResponse>>;
   memoryHistory(id: string): Promise<Commit[]>;
   memoryHistoryEntry(id: string, oid: string): Promise<HistoryEntry>;
-  scopeIndex(): Promise<ScopeDoc[]>;
+  scopeIndex(): Promise<ScopeRow[]>;
   scope(id: string): Promise<ScopeDoc>;
   putScope(id: string, request: ScopeWriteRequest): Promise<WriteOutcome<ScopeDoc>>;
   createScope(request: ScopeCreateRequest): Promise<WriteOutcome<ScopeDoc>>;
@@ -167,7 +168,7 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     memoryHistoryEntry: (id, oid) =>
       read<HistoryEntry>(`/api/memories/${memoryPath(id)}/history/${encodeURIComponent(oid)}`),
 
-    scopeIndex: () => read<ScopeDoc[]>('/api/scopes'),
+    scopeIndex: () => read<ScopeRow[]>('/api/scopes'),
     scope: (id) => read<ScopeDoc>(`/api/scopes/${encodeURIComponent(id)}`),
 
     putScope(id, request) {

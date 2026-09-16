@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import type { ContextRow, ScopeDoc } from '../src/api/types';
+import type { ScopeRow } from '../src/api/types';
 import {
   addTag,
   cleanTag,
@@ -11,27 +11,24 @@ import {
 } from '../src/model/tagField';
 
 // The source of these expectations is what the field promises: the ids it offers are
-// the scopes that exist and can sensibly be picked, an id typed by hand is allowed,
-// and the keys behave as in any tag field.
+// the scopes the server lists and can sensibly be picked, an id typed by hand is
+// allowed, and the keys behave as in any tag field.
 
-function scope(id: string): ScopeDoc {
-  return { id, implies: [], triggers: [], version: 'v' };
+/** The index row of a scope with a file. */
+function fileRow(id: string): ScopeRow {
+  return { id, kind: 'file', name: null, file: { id, implies: [], triggers: [], version: 'v' } };
 }
 
-function context(key: string, active: string[]): ContextRow {
-  return {
-    key,
-    name: '',
-    title: null,
-    first_prompt: null,
-    parent: null,
-    task: null,
-    agent_type: null,
-    active_scopes: active,
-    delivered_count: 0,
-    last_seen: '2026-01-01T00:00:00Z',
-  };
-}
+const globalRow: ScopeRow = { id: 'global', kind: 'global', name: null, file: null };
+
+const machineRow: ScopeRow = { id: 'machine:alpha', kind: 'machine', name: null, file: null };
+
+const sessionRow: ScopeRow = {
+  id: 'session:alpha/session-1',
+  kind: 'session',
+  name: 'the thermocouple rig',
+  file: null,
+};
 
 test('a typed id keeps the spaces and commas that separate ids', () => {
   expect(cleanTag('  widgets , ')).toBe('widgets');
@@ -65,32 +62,32 @@ test('the list matches only when the case matches, or matches nothing at all', (
 });
 
 test('a scope with a file is left out of the list', () => {
-  const offered = suggestScopes([scope('widgets'), scope('rocketry')], []);
+  const offered = suggestScopes([fileRow('widgets'), fileRow('rocketry')]);
   expect(offered).toContain('widgets');
   expect(offered).toContain('rocketry');
 });
 
 test('the global scope has to be typed by hand', () => {
-  expect(suggestScopes([], [])).toEqual(['global']);
+  expect(suggestScopes([globalRow])).toEqual(['global']);
 });
 
-test('a machine a context is running on is left out of the list', () => {
-  const offered = suggestScopes([], [context('alpha/s1', ['global', 'machine:alpha', 'widgets'])]);
-  expect(offered).toContain('machine:alpha');
-  // A scope the context has on that is neither implicit nor a file is not offered.
-  expect(offered).not.toContain('widgets');
+test('a scope the index does not list is offered all the same', () => {
+  expect(suggestScopes([])).toEqual([]);
+});
+
+test('a machine the index lists is left out of the list', () => {
+  expect(suggestScopes([machineRow])).toContain('machine:alpha');
 });
 
 test('a session scope is offered although nothing is in it', () => {
-  const contexts = [context('alpha/s1', ['session:alpha/session-1'])];
-  expect(suggestScopes([], contexts)).not.toContain('session:alpha/session-1');
+  expect(suggestScopes([globalRow, sessionRow])).not.toContain('session:alpha/session-1');
   // Unless the item already carries it, in which case it stays on the list.
-  expect(suggestScopes([], contexts, ['session:alpha/session-1'])).toContain(
+  expect(suggestScopes([globalRow, sessionRow], ['session:alpha/session-1'])).toContain(
     'session:alpha/session-1',
   );
 });
 
-test('the same id is offered twice when a file and a context both name it', () => {
-  const offered = suggestScopes([scope('global')], [context('alpha/s1', ['global'])]);
+test('the same id is offered twice when a row and the chosen ids both name it', () => {
+  const offered = suggestScopes([globalRow], ['global']);
   expect(offered.filter((id) => id === 'global')).toHaveLength(1);
 });
