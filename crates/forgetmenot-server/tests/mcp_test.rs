@@ -23,8 +23,8 @@ use rmcp::service::ServiceError;
 use serde_json::{Value, json};
 
 use common::{
-    TestServer, additional_context, example_store_files, hook_fixture, permission_decision,
-    test_agent, tool_json, tool_text,
+    McpSession, TestServer, additional_context, example_store_files, hook_fixture,
+    permission_decision, permission_decision_reason, test_agent, tool_json, tool_text,
 };
 
 /// The machine every session in these tests runs on.
@@ -746,11 +746,13 @@ fn a_memory_deleted_through_mcp_is_reported_as_deleted_at_the_next_hook_event() 
     );
 
     // No base_version: the tool deletes the version the store holds now, which
-    // is what a model that has only read the index can do.
+    // is what a model that has only read the index can do. Deleted by another
+    // session, because the session that deletes a memory is recorded as holding
+    // the deletion and is told nothing about it.
     let answer = session.call(
         "memory_delete",
         json!({
-            "session_key": "alpha/session-1",
+            "session_key": "alpha/session-2",
             "id": "bench-power",
             "message": "the bench was removed"
         }),
@@ -1350,5 +1352,413 @@ fn a_conflicting_land_through_mcp_reports_the_file_and_both_texts() {
         open.as_array().map(Vec::len),
         Some(1),
         "the branch must be left open to resolve on, got {open}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What a write records about its own writer
+// ---------------------------------------------------------------------------
+
+/// A body marker for the edit a branch carries, written nowhere else in the
+/// example store, so that "the writer was given its own edit back" can be told
+/// from "the writer was given nothing".
+const BRANCH_EDIT_MARKER: &str = "wall switch in the corner";
+
+/// The body of the memory created on a branch, and the marker inside it.
+const BRANCH_MEMORY_ID: &str = "bench-lighting";
+const BRANCH_MEMORY_MARKER: &str = "The bench lamp is switched at the bench";
+
+/// The marker of an edit committed to the store by hand, outside the server.
+const OUTSIDE_EDIT_MARKER: &str = "The rule now also covers the charger bench.";
+
+/// Start one session, so that everything its scopes owe it, the global rule
+/// among them, has been delivered before the test changes anything.
+fn start_session(server: &TestServer, session_id: &str) {
+    let (status, answer) = server.hook(
+        MACHINE,
+        SOME_TOKENS,
+        &event_with("session_start", &[("session_id", json!(session_id))]),
+    );
+    assert_eq!(status, 200, "a session start must be answered");
+    assert!(
+        context_of(&answer).contains(BENCH_POWER_BODY),
+        "the session must be given the global rule in full at its start, got {answer}"
+    );
+}
+
+/// A prompt event whose text matches no trigger in the example store, so that
+/// what the answer carries is what the session is owed and nothing a scope was
+/// turned on for.
+fn plain_prompt(session_id: &str) -> Value {
+    event_with(
+        "user_prompt_submit",
+        &[
+            ("session_id", json!(session_id)),
+            ("prompt", json!("carry on from where we stopped")),
+        ],
+    )
+}
+
+/// Everything one hook answer tells the model: the context it injects and the
+/// reason it gives for holding a tool call, which is where a held call names
+/// what has arrived.
+fn answer_text(answer: &Value) -> String {
+    format!(
+        "{}\n{}",
+        context_of(answer),
+        permission_decision_reason(answer).unwrap_or_default()
+    )
+}
+
+/// The version of one memory as the store reports it, which a write has to be
+/// made against. Fetched for no session, so the fetch itself records nothing.
+fn memory_version(session: &McpSession<'_>, id: &str) -> String {
+    let document = tool_json(&session.call("memory_get", json!({ "id": id })));
+    document["version"]
+        .as_str()
+        .expect("a fetched memory names its version")
+        .to_string()
+}
+
+/// Assert that one tool call was accepted, naming what the store said if not.
+fn accepted(result: &rmcp::model::CallToolResult, what: &str) {
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "{what} must be accepted, got {}",
+        tool_text(result)
+    );
+}
+
+/// The bench power memory as a file, with `body` as its text, for a commit made
+/// outside the server.
+fn bench_power_file(body: &str) -> (String, Option<Vec<u8>>) {
+    let text = format!(
+        "---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and \
+         confirm with the meter\nmetadata:\n  kind: critical\n  scopes:\n  - global\n  source: \
+         user\n---\n# Cut bench power before rewiring\n\n{body}\n"
+    );
+    (
+        "memories/bench-power.md".to_string(),
+        Some(text.into_bytes()),
+    )
+}
+
+/// Detects a write through the MCP tools being delivered back to the session
+/// that made it: the writer composed the text and already holds it, so repeating
+/// it at the next event spends its context on what it just wrote. Every other
+/// session must still be given the new version, because it holds the old one.
+///
+/// The expectation is the one issue 11 states: a write records the writer as
+/// having seen what it wrote, and changes nothing for any other context.
+#[test]
+fn a_memory_written_through_mcp_is_not_delivered_back_to_its_writer_but_is_to_another_session() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    start_session(&server, "session-1");
+    start_session(&server, "session-2");
+
+    let version = memory_version(&session, "bench-power");
+    accepted(
+        &session.call(
+            "memory_set_fields",
+            json!({
+                "session_key": "alpha/session-1",
+                "id": "bench-power",
+                "description": "Cut bench power at the wall and prove the rail reads zero",
+                "base_version": version,
+                "message": "sharpen the bench power description",
+            }),
+        ),
+        "the write by session-1",
+    );
+
+    let (status, writer) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-1"));
+    assert_eq!(status, 200, "the writer's next event must be answered");
+    assert_eq!(
+        context_of(&writer),
+        "",
+        "the session that wrote the memory must be given nothing back, got {writer}"
+    );
+    let (status, other) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-2"));
+    assert_eq!(status, 200, "the other session's event must be answered");
+    assert!(
+        context_of(&other).contains(BENCH_POWER_BODY),
+        "the other session must be given the changed memory in full, got {other}"
+    );
+}
+
+/// Detects a retraction sent to the session that deleted the memory itself: it
+/// knows it deleted it, and being told the memory was withdrawn is one more thing
+/// to read about a decision it made. A session that still holds the memory must
+/// be told, or it would go on acting on a rule that is gone.
+///
+/// The expectation is the one issue 11 states for a deletion.
+#[test]
+fn a_memory_deleted_through_mcp_sends_no_retraction_to_its_deleter() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    start_session(&server, "session-1");
+    start_session(&server, "session-2");
+
+    let version = memory_version(&session, "bench-power");
+    accepted(
+        &session.call(
+            "memory_delete",
+            json!({
+                "session_key": "alpha/session-1",
+                "id": "bench-power",
+                "base_version": version,
+                "message": "the bench supply rule is no longer in force",
+            }),
+        ),
+        "the deletion by session-1",
+    );
+
+    let (status, deleter) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-1"));
+    assert_eq!(status, 200, "the deleter's next event must be answered");
+    assert!(
+        !has_retracted_line(context_of(&deleter), "bench-power", "deleted"),
+        "the session that deleted the memory must not be told it was withdrawn, got {deleter}"
+    );
+    let (status, other) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-2"));
+    assert_eq!(status, 200, "the other session's event must be answered");
+    assert!(
+        has_retracted_line(context_of(&other), "bench-power", "deleted"),
+        "the other session must be told the memory was withdrawn, got {other}"
+    );
+}
+
+/// Detects a rename delivered back to the session that made it, under either id:
+/// the renamer would be told the id it moved away from is gone and handed the
+/// body again under the id it chose, both of which it did itself. A session that
+/// holds the old id must be told both, because for it the memory has moved.
+///
+/// The expectation is the one issue 11 states for a rename, which is two ids: the
+/// one the memory left and the one it took.
+#[test]
+fn a_memory_renamed_through_mcp_is_delivered_to_its_renamer_under_neither_id() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    start_session(&server, "session-1");
+    start_session(&server, "session-2");
+
+    let version = memory_version(&session, "bench-power");
+    accepted(
+        &session.call(
+            "memory_rename",
+            json!({
+                "session_key": "alpha/session-1",
+                "from": "bench-power",
+                "to": "bench-supply",
+                "base_version": version,
+                "message": "call the rule after the supply it is about",
+            }),
+        ),
+        "the rename by session-1",
+    );
+
+    let (status, renamer) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-1"));
+    assert_eq!(status, 200, "the renamer's next event must be answered");
+    let text = context_of(&renamer);
+    assert!(
+        !has_retracted_line(text, "bench-power", "deleted"),
+        "the session that renamed the memory must not be told the old id is gone, got {renamer}"
+    );
+    assert!(
+        !text.contains(BENCH_POWER_BODY),
+        "the session that renamed the memory must not be given it again, got {renamer}"
+    );
+    let (status, other) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-2"));
+    assert_eq!(status, 200, "the other session's event must be answered");
+    let text = context_of(&other);
+    assert!(
+        has_retracted_line(text, "bench-power", "deleted"),
+        "the other session must be told the old id is gone, got {other}"
+    );
+    assert!(
+        text.contains("bench-supply") && text.contains(BENCH_POWER_BODY),
+        "the other session must be given the memory under its new id, got {other}"
+    );
+}
+
+/// Detects a landed branch delivered back to the session that landed it: every
+/// write on the branch is that session's own work, and the land is the moment it
+/// reaches `main`, so that is where the landing session is recorded as holding
+/// it. Every other session must be given the whole landed change.
+///
+/// The expectation is the one issue 11 states for a branch: a write on a branch
+/// records nothing until it lands, and the land records every memory the one
+/// commit changed.
+#[test]
+fn a_landed_branch_is_not_delivered_back_to_the_session_that_landed_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    start_session(&server, "session-1");
+    start_session(&server, "session-2");
+
+    let branch = tool_json(
+        &session.call("branch_create", json!({ "session_key": "alpha/session-1" })),
+    )["branch"]
+        .as_str()
+        .expect("branch_create names the branch")
+        .to_string();
+    accepted(
+        &session.call(
+            "memory_replace_text",
+            json!({
+                "session_key": "alpha/session-1",
+                "id": "bench-power",
+                "old_string": "off at the wall",
+                "new_string": "off at the wall switch in the corner",
+                "message": "say which switch cuts the bench supply",
+                "branch": branch,
+            }),
+        ),
+        "the edit on the branch",
+    );
+    accepted(
+        &session.call(
+            "memory_put",
+            json!({
+                "session_key": "alpha/session-1",
+                "id": BRANCH_MEMORY_ID,
+                "description": "The bench lamp has its own switch at the bench",
+                "kind": "critical",
+                "scopes": ["global"],
+                "source": "assistant",
+                "body": format!("# Bench lighting\n\n{BRANCH_MEMORY_MARKER}.\n"),
+                "message": "record where the bench lamp is switched",
+                "branch": branch,
+            }),
+        ),
+        "the new memory on the branch",
+    );
+    accepted(
+        &session.call(
+            "branch_land",
+            json!({
+                "session_key": "alpha/session-1",
+                "branch": branch,
+                "message": "say where the bench supply and the lamp are switched",
+            }),
+        ),
+        "the land",
+    );
+
+    let (status, lander) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-1"));
+    assert_eq!(status, 200, "the landing session's event must be answered");
+    assert_eq!(
+        context_of(&lander),
+        "",
+        "the session that landed the branch must be given none of it back, got {lander}"
+    );
+    let (status, other) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-2"));
+    assert_eq!(status, 200, "the other session's event must be answered");
+    let text = context_of(&other);
+    assert!(
+        text.contains(BRANCH_EDIT_MARKER),
+        "the other session must be given the edited memory in full, got {other}"
+    );
+    assert!(
+        text.contains(BRANCH_MEMORY_MARKER),
+        "the other session must be given the memory the branch created, got {other}"
+    );
+}
+
+/// Detects a write recorded against the whole session rather than the context
+/// that made it: a subagent is a context of its own, with an empty record and a
+/// model that has read nothing, so a memory its parent session wrote has to reach
+/// it like any other. A subagent starved of it would work without the rule.
+///
+/// The expectation is the one issue 11 states: the writer alone is recorded, and
+/// the writer's own subagents are other contexts.
+#[test]
+fn a_write_by_the_session_is_still_delivered_to_its_subagent() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    start_session(&server, "session-1");
+
+    accepted(
+        &session.call(
+            "memory_replace_text",
+            json!({
+                "session_key": "alpha/session-1",
+                "id": "bench-power",
+                "old_string": "off at the wall",
+                "new_string": "off at the wall switch in the corner",
+                "message": "say which switch cuts the bench supply",
+            }),
+        ),
+        "the write by session-1",
+    );
+
+    let (status, started) = server.hook(MACHINE, SOME_TOKENS, &hook_fixture("subagent_start"));
+    assert_eq!(status, 200, "the subagent start must be answered");
+    let (status, in_subagent) = server.hook(
+        MACHINE,
+        SOME_TOKENS,
+        &hook_fixture("pre_tool_use_in_subagent"),
+    );
+    assert_eq!(status, 200, "the subagent's tool call must be answered");
+
+    let told = format!("{}\n{}", answer_text(&started), answer_text(&in_subagent));
+    assert!(
+        told.contains(BRANCH_EDIT_MARKER),
+        "the subagent must be given what its session wrote, got {told:?}"
+    );
+    let (status, writer) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-1"));
+    assert_eq!(status, 200, "the writing session's event must be answered");
+    assert!(
+        !context_of(&writer).contains(BRANCH_EDIT_MARKER),
+        "the session that wrote the memory must still be given nothing back, got {writer}"
+    );
+}
+
+/// Detects a session held to hold every memory rather than the ones it wrote: a
+/// change committed to the store by hand is nobody's own write, so a session that
+/// has written something else must still be given it. Marking more than the ids
+/// written would silently withhold changes the session has never seen.
+///
+/// The expectation is the one issue 11 states: what a write records is the
+/// memories that write touched.
+#[test]
+fn a_change_committed_outside_the_server_is_still_delivered_to_the_session() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    start_session(&server, "session-1");
+
+    accepted(
+        &session.call(
+            "memory_put",
+            json!({
+                "session_key": "alpha/session-1",
+                "id": "bench-checklist",
+                "description": "The bench checklist hangs by the door and is worked top to bottom",
+                "kind": "knowledge",
+                "scopes": ["global"],
+                "source": "assistant",
+                "body": "# The bench checklist\n\nIt hangs by the door and is worked top to \
+                         bottom.\n",
+                "message": "record where the bench checklist hangs",
+            }),
+        ),
+        "the write by session-1",
+    );
+    server.commit(
+        "add the charger bench to the rule",
+        vec![bench_power_file(OUTSIDE_EDIT_MARKER)],
+    );
+
+    let (status, answer) = server.hook(MACHINE, SOME_TOKENS, &plain_prompt("session-1"));
+    assert_eq!(status, 200, "the next event must be answered");
+    let text = context_of(&answer);
+    assert!(
+        text.contains(OUTSIDE_EDIT_MARKER),
+        "a change the session did not write must be delivered to it, got {answer}"
+    );
+    assert!(
+        !text.contains("bench-checklist"),
+        "the memory the session wrote itself must not be delivered back, got {answer}"
     );
 }

@@ -6,10 +6,12 @@
 //! a context is delivered follows `main`, and a branch reaches `main` only by
 //! landing, as a single commit whose title the lander writes.
 
+use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::service::LandError;
+use crate::store::MemoryId;
 use crate::store::branch::BranchName;
 
 use super::{ConflictedFile, OperationError, ValidationMessage, iso8601};
@@ -170,6 +172,42 @@ pub async fn branch_land(
         }),
         Err(LandError::Busy) => Err(OperationError::Busy),
         Err(LandError::Store(error)) => Err(OperationError::Store(error)),
+    }
+}
+
+/// The memories one landed commit changed against `main` as it was before the
+/// land, which is what the landing session holds once the branch has landed.
+///
+/// A file in the commit that is no memory, a scope or the settings, is left out:
+/// only memories are delivered to a context. A commit whose files cannot be read
+/// yields nothing, because the land itself has happened and the most this costs
+/// is a memory delivered back to the session that wrote it.
+pub async fn landed_memories(state: &AppState, landed: &BranchLanded) -> Vec<MemoryId> {
+    let commit_oid = match Oid::from_str(&landed.commit_oid) {
+        Ok(commit_oid) => commit_oid,
+        Err(error) => {
+            tracing::warn!(
+                commit = %landed.commit_oid,
+                %error,
+                "the landed commit is not a revision, so its files are not read"
+            );
+            return Vec::new();
+        }
+    };
+    match state.store.commit_changed_paths(commit_oid).await {
+        Ok(paths) => paths
+            .iter()
+            .filter_map(|path| MemoryId::from_repository_path(path))
+            .collect(),
+        Err(error) => {
+            tracing::warn!(
+                commit = %commit_oid,
+                %error,
+                "the files a landed commit changed could not be read, so the landing session may \
+                 be delivered its own writes"
+            );
+            Vec::new()
+        }
     }
 }
 

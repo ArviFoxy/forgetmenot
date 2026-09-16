@@ -14,7 +14,7 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::store::catalog::Catalog;
+use crate::store::catalog::{Catalog, MemoryEntry};
 use crate::store::memory::MemoryKind;
 use crate::store::{MemoryId, ScopeId};
 
@@ -178,6 +178,25 @@ impl ContextState {
             last_seen: now,
         }
     }
+
+    /// Record that this context holds `memory` at its current version, in the
+    /// form its kind is delivered in.
+    ///
+    /// This is the one place a [`Shown`] is made, so that a fetch, a delivery
+    /// and a write by the context itself all record the same thing: the version
+    /// and the form come from the catalog entry, never from what a caller asked
+    /// for. `tokens` is the context size at that moment, absent where nothing
+    /// reports one.
+    pub fn note_shown(&mut self, memory: &MemoryEntry, tokens: Option<u64>) {
+        self.delivered.insert(
+            memory.id.clone(),
+            Shown {
+                version: memory.version.to_string(),
+                form: Form::for_kind(memory.kind()),
+                tokens,
+            },
+        );
+    }
 }
 
 /// The scopes a context starts in: everything global, everything for its
@@ -332,14 +351,7 @@ pub fn record_delivery(
         let Some(memory) = catalog.memory(id) else {
             continue;
         };
-        state.delivered.insert(
-            id.clone(),
-            Shown {
-                version: memory.version.to_string(),
-                form: Form::for_kind(memory.kind()),
-                tokens: tokens_now,
-            },
-        );
+        state.note_shown(memory, tokens_now);
     }
     for (id, _) in &needs.retracted {
         state.delivered.remove(id);

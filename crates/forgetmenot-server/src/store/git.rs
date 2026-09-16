@@ -490,6 +490,14 @@ impl GitRepo {
         Ok(self.repository.merge_base(head, upstream)?)
     }
 
+    /// The revision one commit was made against: its first parent.
+    ///
+    /// Every commit this server writes to `main`, a land included, has exactly
+    /// one parent, so this is the store as it was before that commit.
+    pub fn first_parent(&self, commit_oid: Oid) -> Result<Oid, GitError> {
+        Ok(self.repository.find_commit(commit_oid)?.parent_id(0)?)
+    }
+
     /// What changed in each file between two revisions, with the file's diff.
     pub fn changes_between(&self, base: Oid, head: Oid) -> Result<Vec<FileChange>, GitError> {
         let base_tree = self.repository.find_commit(base)?.tree()?;

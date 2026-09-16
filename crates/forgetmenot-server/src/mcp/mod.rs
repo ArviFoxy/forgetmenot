@@ -32,6 +32,7 @@ use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 
 use crate::app::AppState;
+use crate::context::ContextKey;
 use crate::operations::branches::{self, LandRequest};
 use crate::operations::settings::{self as settings_operations, SettingsWriteRequest};
 use crate::operations::{
@@ -110,6 +111,23 @@ impl ToolServer {
         Self {
             state,
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Record a write in the writing session's own context, so that what it just
+    /// wrote is not delivered back to it at its next event.
+    ///
+    /// A write on a branch records nothing: nothing on a branch is delivered to
+    /// any context, and the land is where the session is recorded as holding
+    /// what it wrote.
+    async fn note_writes(
+        &self,
+        author: &ContextKey,
+        branch: Option<&BranchName>,
+        ids: &[MemoryId],
+    ) {
+        if branch.is_none() {
+            operations::note_own_writes(&self.state, author, ids).await;
         }
     }
 }
@@ -225,7 +243,10 @@ impl ToolServer {
             message: params.message,
         };
         match operations::memory_put(&self.state, &id, &request, mode, branch.as_ref()).await {
-            Ok(outcome) => json_text(&outcome),
+            Ok(outcome) => {
+                self.note_writes(&author, branch.as_ref(), &[id]).await;
+                json_text(&outcome)
+            }
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -271,7 +292,10 @@ impl ToolServer {
             message: params.message,
         };
         match operations::memory_delete(&self.state, &id, &request, branch.as_ref()).await {
-            Ok(outcome) => json_text(&outcome),
+            Ok(outcome) => {
+                self.note_writes(&author, branch.as_ref(), &[id]).await;
+                json_text(&outcome)
+            }
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -303,7 +327,10 @@ impl ToolServer {
         };
         let id = MemoryId::new(params.id);
         match operations::memory_replace_text(&self.state, &id, &request, branch.as_ref()).await {
-            Ok(outcome) => json_text(&outcome),
+            Ok(outcome) => {
+                self.note_writes(&author, branch.as_ref(), &[id]).await;
+                json_text(&outcome)
+            }
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -339,7 +366,10 @@ impl ToolServer {
         };
         let id = MemoryId::new(params.id);
         match operations::memory_set_fields(&self.state, &id, &request, branch.as_ref()).await {
-            Ok(outcome) => json_text(&outcome),
+            Ok(outcome) => {
+                self.note_writes(&author, branch.as_ref(), &[id]).await;
+                json_text(&outcome)
+            }
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -368,7 +398,13 @@ impl ToolServer {
         };
         let from = MemoryId::new(params.from);
         match operations::memory_rename(&self.state, &from, &request, branch.as_ref()).await {
-            Ok(outcome) => json_text(&outcome),
+            Ok(outcome) => {
+                // Both ids: the memory is gone from the old one and the session
+                // holds it at the new one.
+                self.note_writes(&author, branch.as_ref(), &[from, request.to])
+                    .await;
+                json_text(&outcome)
+            }
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -443,7 +479,13 @@ impl ToolServer {
             author: author.to_string(),
         };
         match branches::branch_land(&self.state, &branch, &request).await {
-            Ok(landed) => json_text(&landed),
+            Ok(landed) => {
+                // The land is where the writes on the branch reach `main`, so it
+                // is where the landing session is recorded as holding them.
+                let written = branches::landed_memories(&self.state, &landed).await;
+                self.note_writes(&author, None, &written).await;
+                json_text(&landed)
+            }
             Err(error) => Ok(tool_failure(&error)),
         }
     }

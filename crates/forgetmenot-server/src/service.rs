@@ -367,6 +367,21 @@ impl Store {
         Ok(changes)
     }
 
+    /// The paths one commit changed against the revision it was made against.
+    pub async fn commit_changed_paths(&self, commit_oid: Oid) -> Result<Vec<String>, StoreError> {
+        let paths = self
+            .with_repository(move |repository| {
+                let parent = repository.first_parent(commit_oid)?;
+                Ok(repository
+                    .changes_between(parent, commit_oid)?
+                    .into_iter()
+                    .map(|change| change.path)
+                    .collect::<Vec<String>>())
+            })
+            .await?;
+        Ok(paths)
+    }
+
     /// Delete one branch, whatever it holds. Reports whether there was a branch
     /// to delete.
     pub async fn abandon_branch(&self, branch: &BranchName) -> Result<bool, StoreError> {

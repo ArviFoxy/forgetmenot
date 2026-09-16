@@ -126,6 +126,8 @@ Memory tools read and change the store; every change is one commit.
 | `memory_rename` | Move a memory to a new id and update every `[[link]]` to it |
 | `memory_delete` | Remove a memory; its history stays in git |
 
+A write through these tools records the writer's own session as having seen the new version, the same way `memory_get` does, so the change is delivered to every other session and subagent but not back to its writer; a write on a branch does this when the branch lands.
+
 Settings tools read and change the store's behaviour settings; a change is one commit and is in force for every session.
 
 | Tool | What it does |

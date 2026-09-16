@@ -26,8 +26,8 @@ use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::context::ContextKey;
 use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance};
-use crate::context::{ContextKey, Form, Shown};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
 use crate::stats::ToolCallRecord;
 use crate::store::branch::{BranchName, BranchNameError};
@@ -593,8 +593,8 @@ pub fn memory_index(catalog: &Catalog, filter: &MemoryFilter) -> Vec<MemorySumma
 
 /// One whole memory.
 ///
-/// With a context key the memory is recorded as delivered in full to that
-/// context, because that is what fetching it is: the model now has the body,
+/// With a context key the memory is recorded as held by that context at the
+/// version fetched, because that is what fetching it is: the model has the body,
 /// and delivering it again at the next event would repeat what it just read.
 /// The API passes `None`; the `memory_get` tool passes the calling session.
 pub async fn memory_get(
@@ -610,26 +610,60 @@ pub async fn memory_get(
 
     if let Some(key) = context {
         let now = state.clock.now();
-        let version = entry.version.to_string();
         state
             .contexts
             .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-                context.delivered.insert(
-                    id.clone(),
-                    Shown {
-                        version,
-                        form: Form::Full,
-                        // No hook event accompanies a fetch, so the context size
-                        // at this moment is unknown; staleness is judged again
-                        // from the next event that does carry one.
-                        tokens: None,
-                    },
-                );
+                // No hook event accompanies a fetch, so the context size at this
+                // moment is unknown; staleness is judged again from the next
+                // event that does carry one.
+                context.note_shown(entry, None);
                 context.last_seen = now;
             })
             .await;
     }
     Ok(document)
+}
+
+/// Record in `key`'s context that it wrote `ids` itself: a memory in the catalog
+/// after the write is noted at that version, one that is gone is forgotten, so
+/// neither is delivered back to its own writer.
+///
+/// The writer holds what it wrote, so repeating it at the next event would only
+/// send back the text the session just composed. Every other context, including
+/// a subagent of the writing session, keeps its own record and is delivered the
+/// change as usual.
+pub async fn note_own_writes(state: &AppState, key: &ContextKey, ids: &[MemoryId]) {
+    // The catalog of `main` after the commit, so the version noted is the one
+    // every other context is compared against.
+    let catalog = match state.store.snapshot().await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            tracing::warn!(
+                %key,
+                %error,
+                "the store could not be read after a write, so the writing session may be \
+                 delivered its own write"
+            );
+            return;
+        }
+    };
+    let now = state.clock.now();
+    state
+        .contexts
+        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
+            for id in ids {
+                match catalog.memory(id) {
+                    Some(entry) => context.note_shown(entry, None),
+                    // Gone from the store, so there is nothing to withdraw from
+                    // the context that removed it.
+                    None => {
+                        context.delivered.remove(id);
+                    }
+                }
+            }
+            context.last_seen = now;
+        })
+        .await;
 }
 
 /// Write one memory: create it or replace the version the caller read.
