@@ -147,8 +147,10 @@ pub enum HookEvent {
         #[serde(alias = "old_cwd")]
         previous_cwd: Option<String>,
     },
-    /// A compaction finished, so the context no longer holds what was
-    /// delivered before it.
+    /// A compaction finished. The rebuilt context holds none of what was
+    /// delivered before it, and Claude Code accepts no context in the answer
+    /// to this event: the conversation it rebuilds is the one a `SessionStart`
+    /// with source `compact` reports.
     #[serde(rename = "PostCompact")]
     PostCompact {
         #[serde(flatten)]

@@ -676,22 +676,28 @@ fn an_answer_past_the_threshold_in_bytes_but_not_in_characters_carries_no_notice
     );
 }
 
-/// Detects a compaction that leaves the delivery record standing: everything
-/// delivered before it is gone from the context, so the next event has to
-/// deliver it all again.
+/// Detects a compaction that leaves the delivery record standing, in either
+/// form: nothing delivered before a compaction is in the rebuilt conversation,
+/// so a critical memory has to arrive in full again and a knowledge memory as
+/// its index line again.
+///
+/// Source: Claude Code 2.1.x sends `SessionStart` with `"source": "compact"`
+/// for the conversation it rebuilds, and injects the answer to it.
 #[test]
-fn everything_due_is_delivered_again_after_a_compaction() {
+fn everything_due_is_delivered_again_at_the_session_start_of_a_compaction() {
     let server = TestServer::start(example_store_files(), |_| {});
     server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("post_compact"));
 
     let (status, answer) = server.hook(
         "alpha",
         SOME_TOKENS,
-        &event_with("user_prompt_submit", &[("prompt", json!("carry on"))]),
+        &event_with("session_start", &[("source", json!("compact"))]),
     );
 
-    assert_eq!(status, 200, "the event after a compaction must be answered");
+    assert_eq!(
+        status, 200,
+        "the session start of a compaction must be answered"
+    );
     let text = context_of(&answer);
     assert!(
         text.contains(BENCH_POWER_BODY),
@@ -704,6 +710,81 @@ fn everything_due_is_delivered_again_after_a_compaction() {
             "The workshop references are all on paper in the binder"
         ),
         "the knowledge index must be delivered again after a compaction, got {text:?}"
+    );
+}
+
+/// Detects the whole store delivered twice for one compaction: Claude Code runs
+/// the session start of the rebuilt conversation and then the compaction event,
+/// and a second event that begins the delivery record makes the first prompt
+/// afterwards hear everything again. Also detects a session start that drops the
+/// scopes its session works in, which would leave the rebuilt conversation
+/// without the memories of those scopes.
+///
+/// Source: Claude Code 2.1.x runs `SessionStart` with `"source": "compact"` and
+/// injects its answer into the rebuilt conversation, then runs `PostCompact`,
+/// whose answer it takes no context from.
+#[test]
+fn a_compaction_delivers_everything_once_at_its_session_start() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    server.hook("alpha", SOME_TOKENS, &widget_prompt());
+
+    let (_, rebuilt) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_with("session_start", &[("source", json!("compact"))]),
+    );
+    let (_, compaction) = server.hook("alpha", SOME_TOKENS, &hook_fixture("post_compact"));
+    let (_, prompt) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_with("user_prompt_submit", &[("prompt", json!("carry on"))]),
+    );
+
+    let text = context_of(&rebuilt);
+    assert!(
+        text.contains(BENCH_POWER_BODY),
+        "the rebuilt conversation must be given the global critical memory, got {text:?}"
+    );
+    assert!(
+        text.contains(WIDGET_NAMING_BODY),
+        "the session keeps the scopes it works in, so their critical memory must arrive too, got {text:?}"
+    );
+    assert_eq!(
+        compaction,
+        json!({}),
+        "a compaction takes no context, so it must be answered with the empty object, got {compaction}"
+    );
+    assert_eq!(
+        additional_context(&prompt),
+        None,
+        "everything was delivered at the session start, so the prompt must hear none of it again, got {prompt}"
+    );
+}
+
+/// Detects the scopes of one session reaching another: scopes belong to the
+/// session that turned them on, so a session id first seen at a session start
+/// works in the three implicit scopes and no others.
+#[test]
+fn a_new_session_id_starts_from_the_implicit_scopes() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &widget_prompt());
+
+    let (status, answer) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_with("session_start", &[("session_id", json!("session-9"))]),
+    );
+
+    assert_eq!(status, 200, "a session start must be answered");
+    let text = context_of(&answer);
+    assert!(
+        text.contains(BENCH_POWER_BODY),
+        "the new session must be given the global critical memory, got {text:?}"
+    );
+    assert!(
+        !text.contains(WIDGET_NAMING_BODY),
+        "a scope another session turned on must not reach a new session, got {text:?}"
     );
 }
 
@@ -720,8 +801,9 @@ fn everything_due_is_delivered_again_after_a_compaction() {
 #[test]
 fn a_compaction_is_answered_with_the_empty_object_and_nothing_else() {
     let server = TestServer::start(example_store_files(), |_| {});
-    // A session start first, so that the compaction is answered with a context
-    // that has memories owed to it rather than an empty one.
+    // A session start first, so that the compaction arrives at a context the
+    // server has already delivered to rather than one it is seeing for the
+    // first time.
     server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
 
     let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("post_compact"));

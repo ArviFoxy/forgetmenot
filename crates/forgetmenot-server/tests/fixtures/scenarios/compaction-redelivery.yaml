@@ -1,9 +1,10 @@
 name: compaction-redelivery
 reasoning: >
-  Detects a compaction that leaves the delivery record standing, and one that
-  also clears the scopes: after a compaction nothing delivered before it is in
-  the context any more, so everything due has to arrive again, but the session is
-  still working in the same scopes and must not lose them.
+  Detects a compaction that leaves the delivery record standing, one that also
+  clears the scopes, and one that delivers everything twice: what a compaction
+  rebuilds holds nothing that was delivered before it, so everything due has to
+  arrive once at the session start of the rebuilt conversation, while the session
+  is still working in the same scopes and must not lose them.
 
   Step 0, the session start: bench-power in full, reading-list and the session's
   notes as index lines.
@@ -12,15 +13,18 @@ reasoning: >
   widgets implies rocketry, so widget-naming arrives in full and rocket-stages as
   an index line. A prompt cannot stop anything, so the decision is context.
 
-  Step 2, the compaction itself: Claude Code is rebuilding the context at that
-  moment, so nothing is delivered and the answer asks for nothing. It empties the
-  delivery record and leaves the scopes alone.
+  Step 2, the session start of the conversation the compaction rebuilt: the
+  scopes are still global, machine:alpha, session:alpha/session-1, widgets and
+  rocketry, and the record of what the session has been shown begins afresh, so
+  both critical memories arrive in full again and all three knowledge memories as
+  index lines. Nothing is withdrawn: the record began afresh, the store did not
+  change.
 
-  Step 3, the next prompt, which matches no trigger: the scopes are still global,
-  machine:alpha, session:alpha/session-1, widgets and rocketry, and nothing at
-  all counts as delivered, so both critical memories arrive in full again and all
-  three knowledge memories as index lines. Nothing is withdrawn: the delivery
-  record was emptied, not the store.
+  Step 3, the compaction itself: Claude Code takes no context from its answer, so
+  nothing is delivered and the answer asks for nothing.
+
+  Step 4, the next prompt, which matches no trigger: everything due arrived at
+  step 2 and is still in the context, so nothing at all is delivered.
 steps:
   - hook:
       machine: alpha
@@ -54,6 +58,20 @@ steps:
       machine: alpha
       context_tokens: 20000
       event:
+        hook_event_name: SessionStart
+        session_id: session-1
+        cwd: /home/dev/widgets
+        permission_mode: default
+        source: compact
+    expect:
+      decision: context
+      full: [bench-power, widget-naming]
+      index: [reading-list, rocket-stages, sessions/alpha/session-1/notes]
+
+  - hook:
+      machine: alpha
+      context_tokens: 20000
+      event:
         hook_event_name: PostCompact
         session_id: session-1
         cwd: /home/dev/widgets
@@ -73,6 +91,4 @@ steps:
         permission_mode: default
         prompt: carry on where we left off
     expect:
-      decision: context
-      full: [bench-power, widget-naming]
-      index: [reading-list, rocket-stages, sessions/alpha/session-1/notes]
+      decision: none

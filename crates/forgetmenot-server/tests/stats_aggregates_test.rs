@@ -72,10 +72,14 @@ Stage numbering is written up separately in [[rocket-stages]]. A link written as
 ///    stopped and it is delivered in full (changed).
 /// 5. **The same PreToolUse again.** The pattern fires again; nothing is owed,
 ///    so the call is allowed and nothing is delivered.
-/// 6. **PostCompact.** The delivery record is emptied and nothing is delivered.
-/// 7. **Stop.** Everything due is new again: `bench-power`, `reading-list` and
-///    `widget-naming` in full, `notes` and `rocket-stages` as index lines. The
-///    message matches no trigger, because no pattern in the example store is on
+/// 6. **SessionStart with source `compact`,** the start of the conversation a
+///    compaction rebuilt. The session keeps its scopes and its record of what it
+///    has been shown begins afresh, so everything due is new again:
+///    `bench-power`, `reading-list` and `widget-naming` in full, `notes` and
+///    `rocket-stages` as index lines. Neither of its directories matches a
+///    trigger.
+/// 7. **Stop.** Nothing is owed and nothing is delivered. The message matches no
+///    trigger, because no pattern in the example store is on
 ///    `assistant_message`.
 ///
 /// So six hook events, one of them stopped; eleven deliveries; three trigger
@@ -126,12 +130,18 @@ fn run_sequence() -> TestServer {
         "step 5 must allow the re-issued call, got {allowed}"
     );
 
-    server.hook(MACHINE, TOKENS, &hook_fixture("post_compact"));
-
-    let (_, after_compaction) = server.hook(MACHINE, TOKENS, &hook_fixture("stop"));
+    let mut rebuilt = hook_fixture("session_start");
+    rebuilt["source"] = json!("compact");
+    let (_, after_compaction) = server.hook(MACHINE, TOKENS, &rebuilt);
     assert!(
         additional_context(&after_compaction).is_some(),
-        "step 7 must deliver everything due again after the compaction, got {after_compaction}"
+        "step 6 must deliver everything due again after the compaction, got {after_compaction}"
+    );
+
+    let (_, stop) = server.hook(MACHINE, TOKENS, &hook_fixture("stop"));
+    assert!(
+        additional_context(&stop).is_none(),
+        "step 7 must deliver nothing, everything due arrived in step 6, got {stop}"
     );
 
     server
@@ -160,7 +170,7 @@ fn a_memory_shown_as_an_index_line_and_later_in_full_reports_one_of_each() {
     assert_eq!(
         row["shown_full_new"],
         json!(1),
-        "one full delivery as new after the compaction, in step 7: {row}"
+        "one full delivery as new after the compaction, in step 6: {row}"
     );
     assert_eq!(
         row["shown_full_stale"],
@@ -191,7 +201,7 @@ fn full_deliveries_and_index_lines_are_never_added_into_one_count() {
     assert_eq!(
         critical["shown_full_new"],
         json!(2),
-        "delivered in full in step 1 and again in step 7: {critical}"
+        "delivered in full in step 1 and again in step 6: {critical}"
     );
     assert_eq!(
         critical["shown_index"],
@@ -203,7 +213,7 @@ fn full_deliveries_and_index_lines_are_never_added_into_one_count() {
     assert_eq!(
         knowledge["shown_index"],
         json!(2),
-        "named in an index line in step 2 and again in step 7: {knowledge}"
+        "named in an index line in step 2 and again in step 6: {knowledge}"
     );
     for column in ["shown_full_new", "shown_full_changed", "shown_full_stale"] {
         assert_eq!(

@@ -20,14 +20,14 @@ use forgetmenot_types::hook::{HookEvent, HookRequest, HookResponse};
 
 use crate::app::AppState;
 use crate::context::registry::Inheritance;
-use crate::context::{ContextState, Needs, compute_needs, initial_active, record_delivery};
+use crate::context::{ContextState, Needs, compute_needs, record_delivery};
 use crate::render::{self, Delivery};
 use crate::stats::{Decision, HookEventRecord, TriggerFire};
 use crate::store::ScopeId;
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
 use crate::store::scope::TriggerField;
-use events::{EventPlan, Reset};
+use events::EventPlan;
 
 /// Why a tool call was stopped. Fixed text: the model has to be able to tell
 /// this apart from a human refusing the call.
@@ -143,7 +143,8 @@ struct SessionName<'event> {
     first_prompt: Option<&'event str>,
 }
 
-/// The whole critical section: reset, activate, compute, record.
+/// The whole critical section: begin a session's state, activate, compute,
+/// record.
 ///
 /// Pure, so that the decision a context makes depends on the catalog snapshot,
 /// the state and the event alone.
@@ -155,21 +156,20 @@ fn apply(
     now: chrono::DateTime<chrono::Utc>,
     named: SessionName<'_>,
 ) -> Outcome {
-    match plan.reset {
-        Reset::Keep => {}
-        Reset::Fresh => {
-            *context = ContextState::fresh(
-                initial_active(&plan.key.machine, &plan.key.session_id),
-                context.parent.clone(),
-                now,
-            );
-        }
-        Reset::ClearDelivered => context.delivered.clear(),
+    // A session start makes the session's state anew: it is the one event that
+    // says a context begins here, so nothing counts as delivered into it and
+    // the scopes it carries are whatever the context already holds. For a
+    // session id first seen at this event those are the implicit three the
+    // registry created it with, and for one that is already known, such as a
+    // session resumed or rebuilt from a summary, they are the scopes it was
+    // working in.
+    if plan.session_start {
+        *context = ContextState::fresh(context.active.clone(), context.parent.clone(), now);
     }
 
     // The first event this context is seen at says where the session started.
-    // A `Reset::Fresh` above has just cleared it, so a session start fills it
-    // in from its own event in this same pass.
+    // A session start has just cleared it above, so it fills the directory in
+    // from its own event in this same pass.
     if context.session_directory.is_none() {
         context.session_directory = plan.cwd.clone();
     }
@@ -178,9 +178,9 @@ fn apply(
     // A `None` is the client having read no transcript, not the user having
     // taken the name away, so it leaves what the context holds alone; the read
     // fails on every event whose transcript is missing, and the name must not
-    // blink out of the contexts list when one does. This is after the reset
-    // above, so a session start that begins the record afresh fills the name
-    // back in from its own event.
+    // blink out of the contexts list when one does. This is after the state is
+    // made anew above, so a session start fills the name back in from its own
+    // event.
     if let Some(title) = named.title {
         context.session_title = Some(title.to_string());
     }
@@ -225,13 +225,8 @@ fn apply(
     }
     context.active = catalog.closure(&context.active);
 
-    let needs = if plan.deliver {
-        let needs = compute_needs(catalog, context, tokens_now);
-        record_delivery(context, &needs, catalog, tokens_now);
-        needs
-    } else {
-        Needs::default()
-    };
+    let needs = compute_needs(catalog, context, tokens_now);
+    record_delivery(context, &needs, catalog, tokens_now);
     context.last_seen = now;
 
     Outcome {

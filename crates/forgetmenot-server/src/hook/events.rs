@@ -1,6 +1,5 @@
 //! What one hook event means for a context: which context it belongs to, which
-//! texts its triggers are matched against, and what it does to the delivery
-//! record.
+//! texts its triggers are matched against, and what its answer may do.
 //!
 //! This is the whole of the event-to-text mapping, kept apart from the HTTP
 //! handler so that a change to Claude Code's payloads is a change to one file.
@@ -11,18 +10,6 @@ use crate::context::{ContextKey, MAIN_AGENT};
 use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 
-/// What an event does to the context's delivery record before anything else.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reset {
-    /// Leave the record alone.
-    Keep,
-    /// Start over: the session is new, so nothing has been delivered into it.
-    Fresh,
-    /// The scopes stay, the record goes: a compaction removed from the context
-    /// everything that had been delivered.
-    ClearDelivered,
-}
-
 /// One event, reduced to what the state machine needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventPlan {
@@ -32,13 +19,6 @@ pub struct EventPlan {
     pub event_name: &'static str,
     /// The texts to match triggers against, in the order they are matched.
     pub texts: Vec<(TriggerField, String)>,
-    pub reset: Reset,
-    /// Whether anything is delivered at this event.
-    ///
-    /// False for `PostCompact` only: Claude Code is rebuilding the context at
-    /// that moment, so what is owed is delivered at the next event, where the
-    /// injection point is the one every other event uses.
-    pub deliver: bool,
     /// Whether a critical arrival may stop the call, which only `PreToolUse`
     /// can do. Whether it does is the store's to say: see
     /// [`Settings::interrupts`].
@@ -89,8 +69,6 @@ pub fn plan(
         key: context_key(machine, common),
         event_name,
         texts: Vec::new(),
-        reset: Reset::Keep,
-        deliver: true,
         may_deny: false,
         tool_name: None,
         session_start: false,
@@ -101,9 +79,8 @@ pub fn plan(
     };
 
     match event {
-        HookEvent::SessionStart { source, .. } => {
+        HookEvent::SessionStart { .. } => {
             plan.session_start = true;
-            plan.reset = reset_for_source(source);
             plan.matches_directories = true;
             push_text(
                 &mut plan,
@@ -152,10 +129,11 @@ pub fn plan(
             plan.cwd = Some(cwd.clone());
             push_text(&mut plan, TriggerField::ShellDirectory, Some(cwd));
         }
-        HookEvent::PostCompact { .. } => {
-            plan.reset = Reset::ClearDelivered;
-            plan.deliver = false;
-        }
+        // Claude Code takes no context from the answer to a compaction, and
+        // sends a `SessionStart` with source `compact` for the conversation it
+        // rebuilds, which is the event everything due is delivered at. So this
+        // one is acknowledged and acted on no further.
+        HookEvent::PostCompact { .. } => return None,
         HookEvent::SubagentStart {
             agent_id,
             agent_type,
@@ -184,21 +162,6 @@ fn context_key(machine: &str, common: &HookCommon) -> ContextKey {
             ContextKey::subagent(machine, &common.session_id, agent_id)
         }
         _ => ContextKey::main(machine, &common.session_id),
-    }
-}
-
-/// What a session start does to the delivery record.
-///
-/// An unrecognised source is treated as a start from nothing: a source this
-/// server does not know is more likely to be a new kind of fresh session than a
-/// resumption, and delivering a memory again costs less than not delivering it.
-fn reset_for_source(source: &str) -> Reset {
-    match source {
-        "resume" => Reset::Keep,
-        // The context was rebuilt from a summary, so the scopes still hold but
-        // nothing delivered before it is still there.
-        "compact" => Reset::ClearDelivered,
-        _ => Reset::Fresh,
     }
 }
 
@@ -371,17 +334,5 @@ mod tests {
             Some("general-purpose"),
             "the kind of subagent that started must reach the context that records it"
         );
-    }
-
-    /// Detects a session start that wipes the delivery record when the session
-    /// was resumed, or keeps it when the session is new; both would make the
-    /// next event deliver the wrong set.
-    #[test]
-    fn each_session_start_source_resets_what_it_should() {
-        assert_eq!(reset_for_source("startup"), Reset::Fresh);
-        assert_eq!(reset_for_source("clear"), Reset::Fresh);
-        assert_eq!(reset_for_source("fork"), Reset::Fresh);
-        assert_eq!(reset_for_source("resume"), Reset::Keep);
-        assert_eq!(reset_for_source("compact"), Reset::ClearDelivered);
     }
 }
