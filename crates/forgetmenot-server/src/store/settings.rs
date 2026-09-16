@@ -67,6 +67,7 @@ pub enum SettingKey {
     ReminderTokens,
     InterruptOnCritical,
     InterruptExemptTools,
+    TriggerExemptTools,
     SubagentsInheritScopes,
     DeliverKnowledgeIndex,
     ToolResultMatchLimit,
@@ -74,10 +75,11 @@ pub enum SettingKey {
 }
 
 /// Every key the settings file may carry, in the order the schema lists them.
-pub const KEYS: [SettingKey; 7] = [
+pub const KEYS: [SettingKey; 8] = [
     SettingKey::ReminderTokens,
     SettingKey::InterruptOnCritical,
     SettingKey::InterruptExemptTools,
+    SettingKey::TriggerExemptTools,
     SettingKey::SubagentsInheritScopes,
     SettingKey::DeliverKnowledgeIndex,
     SettingKey::ToolResultMatchLimit,
@@ -91,6 +93,7 @@ impl SettingKey {
             SettingKey::ReminderTokens => "reminder_tokens",
             SettingKey::InterruptOnCritical => "interrupt_on_critical",
             SettingKey::InterruptExemptTools => "interrupt_exempt_tools",
+            SettingKey::TriggerExemptTools => "trigger_exempt_tools",
             SettingKey::SubagentsInheritScopes => "subagents_inherit_scopes",
             SettingKey::DeliverKnowledgeIndex => "deliver_knowledge_index",
             SettingKey::ToolResultMatchLimit => "tool_result_match_limit",
@@ -111,7 +114,9 @@ impl SettingKey {
             SettingKey::InterruptOnCritical
             | SettingKey::SubagentsInheritScopes
             | SettingKey::DeliverKnowledgeIndex => SettingType::Boolean,
-            SettingKey::InterruptExemptTools => SettingType::StringList,
+            SettingKey::InterruptExemptTools | SettingKey::TriggerExemptTools => {
+                SettingType::StringList
+            }
             SettingKey::ToolResultMatchLimit => SettingType::Integer,
         }
     }
@@ -130,6 +135,11 @@ impl SettingKey {
             }
             SettingKey::InterruptExemptTools => {
                 "Tool names that are never held, matched against the tool name exactly"
+            }
+            SettingKey::TriggerExemptTools => {
+                "Tool names whose inputs and results are never matched against triggers, matched \
+                 against the tool name exactly; the store's own MCP tools are never matched \
+                 whatever this says"
             }
             SettingKey::SubagentsInheritScopes => {
                 "A subagent starts with its parent's active scopes rather than the implicit ones \
@@ -167,6 +177,9 @@ pub struct Settings {
     pub interrupt_on_critical: bool,
     /// Tool names that are never held, by exact match on the tool name.
     pub interrupt_exempt_tools: Vec<String>,
+    /// Tool names whose inputs and results are kept away from the triggers, by
+    /// exact match on the tool name.
+    pub trigger_exempt_tools: Vec<String>,
     /// Whether a subagent starts with its parent's active scopes.
     pub subagents_inherit_scopes: bool,
     /// Whether the descriptions of knowledge memories are delivered.
@@ -185,6 +198,7 @@ impl Default for Settings {
             reminder_tokens: None,
             interrupt_on_critical: true,
             interrupt_exempt_tools: Vec::new(),
+            trigger_exempt_tools: Vec::new(),
             subagents_inherit_scopes: true,
             deliver_knowledge_index: true,
             tool_result_match_limit: DEFAULT_TOOL_RESULT_MATCH_LIMIT,
@@ -203,6 +217,7 @@ impl Settings {
             },
             SettingKey::InterruptOnCritical => Json::from(self.interrupt_on_critical),
             SettingKey::InterruptExemptTools => Json::from(self.interrupt_exempt_tools.clone()),
+            SettingKey::TriggerExemptTools => Json::from(self.trigger_exempt_tools.clone()),
             SettingKey::SubagentsInheritScopes => Json::from(self.subagents_inherit_scopes),
             SettingKey::DeliverKnowledgeIndex => Json::from(self.deliver_knowledge_index),
             SettingKey::ToolResultMatchLimit => Json::from(self.tool_result_match_limit),
@@ -241,6 +256,9 @@ impl Settings {
             }
             SettingKey::InterruptExemptTools => {
                 self.interrupt_exempt_tools = strings(value).ok_or_else(mismatch)?;
+            }
+            SettingKey::TriggerExemptTools => {
+                self.trigger_exempt_tools = strings(value).ok_or_else(mismatch)?;
             }
             SettingKey::SubagentsInheritScopes => {
                 self.subagents_inherit_scopes = value.as_bool().ok_or_else(mismatch)?;

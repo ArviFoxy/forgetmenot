@@ -69,6 +69,35 @@ session's own scopes and never touch the store; every tool takes session_key, wh
 in this session's first hook context as machine/session-id, or machine/session-id/agent-id \
 inside a subagent.";
 
+/// The name of every tool this server registers, as the tool itself is named.
+///
+/// A client prefixes these with `mcp__` and the name the user registered this
+/// server under, which is how the hook recognises the memory system's own
+/// traffic and keeps it away from the triggers: these calls carry scope ids,
+/// memory ids, session keys and whole memory bodies, none of which says anything
+/// about the work the session is doing. The unit test below holds this list to
+/// what the router registers.
+pub const FORGETMENOT_TOOL_NAMES: &[&str] = &[
+    "memory_index",
+    "memory_get",
+    "memory_put",
+    "memory_delete",
+    "memory_replace_text",
+    "memory_set_fields",
+    "memory_rename",
+    "branch_create",
+    "branch_list",
+    "branch_diff",
+    "branch_land",
+    "branch_abandon",
+    "settings_get",
+    "settings_set",
+    "session_scopes",
+    "session_scope_on",
+    "session_scope_off",
+    "session_inherit",
+];
+
 /// The tool handler: one per connection, over the server's shared state.
 #[derive(Clone)]
 pub struct ToolServer {
@@ -666,3 +695,31 @@ fn current_version(current: &CurrentDocument) -> &str {
 
 /// What a conflict shows for a document the store does not have yet.
 const NO_VERSION: &str = "none";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Detects [`FORGETMENOT_TOOL_NAMES`] drifting from the tools the router
+    /// registers: a tool missing from the list has its inputs and results
+    /// matched against triggers, which activates scopes from the memory
+    /// system's own traffic, and a name in the list that no tool has hides a
+    /// typo that would do the same. Source: the `#[tool]` functions of this
+    /// file, which are what a client can call.
+    #[test]
+    fn the_listed_tool_names_are_the_ones_the_router_registers() {
+        let registered: BTreeSet<String> = ToolServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        let listed: BTreeSet<String> = FORGETMENOT_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        assert_eq!(
+            listed, registered,
+            "every registered tool must be listed and nothing else"
+        );
+    }
+}

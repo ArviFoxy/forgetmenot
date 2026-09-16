@@ -560,6 +560,169 @@ fn a_trigger_past_the_stores_tool_result_limit_does_not_fire_while_one_before_it
     );
 }
 
+/// Text carrying the trigger pattern of every scope of the example store, in the
+/// shape the store's own session tools answer in: scope ids one per line and a
+/// directory. Source: the patterns in `examples/store/scopes/*.yaml`.
+const EVERY_SCOPE_PATTERN: &str =
+    "active:\n- widgets\navailable:\n- rocketry\n- workshop\ndirectory: /home/dev/workshop/bench\n";
+
+/// A `PostToolUse` from `tool` in `session` whose result is
+/// [`EVERY_SCOPE_PATTERN`].
+fn result_of(tool: &str, session: &str) -> Value {
+    event_with(
+        "post_tool_use",
+        &[
+            ("session_id", json!(session)),
+            ("tool_name", json!(tool)),
+            ("tool_output", json!(EVERY_SCOPE_PATTERN)),
+        ],
+    )
+}
+
+/// Detects the result of one of the store's own MCP tools being matched against
+/// triggers: `session_scopes` answers with every scope id the store has, so
+/// matching its answer activates scopes the work never touched, and a
+/// `session_scope_off` is turned straight back on by its own answer. Source: the
+/// trigger fields of `examples/store/scopes/*.yaml`, where `rocketry` names no
+/// field and so is matched against a tool result.
+#[test]
+fn a_result_of_the_stores_own_tool_activates_no_scope_while_the_same_text_from_bash_does() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let (status, exempt) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &result_of("mcp__forgetmenot__session_scopes", "session-store"),
+    );
+    let (_, matched) = server.hook("alpha", SOME_TOKENS, &result_of("Bash", "session-bash"));
+
+    assert_eq!(status, 200, "a finished tool call must be answered");
+    let exempt_text = context_of(&exempt);
+    assert!(
+        !has_index_line(exempt_text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "the store's own answer must not activate rocketry, got {exempt_text:?}"
+    );
+    assert!(
+        !exempt_text.contains(WIDGET_NAMING_BODY),
+        "the store's own answer must not activate widgets, got {exempt_text:?}"
+    );
+    let matched_text = context_of(&matched);
+    assert!(
+        has_index_line(matched_text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "the same text from a shell command must still activate rocketry, got {matched_text:?}"
+    );
+}
+
+/// Detects the input of one of the store's own MCP tools being matched against
+/// triggers: a `memory_put` carries the whole body of a memory, so matching it
+/// activates every scope that body talks about and holds the call that writes it
+/// against a memory the session was never working on. Source: the `tool_input`
+/// trigger of `examples/store/scopes/widgets.yaml`.
+#[test]
+fn an_input_to_the_stores_own_tool_activates_no_scope() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    // The session start settles what the implicit scopes owe this session, so
+    // that whatever the tool calls below deliver or hold for is the trigger's
+    // doing alone.
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    let call_of = |tool: &str| {
+        event_with(
+            "pre_tool_use_read",
+            &[
+                ("tool_name", json!(tool)),
+                (
+                    "tool_input",
+                    json!({ "id": "widget-naming", "body": EVERY_SCOPE_PATTERN }),
+                ),
+            ],
+        )
+    };
+
+    let (status, exempt) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &call_of("mcp__forgetmenot__memory_put"),
+    );
+    let (_, matched) = server.hook("alpha", SOME_TOKENS, &call_of("Bash"));
+
+    assert_eq!(status, 200, "a tool call must be answered");
+    assert_eq!(
+        additional_context(&exempt),
+        None,
+        "a call into the store must deliver nothing its input matched, got {exempt}"
+    );
+    assert_eq!(
+        permission_decision(&exempt),
+        None,
+        "a call into the store must not be held for what its own input said, got {exempt}"
+    );
+    assert!(
+        context_of(&matched).contains(WIDGET_NAMING_BODY),
+        "the same input to a shell command must deliver the widgets memory, got {matched}"
+    );
+}
+
+/// Detects a `trigger_exempt_tools` list that is not consulted, or one that
+/// exempts every tool: a store that names `Read` wants what it reads kept out of
+/// the matching, and a tool it did not name must still be matched. Source: the
+/// `trigger_exempt_tools` setting, whose match is on the whole tool name.
+#[test]
+fn a_tool_the_store_exempts_is_not_matched_while_another_tool_still_is() {
+    let server = TestServer::start(
+        example_store_with_settings("trigger_exempt_tools:\n- Read\n"),
+        |_| {},
+    );
+
+    let (status, exempt) = server.hook("alpha", SOME_TOKENS, &result_of("Read", "session-read"));
+    let (_, matched) = server.hook("alpha", SOME_TOKENS, &result_of("Grep", "session-grep"));
+
+    assert_eq!(status, 200, "a finished tool call must be answered");
+    let exempt_text = context_of(&exempt);
+    assert!(
+        !has_index_line(exempt_text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "the result of an exempt tool must activate no scope, got {exempt_text:?}"
+    );
+    let matched_text = context_of(&matched);
+    assert!(
+        has_index_line(matched_text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "the result of a tool the store did not name must still be matched, got {matched_text:?}"
+    );
+}
+
+/// Detects an exemption tied to one server name, and one that ignores the
+/// `mcp__` form: the name this server is registered under is the user's to
+/// choose, so `mcp__memory__session_scopes` is the same tool, while a bare
+/// `session_scopes` is some other tool that happens to share the name and its
+/// result is matched like any other. Source: the `mcp__<server>__<tool>` naming
+/// Claude Code gives an MCP tool.
+#[test]
+fn the_stores_own_tool_under_another_server_name_is_still_exempt() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let (status, renamed) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &result_of("mcp__memory__session_scopes", "session-renamed"),
+    );
+    let (_, bare) = server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &result_of("session_scopes", "session-bare"),
+    );
+
+    assert_eq!(status, 200, "a finished tool call must be answered");
+    let renamed_text = context_of(&renamed);
+    assert!(
+        !has_index_line(renamed_text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "the store's own tool under any server name must activate no scope, got {renamed_text:?}"
+    );
+    let bare_text = context_of(&bare);
+    assert!(
+        has_index_line(bare_text, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "a tool named without the mcp prefix must still be matched, got {bare_text:?}"
+    );
+}
+
 /// A store whose only files are one global critical memory with `body` and a
 /// settings file with `answer_file_threshold` set to `threshold`, so that the
 /// whole answer to a session start is that memory and nothing else.

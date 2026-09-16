@@ -1272,6 +1272,7 @@ fn the_settings_of_a_store_without_a_file_are_the_defaults_at_no_version() {
             "reminder_tokens": null,
             "interrupt_on_critical": true,
             "interrupt_exempt_tools": [],
+            "trigger_exempt_tools": [],
             "subagents_inherit_scopes": true,
             "deliver_knowledge_index": true,
             "tool_result_match_limit": 262_144,

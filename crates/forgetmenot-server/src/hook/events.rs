@@ -7,6 +7,7 @@
 use forgetmenot_types::hook::{HookCommon, HookEvent};
 
 use crate::context::{ContextKey, MAIN_AGENT};
+use crate::mcp::FORGETMENOT_TOOL_NAMES;
 use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 
@@ -99,18 +100,26 @@ pub fn plan(
             plan.may_deny = true;
             plan.matches_directories = true;
             plan.tool_name = Some(tool_name.clone());
-            push_text(&mut plan, TriggerField::ToolName, Some(tool_name));
-            let input = string_leaves(tool_input, usize::MAX);
-            push_text(&mut plan, TriggerField::ToolInput, Some(&input));
+            if !triggers_exempt(settings, tool_name) {
+                push_text(&mut plan, TriggerField::ToolName, Some(tool_name));
+                let input = string_leaves(tool_input, usize::MAX);
+                push_text(&mut plan, TriggerField::ToolInput, Some(&input));
+            }
             push_text(
                 &mut plan,
                 TriggerField::ShellDirectory,
                 common.cwd.as_deref(),
             );
         }
-        HookEvent::PostToolUse { tool_output, .. } => {
-            let result = string_leaves(tool_output, settings.tool_result_cap());
-            push_text(&mut plan, TriggerField::ToolResult, Some(&result));
+        HookEvent::PostToolUse {
+            tool_name,
+            tool_output,
+            ..
+        } => {
+            if !triggers_exempt(settings, tool_name) {
+                let result = string_leaves(tool_output, settings.tool_result_cap());
+                push_text(&mut plan, TriggerField::ToolResult, Some(&result));
+            }
         }
         HookEvent::Stop {
             last_assistant_message,
@@ -152,6 +161,39 @@ pub fn plan(
         HookEvent::Unknown => return None,
     }
     Some(plan)
+}
+
+/// Whether the name, the input and the result of `tool_name` are kept out of the
+/// texts the triggers are matched against.
+///
+/// Two tools are exempt: this server's own MCP tools, whose inputs and answers
+/// carry scope ids, memory ids, session keys and whole memory bodies, so
+/// matching them activates scopes from the memory system's traffic rather than
+/// from the work; and whatever the store lists in `trigger_exempt_tools`. The
+/// directories a tool call reports are matched either way, because a directory
+/// says where the session is working whatever tool named it.
+pub fn triggers_exempt(settings: &Settings, tool_name: &str) -> bool {
+    is_forgetmenot_tool(tool_name)
+        || settings
+            .trigger_exempt_tools
+            .iter()
+            .any(|exempt| exempt == tool_name)
+}
+
+/// Whether `tool_name` is one of this server's own MCP tools as a client names
+/// it: `mcp__`, the name the user registered this server under, `__`, and the
+/// tool's own name. The server name is the user's to choose, so any non-empty
+/// one counts; the tool name is taken as the last segment, since no tool of this
+/// server has `__` in its name. A bare tool name with no `mcp__` prefix is some
+/// other tool that happens to share a name.
+fn is_forgetmenot_tool(tool_name: &str) -> bool {
+    let Some(rest) = tool_name.strip_prefix("mcp__") else {
+        return false;
+    };
+    let Some((server, tool)) = rest.rsplit_once("__") else {
+        return false;
+    };
+    !server.is_empty() && FORGETMENOT_TOOL_NAMES.contains(&tool)
 }
 
 /// The context an event belongs to: the subagent's when the event carries an
