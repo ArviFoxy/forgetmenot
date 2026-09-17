@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, test, vi } from 'vitest';
-import type { ContextRow, MemoryDoc, MemoryStatsRow, ScopeRow } from '../src/api/types';
+import type {
+  ContextPrompt,
+  ContextRow,
+  MemoryDoc,
+  MemoryStatsRow,
+  ScopeRow,
+} from '../src/api/types';
 import type { TreeNode } from '../src/model/tree';
 
 // The source of these expectations is what the pages promise: every address the app
@@ -62,11 +68,27 @@ const memoryRow: MemoryStatsRow = {
 };
 
 /**
+ * The prompt the server renders for one context, with a text long enough that its
+ * size is reported in kilobytes rather than as a count of bytes.
+ */
+const promptText = `[forgetmenot] context alpha/session-1\n${'the rule that binds this session.\n'.repeat(60)}`;
+
+const contextPrompt: ContextPrompt = {
+  key: 'alpha/session-1',
+  name: 'Rebuild the thermocouple rig',
+  mode: 'all',
+  text: promptText,
+  bytes: promptText.length,
+  tokens_estimate: Math.ceil(promptText.length / 4),
+};
+
+/**
  * What the mocked API answers with, which a test sets before it renders. Hoisted
  * because the mock factory below runs before anything else in this file.
  */
 const answers = vi.hoisted(() => ({
   contexts: [] as unknown[],
+  contextPrompt: null as unknown,
   scopeWrites: [] as { scope_message: string | null; forget: { tokens_since_trigger: number } | null }[],
 }));
 
@@ -116,6 +138,7 @@ vi.mock('../src/api/client', () => ({
     putSetting: () => Promise.resolve({ kind: 'written' }),
     machineIndex: () => Promise.resolve(['alpha', 'beta']),
     contexts: () => Promise.resolve(answers.contexts),
+    contextPrompt: () => Promise.resolve(answers.contextPrompt),
     review: () => Promise.resolve({ errors: [], global_only_critical: [] }),
     memoryStats: () => Promise.resolve([memoryRow]),
     triggerStats: () => Promise.resolve([]),
@@ -126,6 +149,7 @@ vi.mock('../src/api/client', () => ({
   },
 }));
 
+const { formatBytes } = await import('../src/model/units');
 const { paths, resolve } = await import('../src/routes');
 const { menuItemsFor } = await import('../src/components/fmn-sidebar');
 await import('../src/components/fmn-app');
@@ -141,6 +165,7 @@ async function settle(element: HTMLElement & { updateComplete?: Promise<unknown>
 beforeEach(() => {
   document.body.innerHTML = '';
   answers.contexts = [];
+  answers.contextPrompt = contextPrompt;
   answers.scopeWrites = [];
 });
 
@@ -198,6 +223,7 @@ test('an address the app links to has no element registered to show it', () => {
     paths.scopeNew(),
     paths.scope('session:alpha/session-1'),
     paths.contexts(),
+    paths.contextPrompt('alpha/session-1/agent-7f3a'),
     paths.stats(),
     paths.settings(),
     '/no/such/address',
@@ -271,6 +297,54 @@ test('a session whose subagent was seen last is listed under a session seen earl
     otherSession.name,
   ]);
   expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
+});
+
+// The source of these two expectations is this ticket: the prompt page shows the
+// text as it would arrive, in a monospace block, with the size it costs above it in
+// the unit a reader of the page uses; and the name in the contexts table is the way
+// to that page.
+
+test('the prompt page shows the size in raw bytes, or hides the text the context would be given', async () => {
+  const page = document.createElement('fmn-context-prompt-view') as HTMLElement & {
+    contextKey: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.contextKey = contextPrompt.key;
+  document.body.append(page);
+  await settle(page);
+
+  const size = page.querySelector('.prompt-size')?.textContent ?? '';
+  expect(size).toContain(formatBytes(contextPrompt.bytes));
+  expect(size).toContain(String(contextPrompt.tokens_estimate));
+  expect(page.querySelector('pre.prompt')?.textContent).toBe(contextPrompt.text);
+});
+
+test('the prompt page shows an empty text as a block of nothing instead of saying so', async () => {
+  answers.contextPrompt = { ...contextPrompt, mode: 'due', text: '', bytes: 0, tokens_estimate: 0 };
+  const page = document.createElement('fmn-context-prompt-view') as HTMLElement & {
+    contextKey: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.contextKey = contextPrompt.key;
+  document.body.append(page);
+  await settle(page);
+
+  expect(page.querySelector('pre.prompt')).toBeNull();
+  expect(page.textContent).toContain('Nothing due');
+});
+
+test('the name in the contexts table opens nothing, so the prompt page is unreachable', async () => {
+  const nameless = context({ key: 'beta/session-9', name: '' });
+  await renderContexts([session, nameless]);
+
+  const links = [...document.querySelectorAll('table.data tbody td.context-name a')];
+  expect(links.map((link) => link.getAttribute('href'))).toEqual([
+    paths.contextPrompt(session.key),
+    paths.contextPrompt(nameless.key),
+  ]);
+  // A context the server could not name is opened by its id, so no row is a link
+  // with nothing to click.
+  expect(links[1]?.textContent?.trim()).toBe('session-9');
 });
 
 // The source of this expectation is issue #7: a scope file may carry a message, so

@@ -26,8 +26,9 @@ use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::context::ContextKey;
 use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance, RegistrySnapshot};
+use crate::context::{ContextKey, ContextState, PreviousTexts, compute_needs};
+use crate::render::{self, Delivery};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
 use crate::stats::{StatsError, ToolCallRecord};
 use crate::store::branch::{BranchName, BranchNameError};
@@ -86,6 +87,9 @@ pub enum OperationError {
 
     #[error("no session `{0}` has been seen by this server")]
     UnknownSession(String),
+
+    #[error("no context `{0}` has been seen by this server")]
+    UnknownContext(String),
 
     /// The call named a branch that is not open. A write is never quietly
     /// redirected to `main`: the caller meant the transaction.
@@ -386,6 +390,33 @@ pub struct ContextRow {
     pub delivered_count: usize,
     /// ISO 8601.
     pub last_seen: String,
+}
+
+/// Which text of a context is asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptMode {
+    /// What the context's next hook event would deliver.
+    Due,
+    /// Everything the context's active scopes hold, as if nothing had been
+    /// delivered into it yet.
+    All,
+}
+
+/// The text a context would be given, rendered without delivering it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ContextPrompt {
+    /// The session key, the same form the MCP tools take.
+    pub key: String,
+    /// What to call this context in a heading, derived by [`context_name`].
+    pub name: String,
+    pub mode: PromptMode,
+    /// The rendered text, empty when the mode has nothing to deliver.
+    pub text: String,
+    pub bytes: u64,
+    /// The tokens the text is expected to cost, as [`tokens_estimate`] counts
+    /// them.
+    pub tokens_estimate: u64,
 }
 
 /// What the review page reports.
@@ -1804,6 +1835,92 @@ pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<Con
             last_seen: iso8601(record.state.last_seen),
         })
         .collect()
+}
+
+/// The text one context would be given at its next hook event, or the whole of
+/// what its active scopes hold, rendered by the same renderer the hook uses.
+///
+/// Nothing is recorded and no context is created: the state is read from the
+/// registry snapshot, so a key no context has been seen at is
+/// [`OperationError::UnknownContext`] rather than a new context collecting
+/// deliveries no session reads.
+///
+/// [`PromptMode::Due`] computes what the context is owed against its own
+/// delivered record, which is what the next event would carry, and
+/// [`PromptMode::All`] computes it against an empty record, which is every
+/// critical memory of its scopes in full and every knowledge memory as its
+/// description. Both count staleness from the context size the last event
+/// reported. The rendering is of a plain event: no session start, so neither the
+/// available scopes nor the session key is added, and no file notice, because
+/// the reader of this text is a person looking at a page. A context that is owed
+/// nothing has no text, the way an event that is owed nothing is answered with
+/// nothing.
+pub async fn context_prompt(
+    state: &AppState,
+    key: &ContextKey,
+    mode: PromptMode,
+) -> Result<ContextPrompt, OperationError> {
+    let snapshot = state.contexts.snapshot(state.clock.now()).await;
+    let record = snapshot
+        .contexts
+        .into_iter()
+        .find(|record| &record.key == key)
+        .ok_or_else(|| OperationError::UnknownContext(key.to_string()))?;
+    let name = context_name(&record);
+    let catalog = state.store.snapshot().await?;
+    let held = record.state;
+
+    let needs = match mode {
+        PromptMode::Due => {
+            let previous = crate::hook::previous_texts(&state.store, &held, &catalog).await;
+            compute_needs(&catalog, &held, held.tokens, &previous)
+        }
+        PromptMode::All => {
+            let nothing_delivered =
+                ContextState::fresh(held.active.clone(), held.parent.clone(), held.last_seen);
+            compute_needs(
+                &catalog,
+                &nothing_delivered,
+                held.tokens,
+                &PreviousTexts::new(),
+            )
+        }
+    };
+    let delivery = Delivery {
+        key,
+        catalog: &catalog,
+        needs: &needs,
+        active: &held.active,
+        activated: &[],
+        announce_empty_scopes: false,
+        session_start: false,
+        answer_file_threshold: None,
+    };
+    // An event that is owed nothing answers with nothing at all, so a context
+    // that is owed nothing has no text: the heading line the renderer opens with
+    // is part of an answer and not an answer of its own.
+    let text = match needs.is_empty() {
+        true => String::new(),
+        false => render::render(&delivery),
+    };
+
+    Ok(ContextPrompt {
+        key: key.to_string(),
+        name,
+        mode,
+        bytes: text.len() as u64,
+        tokens_estimate: tokens_estimate(&text),
+        text,
+    })
+}
+
+/// Roughly how many tokens a text costs: one per four bytes, rounded up.
+///
+/// A rule of thumb for English text and not a tokenizer: no model's vocabulary
+/// is consulted, and text that is not prose, such as a table or another script,
+/// can cost considerably more.
+fn tokens_estimate(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
 }
 
 /// How much of a task or a first prompt a name keeps. It is one cell of a

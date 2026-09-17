@@ -277,6 +277,15 @@ for (const scheme of ['light', 'dark'] as const) {
       });
     });
 
+    test('the prompt of a context looks as reviewed', async ({ page }) => {
+      // Everything the session's scopes hold, which is the longer of the two texts
+      // and the one a reader opens the page for.
+      await page.goto('/contexts/alpha/session-1/prompt?mode=all');
+      await expect(page.locator('pre.prompt')).toBeVisible();
+      await settle(page);
+      await expect(page).toHaveScreenshot(`context-prompt-laptop-${scheme}.png`);
+    });
+
     test('the settings page looks as reviewed', async ({ page }) => {
       await page.goto('/settings');
       await expect(page.locator('.settings-list')).toBeVisible();

@@ -1,5 +1,6 @@
 import type {
   Commit,
+  ContextPrompt,
   ContextRow,
   Conflict,
   DeleteRequest,
@@ -14,6 +15,7 @@ import type {
   MemoryStatsRow,
   MemorySummary,
   PatternValidity,
+  PromptMode,
   ReviewReport,
   ScopeCreateRequest,
   ScopeDoc,
@@ -59,7 +61,8 @@ function requireMessage(target: string, message: unknown): void {
   }
 }
 
-function memoryPath(id: string): string {
+/** An id or a key as path segments: the slashes stay, everything else is escaped. */
+function encodedPath(id: string): string {
   return id.split('/').map(encodeURIComponent).join('/');
 }
 
@@ -95,6 +98,8 @@ export interface ApiClient {
   /** One setting, written as one commit; a stale version comes back as a conflict. */
   putSetting(key: string, request: SettingsWriteRequest): Promise<WriteOutcome<SettingsDoc>>;
   contexts(): Promise<ContextRow[]>;
+  /** The text one context would be given next, or the whole of its scopes. */
+  contextPrompt(key: string, mode: PromptMode): Promise<ContextPrompt>;
   review(): Promise<ReviewReport>;
   memoryStats(): Promise<MemoryStatsRow[]>;
   triggerStats(): Promise<TriggerStatsRow[]>;
@@ -149,11 +154,11 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
 
   return {
     memoryIndex: (filter) => read<MemorySummary[]>(`/api/memories${indexQuery(filter)}`),
-    memory: (id) => read<MemoryDoc>(`/api/memories/${memoryPath(id)}`),
+    memory: (id) => read<MemoryDoc>(`/api/memories/${encodedPath(id)}`),
 
     putMemory(id, request) {
       requireMessage(`memory ${id}`, request.message);
-      return write<MemoryDoc>('PUT', `/api/memories/${memoryPath(id)}`, request);
+      return write<MemoryDoc>('PUT', `/api/memories/${encodedPath(id)}`, request);
     },
     createMemory(request) {
       requireMessage(`memory ${request.id}`, request.message);
@@ -161,12 +166,12 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     },
     deleteMemory(id, request) {
       requireMessage(`deletion of memory ${id}`, request.message);
-      return write<MemoryDoc, DeleteResponse>('DELETE', `/api/memories/${memoryPath(id)}`, request);
+      return write<MemoryDoc, DeleteResponse>('DELETE', `/api/memories/${encodedPath(id)}`, request);
     },
 
-    memoryHistory: (id) => read<Commit[]>(`/api/memories/${memoryPath(id)}/history`),
+    memoryHistory: (id) => read<Commit[]>(`/api/memories/${encodedPath(id)}/history`),
     memoryHistoryEntry: (id, oid) =>
-      read<HistoryEntry>(`/api/memories/${memoryPath(id)}/history/${encodeURIComponent(oid)}`),
+      read<HistoryEntry>(`/api/memories/${encodedPath(id)}/history/${encodeURIComponent(oid)}`),
 
     scopeIndex: () => read<ScopeRow[]>('/api/scopes'),
     scope: (id) => read<ScopeDoc>(`/api/scopes/${encodeURIComponent(id)}`),
@@ -223,6 +228,8 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     },
 
     contexts: () => read<ContextRow[]>('/api/contexts'),
+    contextPrompt: (key, mode) =>
+      read<ContextPrompt>(`/api/contexts/${encodedPath(key)}/prompt?mode=${mode}`),
     review: () => read<ReviewReport>('/api/review'),
     memoryStats: () => read<MemoryStatsRow[]>('/api/stats/memories'),
     triggerStats: () => read<TriggerStatsRow[]>('/api/stats/triggers'),

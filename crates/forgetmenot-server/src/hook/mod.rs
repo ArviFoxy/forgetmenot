@@ -23,6 +23,7 @@ use crate::app::AppState;
 use crate::context::registry::Inheritance;
 use crate::context::{ContextState, Needs, PreviousTexts, compute_needs, record_delivery};
 use crate::render::{self, Delivery};
+use crate::service::Store;
 use crate::stats::{Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, TriggerFire};
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
@@ -73,7 +74,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         title: request.session_title.as_deref(),
         first_prompt: request.first_prompt.as_deref(),
     };
-    let previous = previous_texts(&state, &plan, &catalog, now).await;
+    let previous = previous_texts_of_event(&state, &plan, &catalog, now).await;
     let outcome = state
         .contexts
         .with_context(&plan.key, now, Inheritance::of(settings), |context| {
@@ -134,20 +135,15 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     axum::Json(response).into_response()
 }
 
-/// The text this context was given for each memory the store now holds another
-/// version of, read from the version the context holds.
+/// The text an event's context was given for each memory the store now holds
+/// another version of.
 ///
-/// One blob per memory whose version moved, so an event that meets an unchanged
-/// store reads nothing. A session start is given everything afresh and has no
-/// changed memory at all, so it reads nothing either. A version git no longer
-/// has, or bytes that no longer parse as that memory, yield no text and the
-/// memory is delivered whole.
-///
-/// This runs before the context's own critical section, so the versions it reads
-/// are the ones the context held when the event arrived; a memory whose version
-/// moves in between is delivered whole by [`compute_needs`], which compares the
-/// versions itself.
-async fn previous_texts(
+/// A session start is given everything afresh and has no changed memory at all,
+/// so it reads nothing. Everything else reads the state as it stands, before the
+/// context's own critical section, so the versions it reads are the ones the
+/// context held when the event arrived; a memory whose version moves in between
+/// is delivered whole by [`compute_needs`], which compares the versions itself.
+async fn previous_texts_of_event(
     state: &AppState,
     plan: &EventPlan,
     catalog: &Catalog,
@@ -157,16 +153,32 @@ async fn previous_texts(
         return PreviousTexts::new();
     }
     let inheritance = Inheritance::of(catalog.settings());
-    let outdated: Vec<(MemoryId, Oid, MemoryKind)> = state
+    let held = state
         .contexts
-        .with_context(&plan.key, now, inheritance, |context| {
-            outdated_versions(context, catalog)
-        })
+        .with_context(&plan.key, now, inheritance, |context| context.clone())
         .await;
+    previous_texts(&state.store, &held, catalog).await
+}
 
+/// The text `context` was given for each memory the store now holds another
+/// version of, read from the version the context holds.
+///
+/// One blob per memory whose version moved, so a context that meets an unchanged
+/// store reads nothing. A version git no longer has, or bytes that no longer
+/// parse as that memory, yield no text and the memory is delivered whole.
+///
+/// The one reader of what a context was told before, so that the hook and a
+/// rendering that only looks at a context judge a shrunk memory from the same
+/// text.
+pub async fn previous_texts(
+    store: &Store,
+    context: &ContextState,
+    catalog: &Catalog,
+) -> PreviousTexts {
+    let outdated: Vec<(MemoryId, Oid, MemoryKind)> = outdated_versions(context, catalog);
     let mut previous = PreviousTexts::new();
     for (id, version, kind) in outdated {
-        let document = match state.store.memory_at_version(&id, version).await {
+        let document = match store.memory_at_version(&id, version).await {
             Ok(Some(document)) => document,
             Ok(None) => continue,
             Err(error) => {

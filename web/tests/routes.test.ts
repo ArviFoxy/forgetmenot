@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { paths, resolve, scopeFromSearch } from '../src/routes';
+import { paths, promptModeFromSearch, resolve, scopeFromSearch } from '../src/routes';
 
 // The source of these expectations is the app's own contract for addresses: the
 // deep links `/memories/<id>` and `/scopes/<id>` must open the item, memory ids may
@@ -7,6 +7,7 @@ import { paths, resolve, scopeFromSearch } from '../src/routes';
 
 const memoryWithSlashes = 'sessions/alpha/session-1/notes';
 const sessionScope = 'session:alpha/session-1';
+const subagentKey = 'alpha/session-1/agent-7f3a';
 const commitOid = 'a'.repeat(40);
 
 /** Every link the app can show, with arguments that exercise the awkward ids. */
@@ -19,6 +20,7 @@ const links: Record<keyof typeof paths, string> = {
   scopeNew: paths.scopeNew(),
   scope: paths.scope(sessionScope),
   contexts: paths.contexts(),
+  contextPrompt: paths.contextPrompt(subagentKey),
   stats: paths.stats(),
   settings: paths.settings(),
 };
@@ -50,6 +52,19 @@ test('a scope id loses its colon or its slash between the link and the view', ()
   const view = resolve(paths.scope(sessionScope));
   expect(view.properties.scopeId).toBe(sessionScope);
   expect(view.name).toBe('scope');
+});
+
+test('a context key loses its slashes between the link and the prompt page', () => {
+  const view = resolve(paths.contextPrompt(subagentKey));
+  expect(view.name).toBe('contextPrompt');
+  expect(view.properties.contextKey).toBe(subagentKey);
+});
+
+test('the mode a prompt address carries is dropped, so both modes open the same text', () => {
+  const search = (path: string): string => new URL(path, 'http://localhost').search;
+  expect(promptModeFromSearch(search(paths.contextPrompt(subagentKey, 'all')))).toBe('all');
+  expect(promptModeFromSearch(search(paths.contextPrompt(subagentKey, 'due')))).toBe('due');
+  expect(promptModeFromSearch(search(paths.contextPrompt(subagentKey)))).toBe('due');
 });
 
 test('a separate edit address still exists, so an item has two pages', () => {

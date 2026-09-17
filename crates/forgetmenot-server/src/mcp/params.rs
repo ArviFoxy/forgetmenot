@@ -312,21 +312,9 @@ pub struct SessionInheritParams {
 /// invalid parameter rather than silently creating a context of its own, which
 /// would collect deliveries no session ever sees.
 pub fn parse_session_key(session_key: &str) -> Result<ContextKey, ErrorData> {
-    let segments: Vec<&str> = session_key.split('/').collect();
-    let complete = segments.iter().all(|segment| !segment.is_empty());
-    match segments.as_slice() {
-        [machine, session_id] if complete => Ok(ContextKey::main(*machine, *session_id)),
-        [machine, session_id, agent] if complete => {
-            Ok(ContextKey::subagent(*machine, *session_id, *agent))
-        }
-        _ => Err(ErrorData::invalid_params(
-            format!(
-                "session_key must be `machine/session-id`, or `machine/session-id/agent-id` \
-                 inside a subagent, not `{session_key}`"
-            ),
-            None,
-        )),
-    }
+    ContextKey::parse(session_key).map_err(|error| {
+        ErrorData::invalid_params(format!("session_key must name a context: {error}"), None)
+    })
 }
 
 #[cfg(test)]

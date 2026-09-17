@@ -151,7 +151,9 @@ impl IntoResponse for OperationError {
                 Json(serde_json::json!({ "conflicts": conflicts })),
             )
                 .into_response(),
-            OperationError::UnknownBranch(_) => {
+            // A context nobody has been seen at is a resource that is not there,
+            // like a branch that is not open.
+            OperationError::UnknownBranch(_) | OperationError::UnknownContext(_) => {
                 error_response(StatusCode::NOT_FOUND, &self.to_string())
             }
             OperationError::BadBranchName(_) => {

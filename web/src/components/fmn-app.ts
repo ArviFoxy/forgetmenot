@@ -8,6 +8,7 @@ import '../views/fmn-overview-view';
 import '../views/fmn-memory-page';
 import '../views/fmn-scope-page';
 import '../views/fmn-contexts-view';
+import '../views/fmn-context-prompt-view';
 import '../views/fmn-stats-view';
 import '../views/fmn-settings-view';
 import '../views/fmn-unknown-view';
@@ -27,7 +28,7 @@ const sections: Section[] = [
 ];
 
 /** Every property any view takes, so a reused element never keeps a stale one. */
-const viewProperties = ['memoryId', 'scopeId', 'mode', 'oid', 'newId'];
+const viewProperties = ['memoryId', 'scopeId', 'contextKey', 'mode', 'oid', 'newId'];
 
 const narrowQuery = '(max-width: 900px)';
 

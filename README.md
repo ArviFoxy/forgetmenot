@@ -22,7 +22,7 @@ One server serves every machine on a network, and subagents receive the same mem
 |---|---|
 | `forgetmenot` | The server: hook endpoint, MCP server, JSON API, static frontend |
 | `forgetmenot-hook` | A small client that Claude Code runs on each hook event; it forwards the event to the server and prints the answer |
-| `web/` | The frontend: browse and edit memories and scopes, watch live contexts and statistics |
+| `web/` | The frontend: browse and edit memories and scopes, watch live contexts and statistics, read the text a context would be given next |
 | store | A git repository of scope and memory files, the source of truth |
 
 ## Concepts
@@ -114,6 +114,7 @@ An unknown key, or a value of the wrong type, is a validation error: `forgetmeno
 Claude Code does not show the model a long hook answer. Past 10 000 characters (Claude Code 2.1.270; the length in UTF-16 code units) it writes the answer to a file under the session's `tool-results` directory and shows the model the file's path and the first 2000 characters, cut back to the last newline when that lies past the first 1000. An answer longer than `answer_file_threshold` therefore opens with a short notice telling the model to read the file in full before doing anything else; the notice sits inside the part of the preview that is never cut. The notice is a workaround: the server still records every memory in such an answer as delivered, and the fix, an answer budget with the rest carried to the next event, is [issue 19](https://github.com/ArviFoxy/forgetmenot/issues/19).
 - `/mcp`: MCP over streamable HTTP, for the agent.
 - `/api/*`: the JSON API used by the frontend. `GET /api/scopes` answers one row per scope that exists, carrying its `id`, its `kind`, the `name` of a session and the `file` of a scope that has one.
+- `GET /api/contexts/<key>/prompt?mode=due|all`: the text one context would be given, rendered by the renderer the hook uses and recording nothing. `due` is what its next hook event would deliver; `all` is every critical memory of its active scopes in full and every knowledge memory as its description, as if the context had been told nothing.
 - `/`: the frontend, served from `web/dist`.
 
 Claude Code templates for the hooks block and the MCP registration are in `examples/claude-code/`. An example store is in `examples/store/`.

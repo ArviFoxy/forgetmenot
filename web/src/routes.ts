@@ -4,6 +4,7 @@
 
 import UniversalRouterSync from 'universal-router/sync';
 import type { RouteParams } from 'universal-router';
+import type { PromptMode } from './api/types';
 
 export type RouteName =
   | 'home'
@@ -14,6 +15,7 @@ export type RouteName =
   | 'scope'
   | 'scopeNew'
   | 'contexts'
+  | 'contextPrompt'
   | 'stats'
   | 'settings'
   | 'unknown';
@@ -52,6 +54,11 @@ export const paths = {
   scopeNew: (): string => '/scopes/new',
   scope: (id: string): string => `/scopes/${encodeId(id)}`,
   contexts: (): string => '/contexts',
+  /** The text a context would be given: what is due, or the whole of its scopes. */
+  contextPrompt: (key: string, mode: PromptMode = 'due'): string =>
+    mode === 'due'
+      ? `/contexts/${encodeId(key)}/prompt`
+      : `/contexts/${encodeId(key)}/prompt?mode=${mode}`,
   stats: (): string => '/stats',
   settings: (): string => '/settings',
 };
@@ -99,6 +106,11 @@ const router = new UniversalRouterSync<RouteView>([
     path: '/scopes/*id',
     action: ({ params }) => view('scope', 'fmn-scope-page', { scopeId: joined(params, 'id') }),
   },
+  {
+    path: '/contexts/*key/prompt',
+    action: ({ params }) =>
+      view('contextPrompt', 'fmn-context-prompt-view', { contextKey: joined(params, 'key') }),
+  },
   { path: '/contexts', action: () => view('contexts', 'fmn-contexts-view') },
   { path: '/stats', action: () => view('stats', 'fmn-stats-view') },
   { path: '/settings', action: () => view('settings', 'fmn-settings-view') },
@@ -109,6 +121,11 @@ const router = new UniversalRouterSync<RouteView>([
 export function resolve(pathname: string): RouteView {
   const match = router.resolve(pathname);
   return match ?? view('unknown', 'fmn-unknown-view');
+}
+
+/** The mode a prompt address asks for, as `paths.contextPrompt` wrote it. */
+export function promptModeFromSearch(search: string = window.location.search): PromptMode {
+  return new URLSearchParams(search).get('mode') === 'all' ? 'all' : 'due';
 }
 
 /** The scope a new memory starts in, as `paths.memoryNew` wrote it. */

@@ -168,6 +168,22 @@ export interface ContextRow {
   last_seen: string;
 }
 
+/** Which text of a context is asked for. */
+export type PromptMode = 'due' | 'all';
+
+/** The text a context would be given, rendered without delivering it. */
+export interface ContextPrompt {
+  key: string;
+  /** What to call the context: its task, its title, or its first prompt. */
+  name: string;
+  mode: PromptMode;
+  /** The rendered text, empty when the mode has nothing to deliver. */
+  text: string;
+  bytes: number;
+  /** One token per four bytes, rounded up: a rule of thumb, not a tokenizer. */
+  tokens_estimate: number;
+}
+
 export interface ValidationError {
   path: string;
   message: string;

@@ -2392,6 +2392,199 @@ fn the_contexts_are_listed_with_the_session_heard_from_last_at_the_top() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The text a context would be given next
+// ---------------------------------------------------------------------------
+
+/// One context's prompt as the API renders it, failing the test when it cannot
+/// be read. `query` is the mode, empty for what the next event would deliver.
+fn prompt(server: &TestServer, key: &str, query: &str) -> Value {
+    let (status, answer) = server.api("GET", &format!("/api/contexts/{key}/prompt{query}"), None);
+    assert_eq!(
+        status, 200,
+        "the prompt of {key} must be readable, got {answer}"
+    );
+    answer
+}
+
+/// The rendered text of one prompt.
+fn prompt_text(answer: &Value) -> &str {
+    answer["text"].as_str().expect("the prompt carries text")
+}
+
+/// How many memories one context is recorded as holding, as `GET /api/contexts`
+/// reports it.
+fn delivered_count(server: &TestServer, key: &str) -> u64 {
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    context_row(&answer, key)["delivered_count"]
+        .as_u64()
+        .expect("the delivered count is a number")
+}
+
+/// Detects a due prompt that repeats what the context already holds: a session
+/// that has just been given everything is owed nothing, and a page that shows it
+/// the whole of its rules again would say the next event costs context it does
+/// not cost.
+#[test]
+fn the_due_prompt_of_a_context_that_was_just_given_everything_is_empty() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let (_, start) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    assert!(
+        context_of(&start).contains(BENCH_POWER_BODY),
+        "the session start must have delivered everything this session is owed, got {start}"
+    );
+
+    let due = prompt(&server, "alpha/session-1", "");
+
+    assert_eq!(
+        prompt_text(&due),
+        "",
+        "a context that is owed nothing must render no text, got {due}"
+    );
+    assert_eq!(
+        due["bytes"],
+        json!(0),
+        "an empty text must be reported as no bytes, got {due}"
+    );
+}
+
+/// Detects a whole-prompt mode computed against the context's delivered record
+/// instead of against an empty one: it would answer the same as the due prompt
+/// and never show what a set of scopes costs in full. Detects a byte count or a
+/// token estimate that does not describe the text beside it as well.
+#[test]
+fn the_whole_prompt_of_a_context_carries_every_critical_memory_of_its_scopes_with_its_size() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let all = prompt(&server, "alpha/session-1", "?mode=all");
+
+    let text = prompt_text(&all);
+    assert!(
+        text.contains(BENCH_POWER_BODY),
+        "the whole prompt must carry the global critical memory in full, got {text:?}"
+    );
+    assert_eq!(
+        all["bytes"],
+        json!(text.len()),
+        "the byte count must be the length of the text beside it, got {all}"
+    );
+    assert!(
+        all["tokens_estimate"]
+            .as_u64()
+            .is_some_and(|tokens| tokens >= 1),
+        "a text that is not empty must be estimated at a token or more, got {all}"
+    );
+    assert_eq!(
+        all["mode"],
+        json!("all"),
+        "the answer must name the mode it was rendered in, got {all}"
+    );
+    assert_eq!(
+        all["key"],
+        json!("alpha/session-1"),
+        "the answer must name the context it was rendered for, got {all}"
+    );
+}
+
+/// Detects a prompt that records what it rendered as delivered: the next hook
+/// event would then leave out the rules a person had only looked at, and the
+/// session would never be given them.
+#[test]
+fn rendering_a_contexts_prompt_leaves_what_it_holds_alone() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    let before = delivered_count(&server, "alpha/session-1");
+    assert!(
+        before > 0,
+        "the session start must have recorded what it delivered"
+    );
+
+    prompt(&server, "alpha/session-1", "");
+    prompt(&server, "alpha/session-1", "?mode=all");
+
+    assert_eq!(
+        delivered_count(&server, "alpha/session-1"),
+        before,
+        "neither prompt may change what the context is recorded as holding"
+    );
+}
+
+/// Detects a prompt route that creates the context it is asked about: a mistyped
+/// key would leave a context nothing ever delivers to in the list, and the
+/// missing one would be answered as though it existed.
+#[test]
+fn a_prompt_for_a_key_no_context_has_been_seen_at_is_not_found_and_creates_nothing() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let (status, answer) = server.api("GET", "/api/contexts/alpha/nobody/prompt", None);
+
+    assert_eq!(
+        status, 404,
+        "a key no context has been seen at must be reported as missing, got {answer}"
+    );
+    let (status, contexts) = server.api("GET", "/api/contexts", None);
+    assert_eq!(status, 200, "the contexts must be readable, got {contexts}");
+    assert!(
+        !context_keys(&contexts).contains(&"alpha/nobody"),
+        "the key must not have been created by asking about it, got {contexts}"
+    );
+}
+
+/// Detects a due prompt read from what the last event delivered rather than from
+/// the store as it is now: a rule rewritten outside the server is owed to the
+/// session at its next event, and a page that cannot show it before that event
+/// says nothing is coming when a rule is.
+#[test]
+fn the_due_prompt_carries_a_memory_rewritten_since_the_last_event() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let (_, start) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    assert!(
+        context_of(&start).contains(BENCH_POWER_BODY),
+        "the memory has to have been delivered before it can change, got {start}"
+    );
+    let path = "memories/bench-power.md";
+    let mut text = server.store().file_text(path);
+    text.push_str("\nThe key to the bench cupboard hangs by the door.\n");
+    server.commit(
+        "add the cupboard key to the bench rule",
+        vec![(path.to_string(), Some(text.into_bytes()))],
+    );
+
+    let due = prompt(&server, "alpha/session-1", "");
+
+    assert!(
+        prompt_text(&due).contains(BENCH_POWER_BODY),
+        "the rewritten rule must be due in full before the next event, got {due}"
+    );
+    assert!(
+        due["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
+        "a prompt that carries a rule must report the bytes it costs, got {due}"
+    );
+}
+
+/// Detects a mode the route does not understand being answered as though it were
+/// one it does: a reader asking for a text this route has no notion of would be
+/// shown the due prompt and read it as the other one.
+#[test]
+fn a_prompt_mode_the_route_does_not_know_is_refused() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let (status, answer) = server.api(
+        "GET",
+        "/api/contexts/alpha/session-1/prompt?mode=everything",
+        None,
+    );
+
+    assert_eq!(
+        status, 400,
+        "a mode this route has no notion of must be refused, got {answer}"
+    );
+}
+
 /// Detects a review page computed once at start instead of from the store as it
 /// is: a link broken by a commit made outside the server would never be
 /// reported, and the page would say the store is clean while it is not.

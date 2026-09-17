@@ -20,6 +20,15 @@ function idOf(key: string): string {
   return slash === -1 ? '' : key.slice(slash + 1);
 }
 
+/**
+ * What the Name cell reads: the name the server derived, or the context's own id
+ * when nothing but the key is known about it, so that every row has text to open
+ * the context's prompt by.
+ */
+function nameOf(row: ContextRow): string {
+  return row.name === '' ? idOf(row.key) : row.name;
+}
+
 /** The live contexts: what each one has active and when it was last seen. */
 export class FmnContextsView extends PageElement {
   private readonly rows = new Resource<ContextRow[]>(() => this.requestUpdate());
@@ -81,7 +90,7 @@ export class FmnContextsView extends PageElement {
                   <td
                     class=${(row.parent ?? null) === null ? 'context-name' : 'context-name nested'}
                   >
-                    ${row.name}
+                    <a href=${paths.contextPrompt(row.key)}>${nameOf(row)}</a>
                   </td>
                   <td>
                     <span class="chips"

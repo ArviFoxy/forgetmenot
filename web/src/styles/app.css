@@ -1174,7 +1174,8 @@ table.stats td:first-child {
 /* ---------- Diffs and conflicts ---------- */
 
 pre.diff,
-pre.content {
+pre.content,
+pre.prompt {
   max-height: 60vh;
   margin: 0 0 var(--sl-spacing-medium);
   padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
@@ -1189,6 +1190,14 @@ pre.content {
 pre.diff code {
   display: block;
   white-space: pre;
+}
+
+/* A rendered prompt is prose in the form the model receives it: its own line
+   breaks are kept and a longer line wraps, so it is read without scrolling
+   sideways. */
+pre.prompt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .diff-add {

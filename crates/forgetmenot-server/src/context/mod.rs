@@ -68,7 +68,33 @@ impl ContextKey {
     pub fn session_scope(&self) -> ScopeId {
         ScopeId::session(&self.machine, &self.session_id)
     }
+
+    /// The context a key names, in the form [`fmt::Display`] writes it: the form
+    /// the MCP tools take as `session_key` and the API takes in a path.
+    ///
+    /// The one place the grammar lives, so a key printed to a session is read
+    /// back as the same context wherever it is handed in. A key with a part
+    /// missing names nothing: `alpha/` would be the session with the empty id,
+    /// which no session ever reads.
+    pub fn parse(text: &str) -> Result<Self, ContextKeyError> {
+        let segments: Vec<&str> = text.split('/').collect();
+        let complete = segments.iter().all(|segment| !segment.is_empty());
+        match segments.as_slice() {
+            [machine, session_id] if complete => Ok(Self::main(*machine, *session_id)),
+            [machine, session_id, agent] if complete => {
+                Ok(Self::subagent(*machine, *session_id, *agent))
+            }
+            _ => Err(ContextKeyError(text.to_string())),
+        }
+    }
 }
+
+/// A text that names no context.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error(
+    "a context key is `machine/session-id`, or `machine/session-id/agent-id` for a subagent, not `{0}`"
+)]
+pub struct ContextKeyError(String);
 
 impl fmt::Display for ContextKey {
     /// The form MCP tools take as `session_key`: the agent part is written only
