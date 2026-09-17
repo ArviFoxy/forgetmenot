@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, test, vi } from 'vitest';
 import type {
+  CommitFiles,
   ContextPrompt,
   ContextRow,
   MemoryDoc,
   MemoryStatsRow,
   ScopeRow,
+  StoreHistory,
 } from '../src/api/types';
 import type { TreeNode } from '../src/model/tree';
 
@@ -90,6 +92,8 @@ const answers = vi.hoisted(() => ({
   contexts: [] as unknown[],
   contextPrompt: null as unknown,
   scopeWrites: [] as { scope_message: string | null; forget: { tokens_since_trigger: number } | null }[],
+  storeHistory: null as unknown,
+  storeCommit: null as unknown,
 }));
 
 vi.mock('../src/api/client', () => ({
@@ -132,6 +136,8 @@ vi.mock('../src/api/client', () => ({
     deleteScope: () => Promise.resolve({ kind: 'written' }),
     createScope: () => Promise.resolve({ kind: 'written' }),
     scopeHistory: () => Promise.resolve([]),
+    storeHistory: () => Promise.resolve(answers.storeHistory),
+    storeCommit: () => Promise.resolve(answers.storeCommit),
     testTriggers: () => Promise.resolve({ fired: [] }),
     validatePattern: () => Promise.resolve({ ok: true }),
     settings: () => Promise.resolve({ settings: {}, version: null, schema: [] }),
@@ -167,7 +173,66 @@ beforeEach(() => {
   answers.contexts = [];
   answers.contextPrompt = contextPrompt;
   answers.scopeWrites = [];
+  answers.storeHistory = storeHistory;
+  answers.storeCommit = storeCommit;
 });
+
+/** The store's commits, newest first, as the history list reads them. */
+const storeHistory: StoreHistory = {
+  commits: [
+    {
+      oid: 'c'.repeat(40),
+      time: '2026-01-02T03:04:05+00:00',
+      author: 'wiki',
+      title: 'widen the widget rule',
+    },
+    {
+      oid: 'd'.repeat(40),
+      time: '2026-01-01T00:00:00+00:00',
+      author: 'seed',
+      title: 'seed the example store',
+    },
+  ],
+  next_before: null,
+};
+
+/**
+ * One commit that changed a memory, a scope and a file that holds neither, each
+ * with a diff of its own so a page that shows one file's diff under another fails.
+ */
+const storeCommit: CommitFiles = {
+  commit: storeHistory.commits[0]!,
+  files: [
+    {
+      path: 'memories/widget-naming.md',
+      status: 'modified',
+      diff: '@@ -1 +1 @@\n-a part number is never reused\n+a widget part number is never reused\n',
+      memory_id: 'widget-naming',
+      scope_id: null,
+    },
+    {
+      path: 'scopes/widgets.yaml',
+      status: 'modified',
+      diff: '@@ -1 +1 @@\n-triggers: []\n+triggers: [widget]\n',
+      memory_id: null,
+      scope_id: 'widgets',
+    },
+    {
+      path: 'config.yml',
+      status: 'modified',
+      diff: '@@ -1 +1 @@\n-announce_empty_scopes: false\n+announce_empty_scopes: true\n',
+      memory_id: null,
+      scope_id: null,
+    },
+  ],
+};
+
+/** The page each file of the commit above opens, `null` when it holds no document. */
+const commitFileTargets: (string | null)[] = [
+  paths.memory('widget-naming'),
+  paths.scope('widgets'),
+  null,
+];
 
 /** One live context, with everything the contexts page reads. */
 function context(over: Partial<ContextRow> & { key: string }): ContextRow {
@@ -222,6 +287,8 @@ test('an address the app links to has no element registered to show it', () => {
     paths.memoryNew('widgets'),
     paths.scopeNew(),
     paths.scope('session:alpha/session-1'),
+    paths.history(),
+    paths.historyCommit('c'.repeat(40)),
     paths.contexts(),
     paths.contextPrompt('alpha/session-1/agent-7f3a'),
     paths.stats(),
@@ -463,4 +530,52 @@ test('the tree menu makes a memory in this scope out of a session', () => {
   };
   expect(menuLabels(scopeNode(session))).toContain('New memory in this session');
   expect(menuLabels(scopeNode(scopeRows[1]!))).toContain('New memory in this scope');
+});
+
+// The source of these expectations is this ticket: the store's history is the list
+// of its commits, each row opening a page that shows every file that commit changed
+// with that file's diff and a way to the file's own page.
+
+test('the store history lists a commit with no way to the page of that commit', async () => {
+  const page = document.createElement('fmn-history-view') as HTMLElement & {
+    mode: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.mode = 'list';
+  document.body.append(page);
+  await settle(page);
+
+  const rows = [...page.querySelectorAll('table.data tbody tr')];
+  expect(rows).toHaveLength(storeHistory.commits.length);
+  expect(rows.map((row) => row.querySelector('a')?.getAttribute('href'))).toEqual(
+    storeHistory.commits.map((commit) => paths.historyCommit(commit.oid)),
+  );
+  // The author and the time of a commit are on its row, beside its title.
+  expect(cellsOf(rows[0])).toContain(storeHistory.commits[0]!.author);
+  expect(cellsOf(rows[0])).toContain(storeHistory.commits[0]!.time);
+  expect(cellsOf(rows[0])).toContain(storeHistory.commits[0]!.title);
+});
+
+test('the page of one commit folds its files into one diff, or leaves a file unreachable', async () => {
+  const page = document.createElement('fmn-history-view') as HTMLElement & {
+    mode: string;
+    oid: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.mode = 'commit';
+  page.oid = storeCommit.commit.oid;
+  document.body.append(page);
+  await settle(page);
+
+  const sections = [...page.querySelectorAll('.commit-file')];
+  expect(sections).toHaveLength(storeCommit.files.length);
+  for (const [index, file] of storeCommit.files.entries()) {
+    const section = sections[index]!;
+    const added = file.diff.split('\n').find((line) => line.startsWith('+')) ?? '';
+    expect(section.textContent, file.path).toContain(file.path);
+    expect(section.querySelector('fmn-diff')?.textContent, file.path).toContain(added);
+    expect(section.querySelector('a')?.getAttribute('href') ?? null, file.path).toBe(
+      commitFileTargets[index] ?? null,
+    );
+  }
 });

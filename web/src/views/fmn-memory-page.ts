@@ -18,6 +18,7 @@ import { takeDeleteIntent } from '../intent';
 import { paths, scopeFromSearch } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-diff';
+import '../components/fmn-history-list';
 import '../components/fmn-kind-icon';
 import '../components/fmn-markdown-editor';
 import '../components/fmn-side-by-side';
@@ -532,28 +533,10 @@ export class FmnMemoryPage extends PageElement {
   private renderHistory(): TemplateResult {
     return gate(
       this.commits.state,
-      (commits) => html`<div class="table-wrap">
-        <table class="data">
-          <thead>
-            <tr>
-              <th scope="col">Title</th>
-              <th scope="col">Time</th>
-              <th scope="col">Author</th>
-              <th scope="col">Commit</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${commits.map(
-              (commit) => html`<tr>
-                <td><a href=${paths.memoryCommit(this.memoryId, commit.oid)}>${commit.title}</a></td>
-                <td class="nowrap">${commit.time}</td>
-                <td>${commit.author}</td>
-                <td><code>${commit.oid.slice(0, 10)}</code></td>
-              </tr>`,
-            )}
-          </tbody>
-        </table>
-      </div>`,
+      (commits) => html`<fmn-history-list
+        .commits=${commits}
+        .href=${(commit: Commit) => paths.memoryCommit(this.memoryId, commit.oid)}
+      ></fmn-history-list>`,
     );
   }
 
@@ -565,7 +548,12 @@ export class FmnMemoryPage extends PageElement {
           ${this.renderStatic('Title', html`<span class="value-text">${entry.commit.title}</span>`)}
           ${this.renderStatic('Time', html`<span class="value-mono">${entry.commit.time}</span>`)}
           ${this.renderStatic('Author', html`<span class="value-text">${entry.commit.author}</span>`)}
-          ${this.renderStatic('Commit', html`<code>${entry.commit.oid}</code>`)}
+          ${this.renderStatic(
+            'Commit',
+            html`<a href=${paths.historyCommit(entry.commit.oid)}
+              ><code>${entry.commit.oid}</code></a
+            >`,
+          )}
         </div>
         <h2>Diff</h2>
         <fmn-diff .diff=${entry.diff}></fmn-diff>

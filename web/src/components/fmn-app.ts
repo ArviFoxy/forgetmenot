@@ -8,6 +8,7 @@ import '../views/fmn-overview-view';
 import '../views/fmn-memory-page';
 import '../views/fmn-scope-page';
 import '../views/fmn-contexts-view';
+import '../views/fmn-history-view';
 import '../views/fmn-context-prompt-view';
 import '../views/fmn-stats-view';
 import '../views/fmn-settings-view';
@@ -23,6 +24,7 @@ interface Section {
 const sections: Section[] = [
   { name: 'home', href: paths.home(), label: 'Overview', icon: 'file-text' },
   { name: 'contexts', href: paths.contexts(), label: 'Contexts', icon: 'activity' },
+  { name: 'history', href: paths.history(), label: 'History', icon: 'clock' },
   { name: 'stats', href: paths.stats(), label: 'Statistics', icon: 'chart-bar' },
   { name: 'settings', href: paths.settings(), label: 'Settings', icon: 'settings' },
 ];

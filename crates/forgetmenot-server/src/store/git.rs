@@ -280,21 +280,49 @@ impl GitRepo {
                 Err(_) => None,
             };
             if in_commit != in_parent {
-                summaries.push(CommitSummary {
-                    oid: commit.id(),
-                    time: commit_time(&commit),
-                    author: commit.author().name().unwrap_or_default().to_string(),
-                    title: commit
-                        .message()
-                        .unwrap_or_default()
-                        .lines()
-                        .next()
-                        .unwrap_or_default()
-                        .to_string(),
-                });
+                summaries.push(summary_of(&commit));
             }
         }
         Ok(summaries)
+    }
+
+    /// The commits of the branch HEAD points at, newest first, at most `limit` of
+    /// them.
+    ///
+    /// `before` names the commit a page starts after, so a caller reads the next
+    /// page by naming the oldest commit it was given. A `before` that is not on
+    /// the branch reaches nothing, because the walk only ever leaves HEAD.
+    pub fn log(&self, before: Option<Oid>, limit: usize) -> Result<Vec<CommitSummary>, GitError> {
+        let mut walk = self.repository.revwalk()?;
+        // Topological order puts every commit before its parents, so a linear
+        // history comes out newest first without depending on commit clocks.
+        walk.set_sorting(Sort::TOPOLOGICAL)?;
+        walk.push_head()?;
+
+        let mut summaries = Vec::with_capacity(limit);
+        let mut past_start = before.is_none();
+        for oid in walk {
+            let oid = oid?;
+            if !past_start {
+                past_start = Some(oid) == before;
+                continue;
+            }
+            if summaries.len() == limit {
+                break;
+            }
+            summaries.push(summary_of(&self.repository.find_commit(oid)?));
+        }
+        Ok(summaries)
+    }
+
+    /// The commit `commit_oid` as the history reports it, or `None` when the
+    /// repository holds no commit of that id.
+    pub fn commit_summary(&self, commit_oid: Oid) -> Result<Option<CommitSummary>, GitError> {
+        match self.repository.find_commit(commit_oid) {
+            Ok(commit) => Ok(Some(summary_of(&commit))),
+            Err(error) if matches!(error.code(), ErrorCode::NotFound) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Every line of `path` at the head of the branch HEAD points at, with the
@@ -575,9 +603,30 @@ impl GitRepo {
     pub fn changes_between(&self, base: Oid, head: Oid) -> Result<Vec<FileChange>, GitError> {
         let base_tree = self.repository.find_commit(base)?.tree()?;
         let head_tree = self.repository.find_commit(head)?.tree()?;
-        let diff = self
-            .repository
-            .diff_tree_to_tree(Some(&base_tree), Some(&head_tree), None)?;
+        self.changes_of(Some(&base_tree), &head_tree)
+    }
+
+    /// What one commit changed in each file it touched, against the revision it
+    /// was made against.
+    ///
+    /// The root commit has no parent, so it is diffed against the empty tree and
+    /// every file it holds is reported as added.
+    pub fn changes_in_commit(&self, commit_oid: Oid) -> Result<Vec<FileChange>, GitError> {
+        let commit = self.repository.find_commit(commit_oid)?;
+        let parent_tree = match commit.parent(0) {
+            Ok(parent) => Some(parent.tree()?),
+            Err(_) => None,
+        };
+        self.changes_of(parent_tree.as_ref(), &commit.tree()?)
+    }
+
+    /// Each file of one tree-to-tree diff with its status and its own diff text.
+    fn changes_of(
+        &self,
+        from: Option<&Tree<'_>>,
+        to: &Tree<'_>,
+    ) -> Result<Vec<FileChange>, GitError> {
+        let diff = self.repository.diff_tree_to_tree(from, Some(to), None)?;
 
         let mut changes: Vec<FileChange> = Vec::new();
         let mut position = BTreeMap::new();
@@ -1190,6 +1239,22 @@ fn compose_message(title: &str, body: &str) -> String {
         format!("{title}\n")
     } else {
         format!("{title}\n\n{body}\n")
+    }
+}
+
+/// One commit as every history reports it: the whole store's and one file's.
+fn summary_of(commit: &git2::Commit<'_>) -> CommitSummary {
+    CommitSummary {
+        oid: commit.id(),
+        time: commit_time(commit),
+        author: commit.author().name().unwrap_or_default().to_string(),
+        title: commit
+            .message()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 

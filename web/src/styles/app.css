@@ -89,8 +89,10 @@ fmn-editable-table,
 fmn-trigger-test,
 fmn-validation-errors,
 fmn-diff,
+fmn-history-list,
 fmn-side-by-side,
 fmn-overview-view,
+fmn-history-view,
 fmn-memory-page,
 fmn-scope-page,
 fmn-contexts-view,
@@ -448,6 +450,15 @@ h2 {
   margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
   font-size: 1.07rem;
   font-weight: var(--sl-font-weight-semibold);
+}
+
+/* The heading of a file a commit changed: where the file lives and what the commit
+   did to it, on one line. */
+.commit-file h2 {
+  display: flex;
+  gap: var(--sl-spacing-x-small);
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 h3 {

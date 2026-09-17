@@ -18,7 +18,8 @@ use git2::Oid;
 use crate::store::branch::{BranchName, BranchRecord};
 use crate::store::catalog::{self, Catalog, LoadError};
 use crate::store::git::{
-    BlameLine, CommitOutcome, FileChange, FileConflict, GitError, GitRepo, LandAttempt,
+    BlameLine, CommitOutcome, CommitSummary, FileChange, FileConflict, GitError, GitRepo,
+    LandAttempt,
 };
 use crate::store::memory::MemoryDocument;
 use crate::store::scope::ScopeDocument;
@@ -176,6 +177,32 @@ impl Store {
         let path = id.repository_path();
         self.with_repository(move |repository| repository.blame(&path))
             .await
+    }
+
+    /// The store's commits, newest first, at most `limit` of them, starting after
+    /// the commit `before` when one is named.
+    pub async fn log(
+        &self,
+        before: Option<Oid>,
+        limit: usize,
+    ) -> Result<Vec<CommitSummary>, StoreError> {
+        self.with_repository(move |repository| repository.log(before, limit))
+            .await
+    }
+
+    /// One commit with what it changed in each file it touched, or `None` when the
+    /// store holds no commit of that id.
+    pub async fn commit_changes(
+        &self,
+        commit_oid: Oid,
+    ) -> Result<Option<(CommitSummary, Vec<FileChange>)>, StoreError> {
+        self.with_repository(move |repository| {
+            let Some(summary) = repository.commit_summary(commit_oid)? else {
+                return Ok(None);
+            };
+            Ok(Some((summary, repository.changes_in_commit(commit_oid)?)))
+        })
+        .await
     }
 
     /// The memory `id` as one version of the file that carries it holds it, or

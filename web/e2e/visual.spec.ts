@@ -224,6 +224,27 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page).toHaveScreenshot(`history-laptop-${scheme}.png`);
     });
 
+    test('the history of the store looks as reviewed', async ({ page }) => {
+      await page.goto('/history');
+      await expect(page.locator('table.data')).toBeVisible();
+      await settle(page);
+      await expect(page).toHaveScreenshot(`store-history-laptop-${scheme}.png`);
+    });
+
+    test('the page of one commit looks as reviewed', async ({ page, request }) => {
+      // The oldest commit is the one the fixture seeds, whose id is fixed by the
+      // dates in `seedCommit`; it is read here rather than written down, so a
+      // change to what is seeded does not leave a dead address behind.
+      const history = (await (await request.get('/api/history')).json()) as {
+        commits: { oid: string }[];
+      };
+      const seeded = history.commits.at(-1)?.oid ?? '';
+      await page.goto(`/history/${seeded}`);
+      await expect(page.locator('fmn-diff').first()).toBeVisible();
+      await settle(page);
+      await expect(page).toHaveScreenshot(`store-commit-laptop-${scheme}.png`);
+    });
+
     test('a scope page looks as reviewed', async ({ page }) => {
       await page.goto('/scopes/widgets');
       await expect(page.locator('fmn-trigger-table')).toBeVisible();

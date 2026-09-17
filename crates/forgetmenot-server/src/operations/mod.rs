@@ -365,6 +365,37 @@ pub struct HistoryEntry {
     pub diff: String,
 }
 
+/// One page of the store's commits, newest first.
+#[derive(Clone, Debug, Serialize)]
+pub struct StoreHistory {
+    pub commits: Vec<Commit>,
+    /// The `before` that reads the page after this one, `null` when the history
+    /// ends here.
+    pub next_before: Option<String>,
+}
+
+/// One file a commit changed.
+#[derive(Clone, Debug, Serialize)]
+pub struct CommitFile {
+    pub path: String,
+    /// `added`, `modified` or `deleted`.
+    pub status: String,
+    /// Unified diff of this file alone.
+    pub diff: String,
+    /// The memory the file carries, `null` when it carries none. Resolved here so
+    /// that a reader links to the document without reading paths.
+    pub memory_id: Option<MemoryId>,
+    /// The scope the file carries, `null` when it carries none.
+    pub scope_id: Option<ScopeId>,
+}
+
+/// One commit with every file it changed.
+#[derive(Clone, Debug, Serialize)]
+pub struct CommitFiles {
+    pub commit: Commit,
+    pub files: Vec<CommitFile>,
+}
+
 /// One live context.
 #[derive(Clone, Debug, Serialize)]
 pub struct ContextRow {
@@ -1653,6 +1684,67 @@ fn scope_conflict(entry: &ScopeEntry) -> OperationError {
 // ---------------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------------
+
+/// How many commits a page of the store's history holds when the caller asks for
+/// no number.
+pub const DEFAULT_HISTORY_LIMIT: usize = 50;
+
+/// The most commits one page of the store's history holds, whatever the caller
+/// asks for.
+pub const MAX_HISTORY_LIMIT: usize = 200;
+
+/// One page of the store's commits, newest first.
+///
+/// `before` is a commit the page starts after, so a caller reads the whole
+/// history by passing back the `next_before` it was given.
+pub async fn store_history(
+    state: &AppState,
+    before: Option<String>,
+    limit: usize,
+) -> Result<StoreHistory, OperationError> {
+    let before = match before.as_deref() {
+        None => None,
+        Some(text) => match Oid::from_str(text) {
+            Ok(oid) => Some(oid),
+            Err(_) => return Err(OperationError::NotFound(format!("the commit `{text}`"))),
+        },
+    };
+    let limit = limit.clamp(1, MAX_HISTORY_LIMIT);
+    let summaries = state.store.log(before, limit).await?;
+    // A page that came back short is the end of the history: there is nothing
+    // older left to ask for.
+    let next_before = match summaries.last() {
+        Some(oldest) if summaries.len() == limit => Some(oldest.oid.to_string()),
+        _ => None,
+    };
+    Ok(StoreHistory {
+        commits: summaries.iter().map(Commit::of).collect(),
+        next_before,
+    })
+}
+
+/// One commit of the store with every file it changed and each file's diff.
+pub async fn store_commit(state: &AppState, oid: &str) -> Result<CommitFiles, OperationError> {
+    let Ok(commit_oid) = Oid::from_str(oid) else {
+        return Err(OperationError::NotFound(format!("the commit `{oid}`")));
+    };
+    let Some((summary, changes)) = state.store.commit_changes(commit_oid).await? else {
+        return Err(OperationError::NotFound(format!("the commit `{oid}`")));
+    };
+    Ok(CommitFiles {
+        commit: Commit::of(&summary),
+        files: changes
+            .into_iter()
+            .map(|change| CommitFile {
+                memory_id: MemoryId::from_repository_path(&change.path),
+                scope_id: ScopeId::from_repository_path(&change.path),
+                path: change.path,
+                status: change.status.as_str().to_string(),
+                diff: change.diff,
+            })
+            .collect(),
+    })
+}
 
 /// The commits that changed one document, newest first.
 pub async fn history(

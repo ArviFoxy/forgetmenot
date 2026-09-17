@@ -150,6 +150,33 @@ export interface HistoryEntry {
   diff: string;
 }
 
+/** What one commit did to one file. */
+export type ChangeStatus = 'added' | 'modified' | 'deleted';
+
+/** One page of the store's commits, newest first. */
+export interface StoreHistory {
+  commits: Commit[];
+  /** The `before` that reads the page after this one; null at the end of the history. */
+  next_before: string | null;
+}
+
+export interface CommitFile {
+  path: string;
+  status: ChangeStatus;
+  /** Unified diff of this file alone. */
+  diff: string;
+  /** The memory the file holds; null when it holds none. */
+  memory_id: string | null;
+  /** The scope the file holds; null when it holds none. */
+  scope_id: string | null;
+}
+
+/** One commit with every file it changed. */
+export interface CommitFiles {
+  commit: Commit;
+  files: CommitFile[];
+}
+
 export interface ContextRow {
   key: string;
   /** What to call the context: its task, its title, or its first prompt. */

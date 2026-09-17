@@ -19,6 +19,8 @@ const links: Record<keyof typeof paths, string> = {
   memoryNew: paths.memoryNew(),
   scopeNew: paths.scopeNew(),
   scope: paths.scope(sessionScope),
+  history: paths.history(),
+  historyCommit: paths.historyCommit(commitOid),
   contexts: paths.contexts(),
   contextPrompt: paths.contextPrompt(subagentKey),
   stats: paths.stats(),
@@ -81,6 +83,16 @@ test('the address of one commit loses the commit it names', () => {
   expect(view.properties.memoryId).toBe(memoryWithSlashes);
   expect(view.properties.mode).toBe('commit');
   expect(view.properties.oid).toBe(commitOid);
+});
+
+test('the address of one commit of the store loses the commit it names', () => {
+  const view = resolve(paths.historyCommit(commitOid));
+  expect(view.name).toBe('historyCommit');
+  expect(view.properties.oid).toBe(commitOid);
+  // The same view as the list, told to show one commit rather than all of them.
+  expect(view.tag).toBe(resolve(paths.history()).tag);
+  expect(view.properties.mode).toBe('commit');
+  expect(resolve(paths.history()).properties.mode).toBe('list');
 });
 
 test('the address for creating a memory is read as a memory whose id is "new"', () => {

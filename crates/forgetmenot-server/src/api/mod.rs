@@ -39,6 +39,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .merge(memories::router())
         .merge(scopes::router())
+        .merge(history::router())
         .merge(settings::router())
         .merge(branches::router())
         .merge(triggers::router())

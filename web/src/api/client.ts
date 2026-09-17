@@ -1,5 +1,6 @@
 import type {
   Commit,
+  CommitFiles,
   ContextPrompt,
   ContextRow,
   Conflict,
@@ -25,6 +26,7 @@ import type {
   SettingsDoc,
   SettingsWriteRequest,
   SessionBytesRow,
+  StoreHistory,
   TriggerStatsRow,
   TriggerTestRequest,
   TriggerTestResult,
@@ -89,6 +91,10 @@ export interface ApiClient {
   createScope(request: ScopeCreateRequest): Promise<WriteOutcome<ScopeDoc>>;
   deleteScope(id: string, request: DeleteRequest): Promise<WriteOutcome<ScopeDoc, DeleteResponse>>;
   scopeHistory(id: string): Promise<Commit[]>;
+  /** The store's commits, newest first; `before` reads the page after that commit. */
+  storeHistory(before?: string): Promise<StoreHistory>;
+  /** One commit of the store with every file it changed. */
+  storeCommit(oid: string): Promise<CommitFiles>;
   testTriggers(request: TriggerTestRequest): Promise<TriggerTestResult>;
   /** Whether one pattern is a regex the store would accept. */
   validatePattern(pattern: string): Promise<PatternValidity>;
@@ -191,6 +197,14 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     },
 
     scopeHistory: (id) => read<Commit[]>(`/api/scopes/${encodeURIComponent(id)}/history`),
+
+    storeHistory: (before) =>
+      read<StoreHistory>(
+        before === undefined || before === ''
+          ? '/api/history'
+          : `/api/history?before=${encodeURIComponent(before)}`,
+      ),
+    storeCommit: (oid) => read<CommitFiles>(`/api/history/${encodeURIComponent(oid)}`),
 
     async testTriggers(request) {
       const url = `${root}/api/triggers/test`;

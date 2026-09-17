@@ -14,6 +14,8 @@ export type RouteName =
   | 'memoryNew'
   | 'scope'
   | 'scopeNew'
+  | 'history'
+  | 'historyCommit'
   | 'contexts'
   | 'contextPrompt'
   | 'stats'
@@ -53,6 +55,9 @@ export const paths = {
       : `/memories/new?scope=${encodeURIComponent(scope)}`,
   scopeNew: (): string => '/scopes/new',
   scope: (id: string): string => `/scopes/${encodeId(id)}`,
+  /** The store's own commits, newest first. */
+  history: (): string => '/history',
+  historyCommit: (oid: string): string => `/history/${encodeURIComponent(oid)}`,
   contexts: (): string => '/contexts',
   /** The text a context would be given: what is due, or the whole of its scopes. */
   contextPrompt: (key: string, mode: PromptMode = 'due'): string =>
@@ -111,6 +116,12 @@ const router = new UniversalRouterSync<RouteView>([
     action: ({ params }) =>
       view('contextPrompt', 'fmn-context-prompt-view', { contextKey: joined(params, 'key') }),
   },
+  {
+    path: '/history/:oid',
+    action: ({ params }) =>
+      view('historyCommit', 'fmn-history-view', { mode: 'commit', oid: joined(params, 'oid') }),
+  },
+  { path: '/history', action: () => view('history', 'fmn-history-view', { mode: 'list' }) },
   { path: '/contexts', action: () => view('contexts', 'fmn-contexts-view') },
   { path: '/stats', action: () => view('stats', 'fmn-stats-view') },
   { path: '/settings', action: () => view('settings', 'fmn-settings-view') },

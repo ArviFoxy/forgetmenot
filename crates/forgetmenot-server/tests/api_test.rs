@@ -858,6 +858,234 @@ fn the_history_of_a_write_lists_its_commit_and_its_diff_marks_the_added_line() {
     );
 }
 
+/// A write to one memory, made through the API, reporting the title it carries.
+fn write_line_to(server: &TestServer, id: &str, message: &str) -> String {
+    let (status, answer) = server.api(
+        "PUT",
+        &format!("/api/memories/{id}"),
+        Some(&write_of(
+            &document(server, id),
+            "the description this write leaves behind",
+            &format!("# {id}\n\n{NEW_LINE}\n"),
+            message,
+        )),
+    );
+    assert_eq!(status, 200, "the write to {id} must land, got {answer}");
+    message.to_string()
+}
+
+/// One page of the store's history, failing the test when it cannot be read.
+fn history_page(server: &TestServer, query: &str) -> Value {
+    let (status, answer) = server.api("GET", &format!("/api/history{query}"), None);
+    assert_eq!(
+        status, 200,
+        "the store's history must be readable, got {answer}"
+    );
+    answer
+}
+
+/// The titles a page of the store's history lists, in the order it lists them.
+fn page_titles(page: &Value) -> Vec<String> {
+    page["commits"]
+        .as_array()
+        .expect("a page carries a list of commits")
+        .iter()
+        .map(|commit| commit["title"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Detects a store history that lists the commits in another order, or that
+/// cannot be paged through: the list page shows the newest first and reads the
+/// rest by asking for the commits older than the last one it was given.
+#[test]
+fn the_store_history_lists_every_commit_newest_first_and_pages_past_the_one_it_names() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let older = write_line_to(&server, "reading-list", "note where the binder lives");
+    let newer = write_line_to(&server, "bench-power", "note the wall switch");
+
+    let page = history_page(&server, "");
+    let titles = page_titles(&page);
+    assert_eq!(
+        titles.first().map(String::as_str),
+        Some(newer.as_str()),
+        "the newest commit must come first, got {titles:?}"
+    );
+    assert_eq!(
+        titles.get(1).map(String::as_str),
+        Some(older.as_str()),
+        "the write before it must come second, got {titles:?}"
+    );
+    assert!(
+        titles.contains(&"build the fixture store".to_string()),
+        "the commit that seeded the store must be listed too, got {titles:?}"
+    );
+    assert!(
+        page["next_before"].is_null(),
+        "a page holding the whole history must offer no next page, got {page}"
+    );
+
+    let newest = &page["commits"][0];
+    assert_eq!(
+        newest["author"].as_str(),
+        Some(AUTHOR),
+        "a commit must name the author its write gave, got {newest}"
+    );
+    assert!(
+        newest["time"]
+            .as_str()
+            .is_some_and(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok()),
+        "a commit's time must be ISO 8601, got {newest}"
+    );
+
+    let first = history_page(&server, "?limit=1");
+    assert_eq!(
+        page_titles(&first),
+        vec![newer.clone()],
+        "a limit of one must answer with one commit, got {first}"
+    );
+    let before = first["next_before"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a full page must name the next page's start, got {first}"));
+    let second = history_page(&server, &format!("?limit=1&before={before}"));
+    assert_eq!(
+        page_titles(&second),
+        vec![older],
+        "the next page must start after the commit it was given, got {second}"
+    );
+}
+
+/// Detects a commit page that reports files the commit did not change, that
+/// carries no diff, or that leaves the frontend to work out which document a
+/// path holds.
+#[test]
+fn a_commit_page_lists_only_the_file_that_commit_changed_with_its_diff_and_its_memory() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    write_line_to(&server, "reading-list", "note where the binder lives");
+    let oid = head(&server);
+
+    let (status, answer) = server.api("GET", &format!("/api/history/{oid}"), None);
+    assert_eq!(status, 200, "the commit must be readable, got {answer}");
+    let files = answer["files"]
+        .as_array()
+        .expect("a commit lists its files");
+    let paths: Vec<&str> = files
+        .iter()
+        .map(|file| file["path"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["memories/reading-list.md"],
+        "the commit must list the one file it changed, got {answer}"
+    );
+    let file = &files[0];
+    assert_eq!(
+        file["status"].as_str(),
+        Some("modified"),
+        "a file the commit rewrote must be reported as modified, got {file}"
+    );
+    assert!(
+        file["diff"]
+            .as_str()
+            .is_some_and(|diff| diff.lines().any(|line| line == format!("+{NEW_LINE}"))),
+        "the file's diff must show the added line as added, got {file}"
+    );
+    assert_eq!(
+        file["memory_id"].as_str(),
+        Some("reading-list"),
+        "the file must name the memory it holds, got {file}"
+    );
+}
+
+/// Detects the commit that has no parent being answered as a server failure, or
+/// as having changed nothing: the store's first commit is the one every file was
+/// added in, and it is reachable from the history list like any other.
+#[test]
+fn the_commit_that_added_every_file_is_reported_as_what_it_added() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    let page = history_page(&server, "");
+    let commits = page["commits"].as_array().expect("the history is a list");
+    let root = commits
+        .last()
+        .expect("the store has at least one commit")
+        .clone();
+    let (status, answer) = server.api(
+        "GET",
+        &format!("/api/history/{}", root["oid"].as_str().unwrap_or_default()),
+        None,
+    );
+    assert_eq!(
+        status, 200,
+        "the commit with no parent must be readable, got {answer}"
+    );
+
+    let seeding = commits
+        .iter()
+        .find(|commit| commit["title"].as_str() == Some("build the fixture store"))
+        .expect("the history lists the commit that seeded the store");
+    let (status, answer) = server.api(
+        "GET",
+        &format!(
+            "/api/history/{}",
+            seeding["oid"].as_str().unwrap_or_default()
+        ),
+        None,
+    );
+    assert_eq!(
+        status, 200,
+        "the seeding commit must be readable, got {answer}"
+    );
+    let listed: BTreeSet<String> = answer["files"]
+        .as_array()
+        .expect("a commit lists its files")
+        .iter()
+        .map(|file| file["path"].as_str().unwrap_or_default().to_string())
+        .collect();
+    let seeded: BTreeSet<String> = example_store_files()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    assert_eq!(
+        listed, seeded,
+        "the commit that added every file must list every one of them, got {answer}"
+    );
+    assert!(
+        answer["files"]
+            .as_array()
+            .expect("a commit lists its files")
+            .iter()
+            .all(|file| file["status"].as_str() == Some("added")),
+        "every file of that commit must be reported as added, got {answer}"
+    );
+    assert!(
+        answer["files"]
+            .as_array()
+            .expect("a commit lists its files")
+            .iter()
+            .any(|file| file["scope_id"].as_str() == Some("widgets")),
+        "a scope's file must name the scope it holds, got {answer}"
+    );
+}
+
+/// Detects a commit the store does not have being answered as a server failure,
+/// which a mistyped or stale address in the frontend would produce.
+#[test]
+fn a_commit_the_store_does_not_have_is_reported_as_missing() {
+    let server = TestServer::start(example_store_files(), |_| {});
+
+    for oid in ["f".repeat(40), "not-a-commit".to_string()] {
+        let (status, answer) = server.api("GET", &format!("/api/history/{oid}"), None);
+        assert_eq!(
+            status, 404,
+            "the commit `{oid}` must be a 404, got {answer}"
+        );
+        assert!(
+            answer["error"].is_string(),
+            "a 404 must carry a message, got {answer}"
+        );
+    }
+}
+
 /// Detects a write to a memory that is not there being answered as anything
 /// other than "no such memory": a mistyped id would otherwise create a memory,
 /// or fail as a server error the frontend cannot explain.
