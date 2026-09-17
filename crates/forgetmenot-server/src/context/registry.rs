@@ -304,3 +304,83 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), SnapshotError> {
     std::fs::write(&temporary, bytes).map_err(io)?;
     std::fs::rename(&temporary, path).map_err(io)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The directory `claude` was started in, which is what these tests follow
+    /// from the session that reported it to the places that must still have it.
+    const STARTED_IN: &str = "/start/project";
+
+    /// Detects a subagent given a session directory of its own, or none at all:
+    /// a subagent runs in its parent's session, so the directory `claude` was
+    /// started in is the same for both, whatever the subagent's shell is doing
+    /// and whatever the store says a subagent starts with in the way of scopes.
+    #[tokio::test]
+    async fn a_subagent_starts_with_the_session_directory_of_the_session_it_runs_in() {
+        let registry = ContextRegistry::new(0, None);
+        let now = Utc::now();
+        let session = ContextKey::main("alpha", "session-1");
+        registry
+            .with_context(&session, now, Inheritance::FromParent, |state| {
+                state.session_directory = Some(STARTED_IN.to_string());
+                state.active.insert(crate::store::ScopeId::new("widgets"));
+            })
+            .await;
+
+        let child = ContextKey::subagent("alpha", "session-1", "agent-7");
+        let (directory, active) = registry
+            .with_context(&child, now, Inheritance::ImplicitOnly, |state| {
+                (state.session_directory.clone(), state.active.clone())
+            })
+            .await;
+
+        assert_eq!(
+            directory.as_deref(),
+            Some(STARTED_IN),
+            "the subagent runs in the session that began in {STARTED_IN}"
+        );
+        assert!(
+            !active.contains(&crate::store::ScopeId::new("widgets")),
+            "this store starts a subagent from the implicit scopes, so the directory cannot \
+             have come with the scopes, got {active:?}"
+        );
+    }
+
+    /// Detects a session directory that is not written to the snapshot: the
+    /// server would come back up having forgotten where every running session
+    /// began, and their directory triggers would stop firing.
+    #[tokio::test]
+    async fn a_snapshot_keeps_the_directory_each_session_was_started_in() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("contexts.json");
+        let now = Utc::now();
+        let key = ContextKey::main("alpha", "session-1");
+        let registry = ContextRegistry::new(0, None);
+        registry
+            .with_context(&key, now, Inheritance::FromParent, |state| {
+                state.session_directory = Some(STARTED_IN.to_string());
+            })
+            .await;
+
+        registry
+            .snapshot_to(&path, now)
+            .await
+            .expect("the snapshot is written");
+        let loaded = ContextRegistry::load_from(&path, 0, None, now)
+            .await
+            .expect("the snapshot is read back");
+
+        let started_in = loaded
+            .with_context(&key, now, Inheritance::FromParent, |state| {
+                state.session_directory.clone()
+            })
+            .await;
+        assert_eq!(
+            started_in.as_deref(),
+            Some(STARTED_IN),
+            "a session picked up after a restart began where it began"
+        );
+    }
+}

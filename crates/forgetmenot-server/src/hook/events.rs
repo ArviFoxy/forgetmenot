@@ -332,6 +332,232 @@ mod tests {
         );
     }
 
+    /// A `PostToolUse` from `tool` whose result is `output`.
+    fn tool_result(tool: &str, output: &str) -> HookEvent {
+        event(json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "session-1",
+            "cwd": "/home/dev/widgets",
+            "tool_name": tool,
+            "tool_input": { "command": "cargo test" },
+            "tool_output": output
+        }))
+    }
+
+    /// The texts of `plan` that the triggers of `field` are matched against.
+    fn texts_on(plan: &EventPlan, field: TriggerField) -> Vec<&str> {
+        plan.texts
+            .iter()
+            .filter(|(each, _)| *each == field)
+            .map(|(_, text)| text.as_str())
+            .collect()
+    }
+
+    /// Detects this server's own MCP tools being matched against triggers, and
+    /// an exemption tied to one server name or blind to the `mcp__` form: a
+    /// `memory_put` carries a whole memory body and a `session_scopes` answer
+    /// names every scope the store has, so matching either activates scopes
+    /// from the memory system's own traffic rather than from the work. The name
+    /// the server is registered under is the user's to choose, while a bare
+    /// tool name with no prefix is some other tool that happens to share it.
+    ///
+    /// Source: the `mcp__<server>__<tool>` naming Claude Code gives an MCP
+    /// tool.
+    #[test]
+    fn the_stores_own_tools_contribute_no_text_whatever_server_name_they_carry() {
+        let scopes = "active:\n- widgets\navailable:\n- rocketry\n";
+        for tool in [
+            "mcp__forgetmenot__session_scopes",
+            "mcp__memory__session_scopes",
+        ] {
+            let plan = plan_of(&tool_result(tool, scopes), "alpha").expect("PostToolUse is known");
+            assert!(
+                plan.texts.is_empty(),
+                "{tool} is this server's own tool, so nothing it said is matched, got {:?}",
+                plan.texts
+            );
+        }
+
+        for tool in ["session_scopes", "Bash"] {
+            let plan = plan_of(&tool_result(tool, scopes), "alpha").expect("PostToolUse is known");
+            assert_eq!(
+                texts_on(&plan, TriggerField::ToolResult),
+                vec![scopes],
+                "{tool} is not this server's tool, so its result is matched like any other"
+            );
+        }
+
+        let write = plan_of(
+            &event(json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": "session-1",
+                "cwd": "/home/dev/widgets",
+                "tool_name": "mcp__forgetmenot__memory_put",
+                "tool_input": { "id": "widget-naming", "body": "the widgets rule" }
+            })),
+            "alpha",
+        )
+        .expect("PreToolUse is known");
+        assert!(
+            texts_on(&write, TriggerField::ToolInput).is_empty()
+                && texts_on(&write, TriggerField::ToolName).is_empty(),
+            "a call into the store must not be matched against what it is writing, got {:?}",
+            write.texts
+        );
+    }
+
+    /// Detects a `trigger_exempt_tools` list that is not consulted, or one that
+    /// exempts every tool: a store that names a tool wants what that tool reads
+    /// kept out of the matching, and a tool it did not name must still be
+    /// matched.
+    #[test]
+    fn a_tool_the_store_exempts_contributes_no_text_while_another_still_does() {
+        let settings = Settings {
+            trigger_exempt_tools: vec!["Read".to_string()],
+            ..Settings::default()
+        };
+        let output = "the widgets rule is in the binder";
+
+        let exempt = plan(&tool_result("Read", output), "alpha", None, &settings)
+            .expect("PostToolUse is known");
+        let matched = plan(&tool_result("Grep", output), "alpha", None, &settings)
+            .expect("PostToolUse is known");
+
+        assert!(
+            exempt.texts.is_empty(),
+            "the store named Read, so what it read is kept out, got {:?}",
+            exempt.texts
+        );
+        assert_eq!(
+            texts_on(&matched, TriggerField::ToolResult),
+            vec![output],
+            "a tool the store did not name must still be matched"
+        );
+    }
+
+    /// Detects a tool result matched past the limit the store set, and a limit
+    /// that throws the result away before it: matching is linear in the text,
+    /// so a limit that is not applied makes a large tool result cost a regex
+    /// pass over all of it, and one applied too soon silently stops triggers
+    /// firing on results the store meant to match.
+    #[test]
+    fn a_tool_result_is_matched_only_up_to_the_limit_the_store_set() {
+        let limit = 64;
+        let settings = Settings {
+            tool_result_match_limit: limit,
+            ..Settings::default()
+        };
+        let output = "SUPERNOVA in the log. ".repeat(20);
+
+        let plan = plan(&tool_result("Bash", &output), "alpha", None, &settings)
+            .expect("PostToolUse is known");
+
+        let matched = texts_on(&plan, TriggerField::ToolResult);
+        assert_eq!(matched.len(), 1, "one result is one text, got {matched:?}");
+        assert_eq!(
+            matched[0].len() as u64,
+            limit,
+            "the matched text must stop at the limit, got {:?}",
+            matched[0]
+        );
+        assert!(
+            output.starts_with(matched[0]),
+            "what is matched must be the start of the result, got {:?}",
+            matched[0]
+        );
+    }
+
+    /// Detects a plan that gives the shell's directory as anything but the
+    /// directory the event reports, and one that invents a session directory of
+    /// its own: where the session began is the context's to say and reaches the
+    /// triggers only once the context has been read, so a plan that carried one
+    /// would match a directory no event named.
+    #[test]
+    fn the_shell_directory_a_plan_matches_is_the_one_its_event_reports() {
+        for payload in [
+            json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "session-1",
+                "cwd": "/start/project",
+                "source": "startup"
+            }),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": "session-1",
+                "cwd": "/start/project",
+                "tool_name": "Read",
+                "tool_input": { "file_path": "/home/dev/notes/README.md" }
+            }),
+        ] {
+            let plan = plan_of(&event(payload), "alpha").expect("the event is known");
+            assert_eq!(
+                texts_on(&plan, TriggerField::ShellDirectory),
+                vec!["/start/project"],
+                "the shell's directory is the one the event reports, got {:?}",
+                plan.texts
+            );
+            assert!(
+                texts_on(&plan, TriggerField::SessionDirectory).is_empty(),
+                "the directory the session began in is not the plan's to name, got {:?}",
+                plan.texts
+            );
+        }
+    }
+
+    /// Detects an event other than a tool call planned as able to stop one: a
+    /// prompt or a finished call has nothing to stop, and answering one with a
+    /// permission decision would have Claude Code reject the answer.
+    #[test]
+    fn only_a_tool_call_about_to_run_may_be_stopped() {
+        let call = plan_of(
+            &event(json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": "session-1",
+                "tool_name": "Bash",
+                "tool_input": { "command": "cargo test" }
+            })),
+            "alpha",
+        )
+        .expect("PreToolUse is known");
+        assert!(call.may_deny, "a call about to run can still be stopped");
+        assert_eq!(
+            call.tool_name.as_deref(),
+            Some("Bash"),
+            "the tool the store's exemptions are matched against must be named"
+        );
+
+        for payload in [
+            json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-1",
+                "prompt": "rename the widget brackets"
+            }),
+            json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "session-1",
+                "source": "startup"
+            }),
+            json!({
+                "hook_event_name": "Stop",
+                "session_id": "session-1",
+                "last_assistant_message": "done"
+            }),
+        ] {
+            let plan = plan_of(&event(payload), "alpha").expect("the event is known");
+            assert!(
+                !plan.may_deny && plan.tool_name.is_none(),
+                "a {} has no call to stop, got {plan:?}",
+                plan.event_name
+            );
+        }
+
+        let finished = plan_of(&tool_result("Bash", "ok"), "alpha").expect("PostToolUse is known");
+        assert!(
+            !finished.may_deny,
+            "a call that has already run cannot be stopped, got {finished:?}"
+        );
+    }
+
     /// Detects a CwdChanged event read from the flattened `cwd` of the common
     /// fields instead of the directory the event reports as now in force: a
     /// directory trigger would then fire for the directory that was left.

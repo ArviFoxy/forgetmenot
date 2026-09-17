@@ -208,3 +208,325 @@ pub fn delivery_bytes(catalog: &Catalog, id: &MemoryId) -> u64 {
         };
     size as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{Needs, RetractReason};
+    use crate::store::MemoryId;
+    use crate::test_support::{TestStore, catalog_of, memory_file, scope_file};
+
+    /// A line of the critical memory's body and nothing else in the store, so
+    /// that "delivered in full" can be told from "named in an index line".
+    const RULE_BODY: &str = "Switch the bench supply off at the wall.";
+
+    /// The description of the knowledge memory, which is the whole of what an
+    /// index line says about it.
+    const BINDER: &str = "The workshop references are all on paper in the binder";
+
+    /// The message the scope below carries, which has no file and no id of its
+    /// own.
+    const BROAD_EXCEPT: &str =
+        "Do not catch Exception broadly; catch the exception type the code can handle.";
+
+    /// A store with one critical memory and one knowledge memory in `global`,
+    /// and one scope whose only content is a message.
+    fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
+        vec![
+            memory_file(
+                "bench-power",
+                "critical",
+                &["global", "workshop"],
+                "Cut bench power at the wall before rewiring",
+                &format!("# Cut bench power before rewiring\n\n{RULE_BODY}\n"),
+            ),
+            memory_file(
+                "reading-list",
+                "knowledge",
+                &["global"],
+                BINDER,
+                "# The binder\n\nThe bench notes and the parts catalogue are in it.\n",
+            ),
+            scope_file("broad-except", &format!("message: '{BROAD_EXCEPT}'\n")),
+        ]
+    }
+
+    /// The context these tests render for.
+    fn key() -> ContextKey {
+        ContextKey::main("alpha", "session-1")
+    }
+
+    /// The text rendered for `needs` in a context whose scopes are `active`,
+    /// where `activated` is what this event turned on and the store's
+    /// `announce_empty_scopes` is `announce`.
+    fn render_of(
+        catalog: &Catalog,
+        needs: &Needs,
+        active: &BTreeSet<ScopeId>,
+        activated: &[ScopeId],
+        announce: bool,
+    ) -> String {
+        let key = key();
+        render(&Delivery {
+            key: &key,
+            catalog,
+            needs,
+            active,
+            activated,
+            announce_empty_scopes: announce,
+            session_start: false,
+            answer_file_threshold: None,
+        })
+    }
+
+    /// What is owed when `new` has never been delivered here.
+    fn owed(new: &[&str]) -> Needs {
+        Needs {
+            new: new.iter().map(|id| MemoryId::new(*id)).collect(),
+            ..Needs::default()
+        }
+    }
+
+    /// Detects a critical memory delivered as a line to look up, which leaves
+    /// the model with a rule it has not read, and a knowledge memory delivered
+    /// whole, which spends the context the index exists to save. The heading of
+    /// a critical memory names the id and the scopes it is delivered for,
+    /// because that is what the model passes back to the tools.
+    #[test]
+    fn a_critical_memory_arrives_in_full_and_a_knowledge_memory_as_its_id_and_description() {
+        let (_store, catalog) = catalog_of(store_files());
+
+        let text = render_of(
+            &catalog,
+            &owed(&["bench-power", "reading-list"]),
+            &BTreeSet::from([ScopeId::global()]),
+            &[],
+            false,
+        );
+
+        assert!(
+            text.contains("== critical: bench-power (scopes: global, workshop) ==")
+                && text.contains(RULE_BODY),
+            "the rule must arrive in full under a heading naming its id and scopes, got {text:?}"
+        );
+        assert!(
+            text.contains(&format!("- reading-list: {BINDER}")),
+            "the knowledge memory must arrive as its id and description, got {text:?}"
+        );
+        assert!(
+            !text.contains("The bench notes and the parts catalogue"),
+            "a knowledge memory's body must not be delivered, got {text:?}"
+        );
+    }
+
+    /// Detects an answer whose sections are in an order the model reads the
+    /// wrong way round: what it must act on has to come before what it may look
+    /// up, and a withdrawal has to come after both, or a long answer cut to a
+    /// preview loses the rules rather than the references.
+    #[test]
+    fn the_rules_to_act_on_come_before_the_index_and_the_withdrawals_come_after_both() {
+        let (_store, catalog) = catalog_of(store_files());
+        let needs = Needs {
+            new: vec![MemoryId::new("bench-power"), MemoryId::new("reading-list")],
+            retracted: vec![(MemoryId::new("bench-vice"), RetractReason::Deleted)],
+            ..Needs::default()
+        };
+
+        let text = render_of(
+            &catalog,
+            &needs,
+            &BTreeSet::from([ScopeId::global()]),
+            &[],
+            false,
+        );
+
+        let rule = text.find(RULE_BODY).expect("the rule is rendered");
+        let index = text.find(BINDER).expect("the index line is rendered");
+        let withdrawn = text.find("bench-vice").expect("the withdrawal is rendered");
+        assert!(
+            rule < index && index < withdrawn,
+            "the order must be rule, index, withdrawal, got {text:?}"
+        );
+        assert!(
+            text.contains(&format!(
+                "- bench-vice ({})",
+                RetractReason::Deleted.as_str()
+            )),
+            "a withdrawal must say why the memory is no longer to be acted on, got {text:?}"
+        );
+    }
+
+    /// Detects a scope message printed as an ordinary memory: a message has no
+    /// file, so there is no id to fetch it by and the only scope it can belong
+    /// to is the one whose file carries it. A heading offering an id would send
+    /// the model to a memory that does not exist.
+    #[test]
+    fn a_scope_message_is_headed_by_its_scope_and_offers_no_id_to_fetch_it_by() {
+        let (_store, catalog) = catalog_of(store_files());
+        let id = MemoryId::for_scope_message(&ScopeId::new("broad-except"));
+
+        let text = render_of(
+            &catalog,
+            &Needs {
+                new: vec![id],
+                ..Needs::default()
+            },
+            &BTreeSet::from([ScopeId::new("broad-except")]),
+            &[],
+            false,
+        );
+
+        assert!(
+            text.contains("== scope: broad-except ==") && text.contains(BROAD_EXCEPT),
+            "the message must arrive in full under its scope, got {text:?}"
+        );
+        assert!(
+            !text.contains("== critical:"),
+            "a message must not be printed as a memory to fetch by id, got {text:?}"
+        );
+    }
+
+    /// Detects an answer that names a scope the store did not ask to have
+    /// named, one that names a scope whose memories it just delivered, and one
+    /// that names nothing when a scope turned on with nothing to deliver: the
+    /// first two report context where the memories already speak, and the third
+    /// leaves the agent unable to tell that a scope came on at all.
+    ///
+    /// Source: the store's `announce_empty_scopes`, which exists for the scope
+    /// that activates and delivers nothing.
+    #[test]
+    fn an_activated_scope_is_named_only_when_the_store_asks_and_only_if_it_delivered_nothing() {
+        let (_store, catalog) = catalog_of(store_files());
+        let global = ScopeId::global();
+        let paperwork = ScopeId::new("paperwork");
+        let active = BTreeSet::from([global.clone(), paperwork.clone()]);
+
+        let silent = render_of(
+            &catalog,
+            &Needs::default(),
+            &active,
+            std::slice::from_ref(&paperwork),
+            false,
+        );
+        assert!(
+            !silent.contains("paperwork"),
+            "the store did not ask for activated scopes to be named, got {silent:?}"
+        );
+
+        let announced = render_of(
+            &catalog,
+            &Needs::default(),
+            &active,
+            std::slice::from_ref(&paperwork),
+            true,
+        );
+        assert!(
+            announced.contains("== scopes activated ==")
+                && announced.lines().any(|line| line == "paperwork"),
+            "a scope that came on with nothing to deliver must be named, got {announced:?}"
+        );
+
+        let delivering = render_of(&catalog, &owed(&["bench-power"]), &active, &[global], true);
+        assert!(
+            !delivering.contains("== scopes activated =="),
+            "a scope whose memory just arrived speaks for itself, got {delivering:?}"
+        );
+    }
+
+    /// An answer built from `body` as one global critical memory, so that the
+    /// whole of it is the notice and that memory.
+    fn answer_of(body: &str, threshold: Option<u64>) -> String {
+        let store = TestStore::with(vec![memory_file(
+            "long-rule",
+            "critical",
+            &["global"],
+            "A rule long enough to test the answer notice",
+            body,
+        )]);
+        let catalog = store.catalog();
+        let key = key();
+        render(&Delivery {
+            key: &key,
+            catalog: &catalog,
+            needs: &owed(&["long-rule"]),
+            active: &BTreeSet::from([ScopeId::global()]),
+            activated: &[],
+            announce_empty_scopes: false,
+            session_start: false,
+            answer_file_threshold: threshold,
+        })
+    }
+
+    /// Detects a notice that is missing, that comes after content the preview
+    /// cut would remove, or that replaces the answer: past the threshold Claude
+    /// Code shows the model a preview and a file path, so the first line has to
+    /// tell it to read the file, and the file has to still hold the memory.
+    ///
+    /// Source: the setting's documented meaning and the preview rule in the
+    /// README.
+    #[test]
+    fn an_answer_past_the_threshold_opens_with_the_notice_and_still_carries_the_whole_text() {
+        let body = "Stop the run and read the log. ".repeat(20);
+
+        let text = answer_of(&body, Some(200));
+
+        let opening = text.lines().next().unwrap_or_default();
+        assert!(
+            opening.contains("READ THE FILE FIRST") && opening.contains("Read tool"),
+            "the first line must tell the model to read the file, got {opening:?}"
+        );
+        assert!(
+            text.contains(body.trim_end()),
+            "the memory must still be in the answer in full, got {text:?}"
+        );
+    }
+
+    /// Detects a notice sent whatever the length, and one sent although the
+    /// store turned the notice off: Claude Code writes a file only past the
+    /// threshold, so either would send the model looking for a file that was
+    /// never written.
+    #[test]
+    fn no_notice_opens_an_answer_within_the_threshold_or_one_the_store_wants_none_for() {
+        let long = "Stop the run and read the log. ".repeat(20);
+
+        let within = answer_of("Stop the run and read the log.", Some(100_000));
+        assert!(
+            !within.contains("READ THE FILE"),
+            "an answer Claude Code shows whole must carry no notice, got {within:?}"
+        );
+        assert!(
+            within.starts_with("[forgetmenot] context "),
+            "the answer must open with its context line, got {within:?}"
+        );
+
+        let turned_off = answer_of(&long, None);
+        assert!(
+            !turned_off.contains("READ THE FILE"),
+            "a store that asks for no notice must get none, got {turned_off:?}"
+        );
+    }
+
+    /// Detects the answer measured in bytes: Claude Code compares its own
+    /// string length, in UTF-16 code units, so an answer of multi-byte
+    /// characters that is past the threshold in bytes and within it in code
+    /// units is shown whole and must carry no notice.
+    #[test]
+    fn the_threshold_is_counted_in_the_code_units_claude_code_measures_not_in_bytes() {
+        let body = "\u{20AC}".repeat(120);
+        let whole = answer_of(&body, None);
+        let code_units = whole.encode_utf16().count() as u64;
+        assert!(
+            whole.len() as u64 > code_units,
+            "the fixture must be longer in bytes than in code units, got {} against {code_units}",
+            whole.len()
+        );
+
+        let at_its_length = answer_of(&body, Some(code_units));
+
+        assert!(
+            !at_its_length.contains("READ THE FILE"),
+            "an answer within the threshold in code units must carry no notice, got \
+             {at_its_length:?}"
+        );
+    }
+}

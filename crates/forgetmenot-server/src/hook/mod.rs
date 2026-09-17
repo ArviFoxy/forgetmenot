@@ -476,7 +476,7 @@ mod tests {
     use super::*;
     use crate::context::{Form, Shown};
     use crate::store::catalog::Catalog;
-    use crate::store::git::GitRepo;
+    use crate::test_support::{TestStore, catalog_of, memory_file, scope_file, settings_file};
     use forgetmenot_types::hook::HookEvent;
     use serde_json::json;
 
@@ -493,71 +493,77 @@ mod tests {
     /// it was activated at all.
     const PASSING: &str = "passing";
 
-    /// A store with one critical memory in `global`, one scope that turns itself
-    /// off [`THRESHOLD`] tokens after its last activation, and reminders at the
-    /// same threshold.
+    /// The text a prompt has to carry for the `passing` scope's trigger to
+    /// fire, which is the only way a test here activates a scope.
+    const RAIL: &str = "the rail";
+
+    /// A store with one critical memory in `global`, one scope that a passing
+    /// remark turns on and that turns itself off [`THRESHOLD`] tokens after its
+    /// last activation, and reminders at the same threshold.
     fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
         vec![
-            (
-                "config.yml".to_string(),
-                Some(format!("reminder_tokens: {THRESHOLD}\n").into_bytes()),
-            ),
-            (
-                format!("scopes/{PASSING}.yaml"),
-                Some(
-                    format!("id: {PASSING}\nforget:\n  tokens_since_trigger: {THRESHOLD}\n")
-                        .into_bytes(),
+            settings_file(&format!("reminder_tokens: {THRESHOLD}\n")),
+            scope_file(
+                PASSING,
+                &format!(
+                    "forget:\n  tokens_since_trigger: {THRESHOLD}\n\
+                     triggers:\n- on: user_message\n  pattern: '{RAIL}'\n"
                 ),
             ),
-            (
-                "memories/bench-power.md".to_string(),
-                Some(
-                    "---\nname: bench-power\ndescription: Cut bench power at the wall\n\
-                     metadata:\n  kind: critical\n  scopes:\n  - global\n---\n\
-                     # Cut bench power before rewiring\n\nSwitch the supply off at the wall.\n"
-                        .to_string()
-                        .into_bytes(),
-                ),
+            memory_file(
+                "bench-power",
+                "critical",
+                &["global"],
+                "Cut bench power at the wall",
+                "# Cut bench power before rewiring\n\nSwitch the supply off at the wall.\n",
             ),
         ]
     }
 
-    /// The catalog of a store built from [`store_files`], with the directory it
+    /// The catalog of a store built from [`store_files`], with the store it
     /// lives in, which is removed when the test ends.
-    fn catalog() -> (tempfile::TempDir, Catalog) {
-        let directory = tempfile::TempDir::new().expect("a temporary directory");
-        let repository = GitRepo::open_or_init(directory.path()).expect("the store opens");
-        repository
-            .commit_files("test", "write the store", "", store_files(), None)
-            .expect("the store's files are committed");
-        let catalog = Catalog::load(&repository).expect("the catalog is built");
-        (directory, catalog)
+    fn catalog() -> (TestStore, Catalog) {
+        catalog_of(store_files())
     }
 
-    /// The plan of an event that fires no trigger and stops nothing, so that
-    /// what a test sees comes from the context size alone.
-    fn quiet_event(catalog: &Catalog) -> EventPlan {
+    /// The plan of a prompt saying `text`, from the directory `cwd`.
+    fn prompt_plan(catalog: &Catalog, text: &str) -> EventPlan {
         let event: HookEvent = serde_json::from_value(json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-1",
-            "prompt": "carry on where we left off"
+            "prompt": text
         }))
         .expect("the payload parses as an event");
         events::plan(&event, "alpha", None, catalog.settings()).expect("the event is known")
     }
 
+    /// The plan of an event that fires no trigger and stops nothing, so that
+    /// what a test sees comes from the context size alone.
+    fn quiet_event(catalog: &Catalog) -> EventPlan {
+        prompt_plan(catalog, "carry on where we left off")
+    }
+
     /// Answer one event of `context` at `tokens`, and report what it decided.
     fn at_tokens(context: &mut ContextState, catalog: &Catalog, tokens: u64) -> Outcome {
-        let plan = quiet_event(catalog);
+        answer(context, catalog, &quiet_event(catalog), Some(tokens))
+    }
+
+    /// Answer `plan` for `context` at `tokens`, as the handler does.
+    fn answer(
+        context: &mut ContextState,
+        catalog: &Catalog,
+        plan: &EventPlan,
+        tokens: Option<u64>,
+    ) -> Outcome {
         let named = SessionName {
             title: None,
             first_prompt: None,
         };
         apply(
             context,
-            &plan,
+            plan,
             catalog,
-            Some(tokens),
+            tokens,
             chrono::Utc::now(),
             named,
             &PreviousTexts::new(),
@@ -666,6 +672,127 @@ mod tests {
         assert!(
             !context.active.contains(&scope),
             "a forgotten scope is gone from the context's active scopes"
+        );
+    }
+
+    /// Detects a scope turned on again after a forgetting that is not counted
+    /// as an activation of its own: a scope whose subject keeps coming back is
+    /// what the scopes report exists to show, and without the second count it
+    /// reads as a scope that came on once and stayed on.
+    ///
+    /// Forgetting runs before the triggers of the same event, so the event at
+    /// the threshold both drops the scope and turns it on again; that is the
+    /// event the second activation has to be counted at.
+    #[test]
+    fn a_trigger_that_fires_after_a_forgetting_counts_as_an_activation_of_its_own() {
+        let (_store, catalog) = catalog();
+        let scope = ScopeId::new(PASSING);
+        let mut context = ContextState::fresh(
+            BTreeSet::from([ScopeId::global()]),
+            None,
+            chrono::Utc::now(),
+        );
+        let remark = prompt_plan(&catalog, &format!("a passing remark about {RAIL}"));
+
+        let first = answer(&mut context, &catalog, &remark, Some(START));
+        assert_eq!(
+            first
+                .fires
+                .iter()
+                .map(|fire| (fire.scope_id.as_str(), fire.activated_new))
+                .collect::<Vec<_>>(),
+            vec![(PASSING, true)],
+            "the first match turns the scope on, which is one activation"
+        );
+
+        let again = answer(&mut context, &catalog, &remark, Some(START + THRESHOLD));
+
+        assert_eq!(
+            again
+                .forgotten
+                .iter()
+                .map(|forgotten| forgotten.scope_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![PASSING],
+            "the threshold past the first match the scope turns itself off"
+        );
+        assert_eq!(
+            again
+                .fires
+                .iter()
+                .map(|fire| (fire.scope_id.as_str(), fire.activated_new))
+                .collect::<Vec<_>>(),
+            vec![(PASSING, true)],
+            "the match at the same event turns it on again, which is a second activation"
+        );
+        assert!(
+            context.active.contains(&scope),
+            "the scope the same event turned on again must be active"
+        );
+    }
+
+    /// Detects a `session_directory` trigger matched against the directory the
+    /// shell is in at the time of the event, and a context whose first event is
+    /// not a session start being left without a session directory at all: the
+    /// field names where `claude` was started, which does not move when the
+    /// agent runs `cd`, and a session already running when the server came up
+    /// must still match directory triggers rather than silently matching none.
+    ///
+    /// The first event is a prompt, which reports a directory and matches
+    /// against none, so the directory the context keeps can only have come from
+    /// that event; the tool call is made from somewhere else, so a trigger that
+    /// fires there saw the session's directory rather than the shell's.
+    #[test]
+    fn the_session_directory_a_trigger_matches_is_the_first_events_and_does_not_follow_the_shell() {
+        const STARTED_IN: &str = "/start/project";
+        const MOVED_TO: &str = "/moved/elsewhere";
+        let (_store, catalog) = catalog_of(vec![
+            scope_file(
+                "bench",
+                "triggers:\n- on: session_directory\n  pattern: '/start(/|$)'\n",
+            ),
+            scope_file(
+                "shed",
+                "triggers:\n- on: shell_directory\n  pattern: '/start(/|$)'\n",
+            ),
+        ]);
+        let mut context = ContextState::fresh(
+            BTreeSet::from([ScopeId::global()]),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut prompt = quiet_event(&catalog);
+        prompt.cwd = Some(STARTED_IN.to_string());
+
+        answer(&mut context, &catalog, &prompt, Some(START));
+        assert_eq!(
+            context.session_directory.as_deref(),
+            Some(STARTED_IN),
+            "the first event a context is seen at says where the session began"
+        );
+
+        let call: HookEvent = serde_json::from_value(json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "cwd": MOVED_TO,
+            "tool_name": "Read",
+            "tool_input": { "file_path": "/home/dev/notes/README.md" }
+        }))
+        .expect("the payload parses as an event");
+        let call = events::plan(&call, "alpha", None, catalog.settings()).expect("PreToolUse");
+        let moved = answer(&mut context, &catalog, &call, Some(START));
+
+        assert!(
+            moved.activated.contains(&ScopeId::new("bench")),
+            "a session_directory trigger on {STARTED_IN} must fire at a call made from \
+             {MOVED_TO}, got {:?}",
+            moved.activated
+        );
+        assert!(
+            !moved.activated.contains(&ScopeId::new("shed")),
+            "a shell_directory trigger on {STARTED_IN} must not fire while the shell is in \
+             {MOVED_TO}, got {:?}",
+            moved.activated
         );
     }
 }

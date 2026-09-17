@@ -22,3 +22,6 @@ pub mod service;
 pub mod stats;
 pub mod store;
 pub mod triggers;
+
+#[cfg(test)]
+mod test_support;

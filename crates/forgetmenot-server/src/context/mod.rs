@@ -512,6 +512,445 @@ pub fn record_delivery(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{TestStore, catalog_of, memory_file, settings_file};
+
+    /// The growth in context after which a delivery is out of the model's
+    /// reach, as the store below asks for it.
+    const REMINDER: u64 = 1_000;
+
+    /// The context size the first delivery of these tests was made at, so that
+    /// every later size is this plus a stated amount.
+    const START: u64 = 10_000;
+
+    /// The critical memory's body, written out here rather than read back from
+    /// the store, so the lines an edit takes out are visible in the test.
+    const THREE_RULES: &str = "# Cut bench power before rewiring\n\n\
+                               Switch the bench supply off at the wall.\n\
+                               Confirm on the meter that the rail reads zero.\n\
+                               Label the supply before leaving the bench.\n";
+
+    /// The same body with the last line taken out and nothing put in.
+    const TWO_RULES: &str = "# Cut bench power before rewiring\n\n\
+                             Switch the bench supply off at the wall.\n\
+                             Confirm on the meter that the rail reads zero.\n";
+
+    /// The same body with the last line reworded, which leaves it the same
+    /// number of lines and says something the context has not been given.
+    const THREE_RULES_REWORDED: &str = "# Cut bench power before rewiring\n\n\
+                                        Switch the bench supply off at the wall.\n\
+                                        Confirm on the meter that the rail reads zero.\n\
+                                        Leave the supply labelled for the next person.\n";
+
+    /// The description of the knowledge memory, which is the whole of what a
+    /// context is ever given for it.
+    const BINDER: &str = "The workshop references are all on paper in the binder";
+
+    /// A store with one critical memory and one knowledge memory in `global`,
+    /// one critical memory in `widgets`, and reminders at [`REMINDER`].
+    fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
+        store_files_with_settings(&format!("reminder_tokens: {REMINDER}\n"))
+    }
+
+    /// The same store with `yaml` as the whole of its settings file, or with no
+    /// settings file at all when `yaml` is empty.
+    fn store_files_with_settings(yaml: &str) -> Vec<(String, Option<Vec<u8>>)> {
+        let mut files = vec![
+            memory_file(
+                "bench-power",
+                "critical",
+                &["global"],
+                "Cut bench power at the wall before rewiring",
+                THREE_RULES,
+            ),
+            memory_file(
+                "reading-list",
+                "knowledge",
+                &["global"],
+                BINDER,
+                "# The binder\n\nThe bench notes and the parts catalogue are in it.\n",
+            ),
+            memory_file(
+                "widget-naming",
+                "critical",
+                &["widgets"],
+                "A widget part number is never reused",
+                "# Widget part numbers are immutable\n\nDownstream drawings cite them.\n",
+            ),
+        ];
+        if !yaml.is_empty() {
+            files.push(settings_file(yaml));
+        }
+        files
+    }
+
+    /// A context in `active` that was given each of `delivered` at the store's
+    /// current version, in the form its kind gets, at `tokens` context tokens.
+    fn state_holding(
+        catalog: &Catalog,
+        active: BTreeSet<ScopeId>,
+        delivered: &[&str],
+        tokens: Option<u64>,
+    ) -> ContextState {
+        let mut state = ContextState::fresh(active, None, chrono::Utc::now());
+        for name in delivered {
+            let memory = catalog
+                .memory(&MemoryId::new(*name))
+                .unwrap_or_else(|| panic!("{name} must be in the store"));
+            state.note_shown(memory, tokens);
+        }
+        state.tokens = tokens;
+        state
+    }
+
+    /// The scopes every context of this session works in.
+    fn implicit() -> BTreeSet<ScopeId> {
+        initial_active("alpha", "session-1")
+    }
+
+    /// Detects a context started in a scope nobody turned on, and one missing
+    /// any of the three every context works in: memories of another session's
+    /// work would arrive, or a machine's and a session's own rules never would.
+    ///
+    /// Source: the rule that a context begins in everything global, everything
+    /// for its machine, and its own session's silo.
+    #[test]
+    fn a_context_begins_in_the_global_the_machine_and_its_own_session_scope_and_no_other() {
+        assert_eq!(
+            initial_active("alpha", "session-1"),
+            BTreeSet::from([
+                ScopeId::global(),
+                ScopeId::machine("alpha"),
+                ScopeId::session("alpha", "session-1"),
+            ])
+        );
+    }
+
+    /// Detects a withdrawal reported as a deletion when the memory is still in
+    /// the store, and one reported as out of scope when the file is gone: the
+    /// model would be told a rule was retired when the session merely stopped
+    /// working in its scope, or told to look up a memory that no longer exists.
+    #[test]
+    fn a_memory_out_of_every_active_scope_is_withdrawn_as_such_and_a_deleted_one_as_deleted() {
+        let (_store, catalog) = catalog_of(store_files());
+        let mut state = state_holding(&catalog, implicit(), &["widget-naming"], Some(START));
+        // A memory this context holds that the store does not have at all,
+        // which is what a file deleted behind the server leaves behind.
+        state.delivered.insert(
+            MemoryId::new("bench-vice"),
+            Shown {
+                version: "0".repeat(40),
+                form: Form::Full,
+                tokens: Some(START),
+            },
+        );
+
+        let needs = compute_needs(&catalog, &state, Some(START), &PreviousTexts::new());
+
+        assert_eq!(
+            needs.retracted,
+            vec![
+                (MemoryId::new("bench-vice"), RetractReason::Deleted),
+                (MemoryId::new("widget-naming"), RetractReason::NoActiveScope),
+            ],
+            "each withdrawal must name the reason the model can act on"
+        );
+    }
+
+    /// Detects an index line that is never sent again after the memory's text
+    /// changes: the description the model holds would stay the old one.
+    #[test]
+    fn a_knowledge_memory_is_sent_again_when_its_version_changes() {
+        let (_store, catalog) = catalog_of(store_files());
+        let id = MemoryId::new("reading-list");
+        let mut state = state_holding(
+            &catalog,
+            implicit(),
+            &["bench-power", "reading-list"],
+            Some(START),
+        );
+        assert!(
+            compute_needs(&catalog, &state, Some(START), &PreviousTexts::new()).is_empty(),
+            "nothing is owed while the delivered version is current"
+        );
+
+        state
+            .delivered
+            .get_mut(&id)
+            .expect("the memory was delivered")
+            .version = "0".repeat(40);
+        let needs = compute_needs(&catalog, &state, Some(START), &PreviousTexts::new());
+
+        assert_eq!(
+            needs.changed,
+            vec![id],
+            "a memory delivered at another version must count as changed"
+        );
+    }
+
+    /// Detects staleness judged without knowing the context size a memory was
+    /// delivered at, which would make every delivery stale at once.
+    #[test]
+    fn staleness_is_not_judged_without_the_context_size_of_the_delivery() {
+        let (_store, catalog) = catalog_of(store_files());
+        let state = state_holding(&catalog, implicit(), &["bench-power"], None);
+
+        let needs = compute_needs(&catalog, &state, Some(START * 100), &PreviousTexts::new());
+
+        assert!(
+            needs.stale.is_empty(),
+            "without the size at delivery nothing may be called stale, got {:?}",
+            needs.stale
+        );
+    }
+
+    /// Detects a reminder threshold that fires early, one that fires late, and
+    /// one that covers the critical memories alone: what was delivered
+    /// [`REMINDER`] tokens of context ago is out of the model's reach whatever
+    /// form it took, and until then delivering any of it again spends the
+    /// context the reminder exists to protect.
+    ///
+    /// Source: the store's `reminder_tokens`, which is a growth in context
+    /// since the delivery, so 999 tokens on is short of it and 1 000 is it.
+    #[test]
+    fn a_delivery_of_either_form_goes_stale_at_the_stores_threshold_and_not_a_token_before() {
+        let (_store, catalog) = catalog_of(store_files());
+        let state = state_holding(
+            &catalog,
+            implicit(),
+            &["bench-power", "reading-list"],
+            Some(START),
+        );
+
+        let short = compute_needs(
+            &catalog,
+            &state,
+            Some(START + REMINDER - 1),
+            &PreviousTexts::new(),
+        );
+        assert!(
+            short.stale.is_empty(),
+            "999 tokens on, everything delivered is still within the model's reach, got {:?}",
+            short.stale
+        );
+
+        let reached = compute_needs(
+            &catalog,
+            &state,
+            Some(START + REMINDER),
+            &PreviousTexts::new(),
+        );
+        assert_eq!(
+            reached.stale,
+            vec![MemoryId::new("bench-power"), MemoryId::new("reading-list")],
+            "at the threshold every form delivered is owed again"
+        );
+    }
+
+    /// Detects a reminder applied when no store asked for one: a store with no
+    /// settings file must never repeat what it has already delivered, however
+    /// far the context has grown, because nobody asked for the context to be
+    /// spent that way.
+    #[test]
+    fn nothing_goes_stale_when_the_store_asks_for_no_reminder() {
+        let (_store, catalog) = catalog_of(store_files_with_settings(""));
+        let state = state_holding(&catalog, implicit(), &["bench-power"], Some(START));
+
+        let needs = compute_needs(
+            &catalog,
+            &state,
+            Some(START + 100 * REMINDER),
+            &PreviousTexts::new(),
+        );
+
+        assert!(
+            needs.stale.is_empty(),
+            "with no reminder asked for, nothing may be repeated, got {:?}",
+            needs.stale
+        );
+    }
+
+    /// Detects an index line owed although the store asked for knowledge to be
+    /// fetched on demand: those lines are what the setting exists to keep out
+    /// of the context, while the critical memories must be unaffected.
+    #[test]
+    fn no_knowledge_memory_is_owed_when_the_store_turns_the_index_off() {
+        let (_store, catalog) = catalog_of(store_files_with_settings(
+            "deliver_knowledge_index: false\n",
+        ));
+        let state = ContextState::fresh(implicit(), None, chrono::Utc::now());
+
+        let needs = compute_needs(&catalog, &state, Some(START), &PreviousTexts::new());
+
+        assert_eq!(
+            needs.new,
+            vec![MemoryId::new("bench-power")],
+            "only the memories delivered in full may be owed"
+        );
+    }
+
+    /// Detects a change judged by the amount of text rather than by which lines
+    /// it holds: a body that only lost lines says nothing the context has not
+    /// been given, and one line rewritten leaves the body the same length while
+    /// saying something new. Source: issue 14.
+    #[test]
+    fn a_version_that_only_lost_lines_is_shrunk_while_a_reworded_line_is_changed() {
+        let store = TestStore::with(store_files());
+        let catalog = store.catalog();
+        let id = MemoryId::new("bench-power");
+        let state = state_holding(&catalog, implicit(), &["bench-power"], Some(START));
+        let previous = PreviousTexts::from([(id.clone(), THREE_RULES.trim_end().to_string())]);
+
+        store.commit(vec![memory_file(
+            "bench-power",
+            "critical",
+            &["global"],
+            "Cut bench power at the wall before rewiring",
+            TWO_RULES,
+        )]);
+        let shorter = compute_needs(&store.catalog(), &state, Some(START), &previous);
+        assert_eq!(
+            shorter.shrunk,
+            vec![id.clone()],
+            "every line of the new text was already given, so nothing is owed"
+        );
+        assert!(
+            shorter.changed.is_empty(),
+            "a shrink must not also count as a change, got {:?}",
+            shorter.changed
+        );
+
+        store.commit(vec![memory_file(
+            "bench-power",
+            "critical",
+            &["global"],
+            "Cut bench power at the wall before rewiring",
+            THREE_RULES_REWORDED,
+        )]);
+        let reworded = compute_needs(&store.catalog(), &state, Some(START), &previous);
+        assert_eq!(
+            reworded.changed,
+            vec![id],
+            "a reworded line is text the context has not been given"
+        );
+    }
+
+    /// Detects a skipped version left recorded as unseen, which would deliver
+    /// it at the next event anyway or silence the next real change: nothing is
+    /// sent for a shrink, and the new version is still what the context holds.
+    /// Source: issue 14.
+    #[test]
+    fn a_shrunk_version_is_recorded_as_seen_so_only_a_later_change_is_owed() {
+        let store = TestStore::with(store_files());
+        let id = MemoryId::new("bench-power");
+        let mut state = state_holding(&store.catalog(), implicit(), &["bench-power"], Some(START));
+        let previous = PreviousTexts::from([(id.clone(), THREE_RULES.trim_end().to_string())]);
+
+        store.commit(vec![memory_file(
+            "bench-power",
+            "critical",
+            &["global"],
+            "Cut bench power at the wall before rewiring",
+            TWO_RULES,
+        )]);
+        let catalog = store.catalog();
+        let needs = compute_needs(&catalog, &state, Some(START), &previous);
+        record_delivery(&mut state, &needs, &catalog, Some(START));
+
+        assert!(
+            compute_needs(&catalog, &state, Some(START), &PreviousTexts::new()).is_empty(),
+            "the shrunk version is what the context holds, so nothing is owed at the next event"
+        );
+
+        store.commit(vec![memory_file(
+            "bench-power",
+            "critical",
+            &["global"],
+            "Cut bench power at the wall before rewiring",
+            &format!("{TWO_RULES}Keep the meter on the bench.\n"),
+        )]);
+        let grown = compute_needs(&store.catalog(), &state, Some(START), &PreviousTexts::new());
+        assert_eq!(
+            grown.changed,
+            vec![id],
+            "a later version that adds a line is still owed"
+        );
+    }
+
+    /// Detects a knowledge memory judged on its body: a context is given only
+    /// the description, so a body with lines removed shrinks nothing that was
+    /// ever delivered and the new version is still owed as an index line.
+    /// Source: issue 14.
+    #[test]
+    fn a_knowledge_memory_whose_body_lost_lines_is_still_owed_because_only_its_description_was_given()
+     {
+        let store = TestStore::with(store_files());
+        let id = MemoryId::new("reading-list");
+        let state = state_holding(&store.catalog(), implicit(), &["reading-list"], Some(START));
+        let previous = PreviousTexts::from([(id.clone(), BINDER.to_string())]);
+
+        store.commit(vec![memory_file(
+            "reading-list",
+            "knowledge",
+            &["global"],
+            BINDER,
+            "# The binder\n",
+        )]);
+        let needs = compute_needs(&store.catalog(), &state, Some(START), &previous);
+
+        assert_eq!(
+            needs.changed,
+            vec![id],
+            "the index line is what was delivered, and its version has moved"
+        );
+        assert!(
+            needs.shrunk.is_empty(),
+            "nothing the context was given lost a line, got {:?}",
+            needs.shrunk
+        );
+    }
+
+    /// Detects a call stopped for a memory the model may merely look up, and
+    /// one stopped by a reminder of a rule it already holds: the interrupt is
+    /// for a rule the context has not been given at this version, because the
+    /// model would otherwise act under a rule it has never read.
+    #[test]
+    fn only_a_new_or_changed_critical_memory_counts_as_a_critical_arrival() {
+        let (_store, catalog) = catalog_of(store_files());
+        let rule = MemoryId::new("bench-power");
+        let reference = MemoryId::new("reading-list");
+
+        for needs in [
+            Needs {
+                new: vec![rule.clone()],
+                ..Needs::default()
+            },
+            Needs {
+                changed: vec![rule.clone()],
+                ..Needs::default()
+            },
+        ] {
+            assert!(
+                needs.has_critical_arrival(&catalog),
+                "a critical memory the context has not been given must stop the call, got {needs:?}"
+            );
+        }
+
+        for needs in [
+            Needs {
+                new: vec![reference],
+                ..Needs::default()
+            },
+            Needs {
+                stale: vec![rule],
+                ..Needs::default()
+            },
+        ] {
+            assert!(
+                !needs.has_critical_arrival(&catalog),
+                "nothing the model has not read arrives here, so the call runs, got {needs:?}"
+            );
+        }
+    }
 
     /// Detects a key printed in a form MCP tools cannot take: the session key a
     /// main context prints must not carry the word `main`, and a subagent's
