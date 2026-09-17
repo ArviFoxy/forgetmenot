@@ -11,9 +11,10 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use forgetmenot_server::context::{
-    ContextKey, ContextState, Form, RetractReason, Shown, compute_needs, initial_active,
+    ContextKey, ContextState, Form, PreviousTexts, RetractReason, Shown, compute_needs,
+    initial_active,
 };
-use forgetmenot_server::stats::Table;
+use forgetmenot_server::stats::{MemoryStatsRow, Table};
 use forgetmenot_server::store::{MemoryId, ScopeId};
 use serde_json::{Value, json};
 
@@ -258,6 +259,269 @@ fn an_edit_committed_outside_the_server_is_delivered_again_at_the_next_event() {
         context_of(&answer).contains("The rule now also covers prototypes."),
         "the edited memory must be delivered again in full, got {answer}"
     );
+}
+
+/// Paths of the two example-store memories the tests of a shrunk memory edit.
+const BENCH_POWER_PATH: &str = "memories/bench-power.md";
+const READING_LIST_PATH: &str = "memories/reading-list.md";
+
+/// The last line of `bench-power`'s body in the example store. A body without it
+/// is the stored body with a line taken out and nothing added.
+const BENCH_POWER_LAST_LINE: &str = "is the part that matters.";
+
+/// One line of `reading-list`'s body, and the whole of its `description` line, in
+/// the example store. Removing the body line leaves the description, which is all
+/// the memory is delivered as, exactly as it was.
+const READING_LIST_BODY_LINE: &str = "binder; nothing in it is online.";
+const READING_LIST_DESCRIPTION_LINE: &str =
+    "description: The workshop references are all on paper in the binder, nothing online";
+
+/// The store's file at `path` with every line equal to `line` removed, as a file
+/// to commit.
+fn file_without_line(server: &TestServer, path: &str, line: &str) -> (String, Option<Vec<u8>>) {
+    let text = server.store().file_text(path);
+    assert!(
+        text.lines().any(|each| each == line),
+        "the fixture {path} must carry the line this test removes, {line:?}, got {text:?}"
+    );
+    let shorter: String = text
+        .lines()
+        .filter(|each| *each != line)
+        .flat_map(|each| [each, "\n"])
+        .collect();
+    (path.to_string(), Some(shorter.into_bytes()))
+}
+
+/// The store's file at `path` with every line equal to `line` written as
+/// `replacement` instead, as a file to commit.
+fn file_with_line_reworded(
+    server: &TestServer,
+    path: &str,
+    line: &str,
+    replacement: &str,
+) -> (String, Option<Vec<u8>>) {
+    let text = server.store().file_text(path);
+    assert!(
+        text.lines().any(|each| each == line),
+        "the fixture {path} must carry the line this test rewords, {line:?}, got {text:?}"
+    );
+    let reworded: String = text
+        .lines()
+        .map(|each| match each == line {
+            true => replacement,
+            false => each,
+        })
+        .flat_map(|each| [each, "\n"])
+        .collect();
+    (path.to_string(), Some(reworded.into_bytes()))
+}
+
+/// The store's file at `path` with `line` added at the end of its body, as a file
+/// to commit.
+fn file_with_line_added(server: &TestServer, path: &str, line: &str) -> (String, Option<Vec<u8>>) {
+    let mut text = server.store().file_text(path);
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(line);
+    text.push('\n');
+    (path.to_string(), Some(text.into_bytes()))
+}
+
+/// Detects a version whose body only lost lines being delivered again, which
+/// costs the whole rule in context for text the model already has; and a skipped
+/// version left recorded as unseen, which would deliver it at the next event
+/// anyway, or silence the next real change. Source: issue 14.
+#[test]
+fn a_memory_that_only_shrank_is_not_delivered_again_and_its_new_version_is_recorded() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let (_, start) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    assert!(
+        context_of(&start).contains(BENCH_POWER_BODY),
+        "the session start must deliver the memory this test then shortens, got {start}"
+    );
+
+    server.commit(
+        "drop the last line of the bench power rule",
+        vec![file_without_line(
+            &server,
+            BENCH_POWER_PATH,
+            BENCH_POWER_LAST_LINE,
+        )],
+    );
+    let (status, shrunk) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        !context_of(&shrunk).contains(BENCH_POWER_BODY),
+        "a version with a line removed must not be delivered again, got {shrunk}"
+    );
+    assert_eq!(
+        permission_decision(&shrunk),
+        None,
+        "nothing was delivered, so the call must not be held, got {shrunk}"
+    );
+
+    let (_, again) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+    assert!(
+        !context_of(&again).contains(BENCH_POWER_BODY),
+        "the shrunk version must be recorded as seen, not left owed, got {again}"
+    );
+
+    let added = "Label the bench switch, so the wall breaker is not used instead.";
+    server.commit(
+        "add a line to the bench power rule",
+        vec![file_with_line_added(&server, BENCH_POWER_PATH, added)],
+    );
+    let (status, grown) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        context_of(&grown).contains(added),
+        "a later version that adds a line must still be delivered, got {grown}"
+    );
+}
+
+/// Detects a change judged by the amount of text rather than by which lines it
+/// holds: one line rewritten leaves the body the same length, and the context has
+/// never been given the new wording. Source: issue 14.
+#[test]
+fn a_memory_whose_line_was_reworded_is_delivered_again() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let reworded = "the meter reading is the only proof that it is dead.";
+    server.commit(
+        "reword the last line of the bench power rule",
+        vec![file_with_line_reworded(
+            &server,
+            BENCH_POWER_PATH,
+            BENCH_POWER_LAST_LINE,
+            reworded,
+        )],
+    );
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        context_of(&answer).contains(reworded),
+        "a reworded line is text the context has not been given and must be delivered, \
+         got {answer}"
+    );
+}
+
+/// Detects a knowledge memory judged on its body: the context is given only the
+/// description, so a body with lines removed shrinks nothing that was delivered,
+/// and the index line the version stamp says changed is still owed. A reworded
+/// description is likewise not a shrink. Source: issue 14.
+#[test]
+fn a_knowledge_memory_is_judged_on_its_description() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let (_, start) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    assert!(
+        has_index_line(context_of(&start), "reading-list", READING_LIST_DESCRIPTION),
+        "the session start must deliver the index line this test then asks for again, \
+         got {start}"
+    );
+
+    server.commit(
+        "drop a line from the reading list body",
+        vec![file_without_line(
+            &server,
+            READING_LIST_PATH,
+            READING_LIST_BODY_LINE,
+        )],
+    );
+    let (status, shorter_body) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        has_index_line(
+            context_of(&shorter_body),
+            "reading-list",
+            READING_LIST_DESCRIPTION
+        ),
+        "the description delivered is unchanged, so the changed memory is owed again, \
+         got {shorter_body}"
+    );
+
+    let reworded = "description: The workshop references are in the binder, on paper";
+    server.commit(
+        "reword the reading list description",
+        vec![file_with_line_reworded(
+            &server,
+            READING_LIST_PATH,
+            READING_LIST_DESCRIPTION_LINE,
+            reworded,
+        )],
+    );
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        has_index_line(
+            context_of(&answer),
+            "reading-list",
+            "The workshop references are in the binder, on paper"
+        ),
+        "a reworded description must be delivered again, got {answer}"
+    );
+}
+
+/// Detects a skipped delivery recorded as a delivery, which would report the
+/// memory as having cost context it did not, and one recorded nowhere at all,
+/// which would hide the saving. Source: issue 14.
+#[test]
+fn a_shrink_is_recorded_in_the_statistics_as_its_own_outcome() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    let shown_at_start = bench_power_stats(&server);
+
+    server.commit(
+        "drop the last line of the bench power rule",
+        vec![file_without_line(
+            &server,
+            BENCH_POWER_PATH,
+            BENCH_POWER_LAST_LINE,
+        )],
+    );
+    let (status, _) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+    assert_eq!(status, 200, "the tool call must be answered");
+
+    assert_eq!(
+        server.stats().count_deliveries("full", "shrunk"),
+        1,
+        "the skipped delivery must be logged with its own outcome"
+    );
+    let row = bench_power_stats(&server);
+    assert_eq!(
+        row.shrunk, 1,
+        "the memory's report must count the skip, got {row:?}"
+    );
+    assert_eq!(
+        (
+            row.shown_full_new,
+            row.shown_full_changed,
+            row.shown_full_stale
+        ),
+        (
+            shown_at_start.shown_full_new,
+            shown_at_start.shown_full_changed,
+            shown_at_start.shown_full_stale
+        ),
+        "nothing was sent, so no count of what was shown may grow, got {row:?}"
+    );
+}
+
+/// What the statistics report for `bench-power`.
+fn bench_power_stats(server: &TestServer) -> MemoryStatsRow {
+    server
+        .stats()
+        .memory_stats()
+        .expect("the statistics are readable")
+        .into_iter()
+        .find(|row| row.memory == "bench-power")
+        .expect("the delivered memory must have a statistics row")
 }
 
 /// Detects a changed critical memory that does not stop the next tool call,
@@ -1831,7 +2095,7 @@ mod state_machine {
             Some(10_000),
         );
 
-        let needs = compute_needs(&catalog, &state, Some(10_000));
+        let needs = compute_needs(&catalog, &state, Some(10_000), &PreviousTexts::new());
 
         assert_eq!(
             needs.retracted,
@@ -1855,7 +2119,7 @@ mod state_machine {
             Some(10_000),
         );
         assert!(
-            compute_needs(&catalog, &state, Some(10_000)).is_empty(),
+            compute_needs(&catalog, &state, Some(10_000), &PreviousTexts::new()).is_empty(),
             "nothing is owed while the delivered version is current"
         );
 
@@ -1864,7 +2128,7 @@ mod state_machine {
             .get_mut(&id)
             .expect("the memory was delivered")
             .version = "0".repeat(40);
-        let needs = compute_needs(&catalog, &state, Some(10_000));
+        let needs = compute_needs(&catalog, &state, Some(10_000), &PreviousTexts::new());
 
         assert_eq!(
             needs.changed,
@@ -1888,7 +2152,7 @@ mod state_machine {
             None,
         );
 
-        let needs = compute_needs(&catalog, &state, Some(1_000_000));
+        let needs = compute_needs(&catalog, &state, Some(1_000_000), &PreviousTexts::new());
 
         assert!(
             needs.stale.is_empty(),

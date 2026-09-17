@@ -353,6 +353,20 @@ impl GitRepo {
         }
     }
 
+    /// The content of the blob `blob_oid`, or `None` when the repository holds no
+    /// blob of that id.
+    ///
+    /// The blob is addressed by its own id rather than through a revision, which
+    /// is how a version recorded as delivered is read back: the commit it came
+    /// from is not recorded, and the blob outlives the commit anyway.
+    pub fn read_blob(&self, blob_oid: Oid) -> Result<Option<Vec<u8>>, GitError> {
+        match self.repository.find_blob(blob_oid) {
+            Ok(blob) => Ok(Some(blob.content().to_vec())),
+            Err(error) if matches!(error.code(), ErrorCode::NotFound) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// A unified diff of `path` between `commit_oid` and its first parent. The
     /// root commit is diffed against an empty tree.
     pub fn diff_for_path(&self, commit_oid: Oid, path: &str) -> Result<String, GitError> {

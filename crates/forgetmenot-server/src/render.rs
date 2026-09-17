@@ -199,9 +199,12 @@ pub fn delivery_bytes(catalog: &Catalog, id: &MemoryId) -> u64 {
     let Some(memory) = catalog.memory(id) else {
         return 0;
     };
-    let size = match memory.kind() {
-        MemoryKind::Critical => memory.document.body.trim_end().len(),
-        MemoryKind::Knowledge => memory.document.description().len() + id.as_str().len(),
-    };
+    let size = memory.document.delivered_text().len()
+        + match memory.kind() {
+            MemoryKind::Critical => 0,
+            // An index line carries the id to fetch the memory by as well as the
+            // description.
+            MemoryKind::Knowledge => id.as_str().len(),
+        };
     size as u64
 }

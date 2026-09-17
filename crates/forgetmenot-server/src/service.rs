@@ -16,10 +16,12 @@ use chrono::{DateTime, Utc};
 use git2::Oid;
 
 use crate::store::branch::{BranchName, BranchRecord};
-use crate::store::catalog::{Catalog, LoadError};
+use crate::store::catalog::{self, Catalog, LoadError};
 use crate::store::git::{
     BlameLine, CommitOutcome, FileChange, FileConflict, GitError, GitRepo, LandAttempt,
 };
+use crate::store::memory::MemoryDocument;
+use crate::store::scope::ScopeDocument;
 use crate::store::settings::SETTINGS_PATH;
 use crate::store::validate::{self, ValidationError};
 use crate::store::{MemoryId, ScopeId};
@@ -174,6 +176,28 @@ impl Store {
         let path = id.repository_path();
         self.with_repository(move |repository| repository.blame(&path))
             .await
+    }
+
+    /// The memory `id` as one version of the file that carries it holds it, or
+    /// `None` when the repository no longer has that blob or what it holds is not
+    /// that memory any more.
+    ///
+    /// `version` is a blob id, the same value the catalog reports as a memory's
+    /// version, so an older version of a memory is read without knowing which
+    /// commit it came from.
+    pub async fn memory_at_version(
+        &self,
+        id: &MemoryId,
+        version: Oid,
+    ) -> Result<Option<MemoryDocument>, StoreError> {
+        let id = id.clone();
+        self.with_repository(move |repository| {
+            let Some(bytes) = repository.read_blob(version)? else {
+                return Ok(None);
+            };
+            Ok(memory_in_blob(&id, &bytes))
+        })
+        .await
     }
 
     /// Write a set of documents as one commit.
@@ -691,6 +715,22 @@ fn is_idle(record: &BranchRecord, now: DateTime<Utc>, retention: Duration) -> bo
         Ok(age) => age > retention,
         // A record stamped in the future is not an age; the branch is kept.
         Err(_) => false,
+    }
+}
+
+/// The memory `id` as these bytes of one version of its file hold it, or `None`
+/// when the file does not parse or no longer carries that memory.
+///
+/// A memory of its own is parsed from its own file; the message a scope is
+/// delivered as lives in the scope file, so it is read as a scope and turned into
+/// the same memory the catalog delivers.
+fn memory_in_blob(id: &MemoryId, bytes: &[u8]) -> Option<MemoryDocument> {
+    match id.scope_message_of() {
+        Some(scope) => {
+            let message = ScopeDocument::parse(bytes).ok()?.message?;
+            Some(catalog::scope_message_document(&scope, &message))
+        }
+        None => MemoryDocument::parse(id.clone(), bytes).ok(),
     }
 }
 

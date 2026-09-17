@@ -302,6 +302,20 @@ impl MemoryDocument {
         self.frontmatter.metadata.kind.unwrap_or(DEFAULT_KIND)
     }
 
+    /// The text this memory puts in an agent's context: the whole body for a
+    /// critical memory, without the trailing blank space the rendered text drops,
+    /// and the description for a knowledge memory, which is all its index line
+    /// carries of it.
+    ///
+    /// Two versions of a memory are compared through this, so it has to be the
+    /// text that is actually delivered rather than the file's.
+    pub fn delivered_text(&self) -> &str {
+        match self.kind() {
+            MemoryKind::Critical => self.body.trim_end(),
+            MemoryKind::Knowledge => self.description(),
+        }
+    }
+
     pub fn scopes(&self) -> &[ScopeId] {
         match &self.frontmatter.metadata.scopes {
             Some(scopes) => scopes,

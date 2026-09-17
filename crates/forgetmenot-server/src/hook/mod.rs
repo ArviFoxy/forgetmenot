@@ -17,16 +17,17 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use forgetmenot_types::hook::{HookEvent, HookRequest, HookResponse};
+use git2::Oid;
 
 use crate::app::AppState;
 use crate::context::registry::Inheritance;
-use crate::context::{ContextState, Needs, compute_needs, record_delivery};
+use crate::context::{ContextState, Needs, PreviousTexts, compute_needs, record_delivery};
 use crate::render::{self, Delivery};
-use crate::stats::{Decision, HookEventRecord, TriggerFire};
-use crate::store::ScopeId;
+use crate::stats::{Decision, HookEventRecord, SHRUNK_REASON, TriggerFire};
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
 use crate::store::scope::TriggerField;
+use crate::store::{MemoryId, ScopeId};
 use events::EventPlan;
 
 /// Why a tool call was stopped. Fixed text: the model has to be able to tell
@@ -72,10 +73,11 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         title: request.session_title.as_deref(),
         first_prompt: request.first_prompt.as_deref(),
     };
+    let previous = previous_texts(&state, &plan, &catalog, now).await;
     let outcome = state
         .contexts
         .with_context(&plan.key, now, Inheritance::of(settings), |context| {
-            apply(context, &plan, &catalog, tokens_now, now, named)
+            apply(context, &plan, &catalog, tokens_now, now, named, &previous)
         })
         .await;
 
@@ -131,6 +133,76 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     axum::Json(response).into_response()
 }
 
+/// The text this context was given for each memory the store now holds another
+/// version of, read from the version the context holds.
+///
+/// One blob per memory whose version moved, so an event that meets an unchanged
+/// store reads nothing. A session start is given everything afresh and has no
+/// changed memory at all, so it reads nothing either. A version git no longer
+/// has, or bytes that no longer parse as that memory, yield no text and the
+/// memory is delivered whole.
+///
+/// This runs before the context's own critical section, so the versions it reads
+/// are the ones the context held when the event arrived; a memory whose version
+/// moves in between is delivered whole by [`compute_needs`], which compares the
+/// versions itself.
+async fn previous_texts(
+    state: &AppState,
+    plan: &EventPlan,
+    catalog: &Catalog,
+    now: chrono::DateTime<chrono::Utc>,
+) -> PreviousTexts {
+    if plan.session_start {
+        return PreviousTexts::new();
+    }
+    let inheritance = Inheritance::of(catalog.settings());
+    let outdated: Vec<(MemoryId, Oid, MemoryKind)> = state
+        .contexts
+        .with_context(&plan.key, now, inheritance, |context| {
+            outdated_versions(context, catalog)
+        })
+        .await;
+
+    let mut previous = PreviousTexts::new();
+    for (id, version, kind) in outdated {
+        let document = match state.store.memory_at_version(&id, version).await {
+            Ok(Some(document)) => document,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!("version {version} of {id} could not be read: {error}");
+                continue;
+            }
+        };
+        // A memory whose kind changed is delivered in another form, so its two
+        // texts are of different things and neither one holds the other's lines.
+        if document.kind() != kind {
+            continue;
+        }
+        previous.insert(id, document.delivered_text().to_string());
+    }
+    previous
+}
+
+/// Every memory this context holds at a version the catalog no longer has, with
+/// the version it holds and the kind the catalog gives it now.
+fn outdated_versions(
+    context: &ContextState,
+    catalog: &Catalog,
+) -> Vec<(MemoryId, Oid, MemoryKind)> {
+    context
+        .delivered
+        .iter()
+        .filter_map(|(id, shown)| {
+            let current = catalog.memory(id)?;
+            if shown.version == current.version.to_string() {
+                return None;
+            }
+            let version = Oid::from_str(&shown.version).ok()?;
+            Some((id.clone(), version, current.kind()))
+        })
+        .collect()
+}
+
 /// What one event decided for its context.
 struct Outcome {
     needs: Needs,
@@ -165,6 +237,7 @@ fn apply(
     tokens_now: Option<u64>,
     now: chrono::DateTime<chrono::Utc>,
     named: SessionName<'_>,
+    previous: &PreviousTexts,
 ) -> Outcome {
     // A session start makes the session's state anew: it is the one event that
     // says a context begins here, so nothing counts as delivered into it and
@@ -240,7 +313,7 @@ fn apply(
     context.active = catalog.closure(&context.active);
     let activated: Vec<ScopeId> = context.active.difference(&active_before).cloned().collect();
 
-    let needs = compute_needs(catalog, context, tokens_now);
+    let needs = compute_needs(catalog, context, tokens_now, previous);
     record_delivery(context, &needs, catalog, tokens_now);
     context.last_seen = now;
 
@@ -252,13 +325,18 @@ fn apply(
     }
 }
 
-/// One statistics row per memory this event delivered or withdrew.
+/// One statistics row per memory this event delivered, withdrew, or found had
+/// only shrunk.
+///
+/// A shrunk memory is recorded with no bytes: the row exists so that the context
+/// the rule did not cost is visible, and nothing was sent.
 fn deliveries_of(needs: &Needs, catalog: &Catalog) -> Vec<crate::stats::Delivery> {
     let mut deliveries = Vec::new();
     for (ids, reason) in [
         (&needs.new, "new"),
         (&needs.changed, "changed"),
         (&needs.stale, "stale"),
+        (&needs.shrunk, SHRUNK_REASON),
     ] {
         for id in ids {
             let kind = catalog
@@ -270,7 +348,10 @@ fn deliveries_of(needs: &Needs, catalog: &Catalog) -> Vec<crate::stats::Delivery
                 kind: kind_name(kind).to_string(),
                 form: crate::context::Form::for_kind(kind).as_str().to_string(),
                 reason: reason.to_string(),
-                bytes: render::delivery_bytes(catalog, id),
+                bytes: match reason == SHRUNK_REASON {
+                    true => 0,
+                    false => render::delivery_bytes(catalog, id),
+                },
             });
         }
     }

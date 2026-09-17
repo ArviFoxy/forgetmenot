@@ -325,21 +325,7 @@ fn scope_message_entries(
             });
             continue;
         }
-        let document = MemoryDocument {
-            id: id.clone(),
-            frontmatter: MemoryFrontmatter {
-                name: entry.id.as_str().to_string(),
-                description: Some(first_line(message).to_string()),
-                modified: None,
-                extra: yaml_serde::Mapping::new(),
-                metadata: MemoryMetadata {
-                    kind: Some(MemoryKind::Critical),
-                    scopes: Some(vec![entry.id.clone()]),
-                    ..MemoryMetadata::default()
-                },
-            },
-            body: message.clone(),
-        };
+        let document = scope_message_document(&entry.id, message);
         messages.insert(
             id.clone(),
             MemoryEntry {
@@ -353,6 +339,30 @@ fn scope_message_entries(
         );
     }
     messages
+}
+
+/// The memory one scope's `message` is delivered as: a critical memory of that
+/// scope alone, whose body is the message itself and whose description is the
+/// message's first line, the one a reader sees in the index.
+///
+/// The one place that shape is built, so that the message read from any revision
+/// of the scope file is the same memory as the one the catalog delivers.
+pub fn scope_message_document(scope: &ScopeId, message: &str) -> MemoryDocument {
+    MemoryDocument {
+        id: MemoryId::for_scope_message(scope),
+        frontmatter: MemoryFrontmatter {
+            name: scope.as_str().to_string(),
+            description: Some(first_line(message).to_string()),
+            modified: None,
+            extra: yaml_serde::Mapping::new(),
+            metadata: MemoryMetadata {
+                kind: Some(MemoryKind::Critical),
+                scopes: Some(vec![scope.clone()]),
+                ..MemoryMetadata::default()
+            },
+        },
+        body: message.to_string(),
+    }
 }
 
 /// The first line of `text`, trimmed.

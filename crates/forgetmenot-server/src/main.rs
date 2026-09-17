@@ -283,6 +283,7 @@ fn print_report(report: &StatsReport) {
             "shown_full_changed",
             "shown_full_stale",
             "fetched_full",
+            "shrunk",
             "retracted",
             "last_shown",
         ],
@@ -297,6 +298,7 @@ fn print_report(report: &StatsReport) {
                     row.shown_full_changed.to_string(),
                     row.shown_full_stale.to_string(),
                     row.fetched_full.to_string(),
+                    row.shrunk.to_string(),
                     row.retracted.to_string(),
                     row.last_shown.clone().unwrap_or_default(),
                 ]

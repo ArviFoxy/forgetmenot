@@ -240,6 +240,11 @@ pub struct Needs {
     pub new: Vec<MemoryId>,
     /// Delivered, but the store holds a different version now.
     pub changed: Vec<MemoryId>,
+    /// Delivered at another version whose delivered text the new one only
+    /// removed lines from, so the context has already been told everything the
+    /// new text says. Nothing is rendered for these; the new version is recorded
+    /// as seen.
+    pub shrunk: Vec<MemoryId>,
     /// Delivered so long ago in context that it is out of the model's reach,
     /// whatever form it was delivered in.
     pub stale: Vec<MemoryId>,
@@ -250,6 +255,9 @@ pub struct Needs {
 impl Needs {
     /// Whether nothing at all is owed, in which case the event is answered with
     /// an empty response.
+    ///
+    /// A memory that only shrank is not owed: it puts no text in the answer, so
+    /// an event that found nothing else is answered with nothing.
     pub fn is_empty(&self) -> bool {
         self.new.is_empty()
             && self.changed.is_empty()
@@ -276,6 +284,32 @@ impl Needs {
     }
 }
 
+/// The text a context was given for a memory, at the version it holds, for the
+/// memories the store now holds another version of.
+pub type PreviousTexts = BTreeMap<MemoryId, String>;
+
+/// Whether `new` is `old` with lines taken out and nothing put in: every line of
+/// `new` appears in `old` in order, and the two texts differ.
+///
+/// Lines are compared exactly, because this is asked of the text the model was
+/// actually given, in which a reworded line is new text. A trailing newline is
+/// not a line, so two texts that differ only in one are the same text here and
+/// nothing shrank.
+pub fn shrinks(old: &str, new: &str) -> bool {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    if old_lines == new_lines {
+        return false;
+    }
+    // `any` leaves the iterator just past the line it matched, so each line of
+    // the new text is looked for after the one before it: the walk accepts only
+    // an in-order match.
+    let mut remaining = old_lines.into_iter();
+    new_lines
+        .into_iter()
+        .all(|line| remaining.any(|old_line| old_line == line))
+}
+
 /// What a context is owed given the store, its state and its context size.
 ///
 /// The store's own settings decide two of the answers: `reminder_tokens` is the
@@ -284,7 +318,16 @@ impl Needs {
 /// whether a knowledge memory is delivered at all or only fetched on demand.
 /// Staleness is judged only when both the delivery and the event carry a context
 /// size.
-pub fn compute_needs(catalog: &Catalog, state: &ContextState, tokens_now: Option<u64>) -> Needs {
+///
+/// `previous` is the text the context was given for a memory whose version has
+/// moved since. A memory it has no text for is delivered whole, so a version that
+/// cannot be read costs a delivery and never a missed one.
+pub fn compute_needs(
+    catalog: &Catalog,
+    state: &ContextState,
+    tokens_now: Option<u64>,
+    previous: &PreviousTexts,
+) -> Needs {
     let settings = catalog.settings();
     let mut needs = Needs::default();
     let due = catalog.due(&state.active);
@@ -300,7 +343,15 @@ pub fn compute_needs(catalog: &Catalog, state: &ContextState, tokens_now: Option
             None => {}
             Some(shown) if shown.version != version => {
                 if delivers {
-                    needs.changed.push(memory.id.clone());
+                    // A version whose delivered text only lost lines says nothing
+                    // this context has not been given, so it is recorded as seen
+                    // and not sent again.
+                    match previous.get(&memory.id) {
+                        Some(old) if shrinks(old, memory.document.delivered_text()) => {
+                            needs.shrunk.push(memory.id.clone())
+                        }
+                        _ => needs.changed.push(memory.id.clone()),
+                    }
                 }
             }
             Some(shown) => {
@@ -334,6 +385,7 @@ pub fn compute_needs(catalog: &Catalog, state: &ContextState, tokens_now: Option
 
     needs.new.sort();
     needs.changed.sort();
+    needs.shrunk.sort();
     needs.stale.sort();
     needs.retracted.sort();
     needs
@@ -341,13 +393,17 @@ pub fn compute_needs(catalog: &Catalog, state: &ContextState, tokens_now: Option
 
 /// Record that `needs` was delivered: what was sent is now delivered at the
 /// store's version and this context size, and what was retracted is forgotten.
+///
+/// A memory that only shrank is recorded at the new version as well, although
+/// nothing was sent for it: the context has been given every line the new text
+/// holds, so it is not owed the memory again.
 pub fn record_delivery(
     state: &mut ContextState,
     needs: &Needs,
     catalog: &Catalog,
     tokens_now: Option<u64>,
 ) {
-    for id in needs.delivered_ids() {
+    for id in needs.delivered_ids().chain(&needs.shrunk) {
         let Some(memory) = catalog.memory(id) else {
             continue;
         };
@@ -375,6 +431,66 @@ mod tests {
             ContextKey::subagent("alpha", "session-1", "agent-7").to_string(),
             "alpha/session-1/agent-7"
         );
+    }
+
+    /// Detects a shrink test that accepts text the context has not been given:
+    /// a reworded line, a reordering, or a line added. Source: the rule that a
+    /// delivered text shrinks only when every one of its lines already appeared,
+    /// in order, in the text the context holds (issue 14).
+    #[test]
+    fn only_a_text_whose_lines_all_appeared_in_order_before_counts_as_shrunk() {
+        let old = "first line\nsecond line\nthird line";
+        assert!(
+            shrinks(old, "first line\nthird line"),
+            "a text with one line removed is the old text with lines taken out"
+        );
+        assert!(
+            !shrinks(old, "first line\nsecond line rewritten\nthird line"),
+            "a reworded line is text the context has not been given"
+        );
+        assert!(
+            !shrinks(old, old),
+            "an unchanged text has not shrunk; there is nothing to record"
+        );
+        assert!(
+            !shrinks(old, "third line\nfirst line"),
+            "the same lines in another order are not the old text with lines taken out"
+        );
+        assert!(
+            !shrinks(old, "first line\nsecond line\nthird line\nfourth line"),
+            "a line added is text the context has not been given"
+        );
+    }
+
+    /// Detects a shrink test that mishandles an empty text at either end: a
+    /// memory whose delivered text was emptied has had everything removed, and a
+    /// memory that had no delivered text before has only gained text.
+    #[test]
+    fn emptying_a_text_shrinks_it_and_filling_an_empty_one_does_not() {
+        assert!(
+            shrinks("first line\nsecond line", ""),
+            "a text emptied has had every line removed"
+        );
+        assert!(
+            !shrinks("", "first line"),
+            "a text that was empty has only gained a line"
+        );
+        assert!(!shrinks("", ""), "two empty texts are the same text");
+    }
+
+    /// Detects a shrink test that reads the newline at the end of a text as a
+    /// line of its own: a memory written back with or without one would be
+    /// recorded as having shrunk and never delivered again.
+    #[test]
+    fn a_trailing_newline_alone_is_not_a_shrink() {
+        assert!(!shrinks(
+            "first line\nsecond line\n",
+            "first line\nsecond line"
+        ));
+        assert!(!shrinks(
+            "first line\nsecond line",
+            "first line\nsecond line\n"
+        ));
     }
 
     /// Detects a subagent key whose parent is computed as anything other than

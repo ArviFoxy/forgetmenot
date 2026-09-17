@@ -69,7 +69,7 @@ pub struct Delivery {
     /// `full` or `index`; for a retraction, the form it had been delivered in is
     /// not what matters, so `index` and `full` are both written as `none`.
     pub form: String,
-    /// `new`, `changed`, `stale` or `retracted`.
+    /// `new`, `changed`, `stale`, `shrunk` or `retracted`.
     pub reason: String,
     pub bytes: u64,
 }
@@ -255,6 +255,10 @@ impl StatsReader {
 /// showing it; what follows is why it was withdrawn.
 pub const RETRACTED_PREFIX: &str = "retracted:";
 
+/// The `reason` of a delivery row for a memory whose new version only removed
+/// lines from what the context had already been given, so nothing was sent.
+pub const SHRUNK_REASON: &str = "shrunk";
+
 /// The tool whose calls count as a memory fetched in full by the model.
 pub const MEMORY_GET_TOOL: &str = "memory_get";
 
@@ -277,6 +281,9 @@ pub struct MemoryStatsRow {
     pub shown_full_stale: u64,
     /// Times the model fetched the whole body itself, through the tool.
     pub fetched_full: u64,
+    /// Times a new version was not delivered because it only removed lines from
+    /// the text the context already held. Not a delivery: nothing was sent.
+    pub shrunk: u64,
     /// Times this memory was withdrawn from a context.
     pub retracted: u64,
     /// When this memory was last delivered in any form, as the log wrote it.
@@ -292,6 +299,7 @@ impl MemoryStatsRow {
             shown_full_changed: 0,
             shown_full_stale: 0,
             fetched_full: 0,
+            shrunk: 0,
             retracted: 0,
             last_shown: None,
         }
@@ -374,6 +382,13 @@ impl StatsReader {
             let row = rows
                 .entry(memory.clone())
                 .or_insert_with(|| MemoryStatsRow::empty(memory));
+            // A shrunk row is counted before the form is read, because nothing
+            // was shown in that form: counting it as one would inflate the
+            // deliveries this memory is reported to have cost.
+            if reason == SHRUNK_REASON {
+                row.shrunk += 1;
+                continue;
+            }
             if reason.starts_with(RETRACTED_PREFIX) {
                 row.retracted += 1;
             } else {
