@@ -1,44 +1,33 @@
-//! Tests of the JSON API: the write contract, the read side the frontend is
-//! built against, and what happens when several writers arrive at once.
+//! The contract of the JSON API: for each route, the status code it answers
+//! with, the shape of the JSON it carries, and the parameters it parses out of
+//! the path, the query string and the body.
 //!
-//! Everything is asserted through the HTTP answers, and where an answer claims a
-//! commit was made, through the store's git history read with a second handle:
-//! a write path that answered 200 without committing, or committed twice, would
-//! fail here.
+//! Nothing about memories, scopes, sessions or the store is decided here: a
+//! handler reads a request, calls one function in `operations` and turns the
+//! answer into a status and a body. What those functions guarantee is
+//! `operations_test.rs`, what the store guarantees underneath them is
+//! `store_test.rs` and `branch_test.rs`, and what emerges when a session runs is
+//! the `scenarios_*` suites. What is asserted here is only visible over HTTP:
+//! the codes and bodies the frontend is built against, and the mapping from an
+//! operation's failure to one of them. The two writer tests at the end are the
+//! exception: several writers at once is a property of the running server.
 //!
-//! The expectations come from the plan's data model and write contract, and from
-//! the example store committed in this repository.
+//! The expectations come from the plan's write contract, from the status codes
+//! `api/mod.rs` documents, and from the example store committed in this
+//! repository.
 
 mod common;
 
-use std::collections::BTreeSet;
-
-use chrono::Duration;
 use serde_json::{Value, json};
 
-use common::{
-    TestServer, additional_context, api_request, example_store_files, example_store_with_settings,
-    example_store_without_settings, hook_fixture,
-};
+use common::{TestServer, api_request, example_store_files, example_store_without_settings};
 
 /// The author name a write carries; the frontend sends this one.
 const AUTHOR: &str = "wiki";
 
-/// The context size reported with the hook events used here, which are not about
-/// staleness.
-const SOME_TOKENS: Option<u64> = Some(10_000);
-
-/// The longest commit title the history can show on one line. Source: the plan's
-/// write contract, which fixes the limit at the width `git log --oneline` shows.
-const MAX_MESSAGE_TITLE: usize = 72;
-
 /// A line that appears in no memory of the example store, so that "the write
 /// landed" can be told apart from "the old text is still there".
 const NEW_LINE: &str = "The binder lives on the shelf by the door.";
-
-/// A line of `bench-power`'s body and of no other memory of the example store,
-/// so that "delivered in full" can be told apart from "named in an index line".
-const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,10 +40,20 @@ fn document(server: &TestServer, id: &str) -> Value {
     answer
 }
 
-/// A write of `body` and `description` to the version `document` was read at.
-fn write_of(document: &Value, description: &str, body: &str, message: &str) -> Value {
+/// One scope as the API reports it, failing the test when it cannot be read.
+fn scope(server: &TestServer, id: &str) -> Value {
+    let (status, answer) = server.api("GET", &format!("/api/scopes/{id}"), None);
+    assert_eq!(
+        status, 200,
+        "reading the scope {id} must succeed, got {answer}"
+    );
+    answer
+}
+
+/// A write of `body` to the version `document` was read at.
+fn write_of(document: &Value, body: &str, message: &str) -> Value {
     json!({
-        "description": description,
+        "description": document["description"],
         "kind": document["kind"],
         "scopes": document["scopes"],
         "source": document["source"],
@@ -75,404 +74,74 @@ fn head(server: &TestServer) -> String {
         .to_string()
 }
 
-/// The commits that changed one file, read through the test's own handle.
-fn commits_touching(server: &TestServer, path: &str) -> Vec<(String, String)> {
-    server
-        .store()
-        .repository()
-        .log_for_path(path)
-        .expect("the file's history is readable")
-        .into_iter()
-        .map(|summary| (summary.author, summary.title))
+/// The ids one list answer reports, in the order it lists them.
+fn ids(answer: &Value) -> Vec<String> {
+    answer
+        .as_array()
+        .unwrap_or_else(|| panic!("the answer must be a list, got {answer}"))
+        .iter()
+        .map(|row| row["id"].as_str().unwrap_or_default().to_string())
         .collect()
 }
 
-/// The file at one commit, read through the test's own handle: `None` when that
-/// commit's tree has no such path.
-fn file_at(server: &TestServer, commit_oid: &str, path: &str) -> Option<String> {
-    let oid = commit_oid.parse().expect("the answer names a commit");
-    server
-        .store()
-        .repository()
-        .blob_at(oid, path)
-        .expect("the commit is readable")
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// Whether `text` carries a line saying `id` was withdrawn for `reason`.
-fn has_retracted_line(text: &str, id: &str, reason: &str) -> bool {
-    text.lines()
-        .any(|line| line.contains(id) && line.contains(reason))
-}
-
-/// The ids the index reports for a query.
-fn index_ids(server: &TestServer, query: &str) -> Vec<String> {
-    let (status, answer) = server.api("GET", &format!("/api/memories{query}"), None);
-    assert_eq!(status, 200, "the index must be readable, got {answer}");
+/// The row one key has in the answer of `GET /api/contexts`.
+fn context_row<'answer>(answer: &'answer Value, key: &str) -> &'answer Value {
     answer
         .as_array()
-        .expect("the index is a list")
+        .expect("the contexts are a list")
         .iter()
-        .map(|entry| entry["id"].as_str().expect("an id is text").to_string())
-        .collect()
-}
-
-/// The scope index, failing the test when it cannot be read.
-fn scope_index(server: &TestServer) -> Value {
-    let (status, answer) = server.api("GET", "/api/scopes", None);
-    assert_eq!(status, 200, "the scopes must be readable, got {answer}");
-    answer
-}
-
-/// The ids the scope index reports, in the order it reports them.
-fn scope_ids(server: &TestServer) -> Vec<String> {
-    index_row_ids(&scope_index(server))
-}
-
-/// The ids of an index answer, in the order it lists them.
-fn index_row_ids(index: &Value) -> Vec<String> {
-    index
-        .as_array()
-        .expect("the scope index is a list")
-        .iter()
-        .map(|row| row["id"].as_str().expect("an id is text").to_string())
-        .collect()
-}
-
-/// The row one scope has in an index answer.
-fn index_row<'index>(index: &'index Value, id: &str) -> &'index Value {
-    index
-        .as_array()
-        .expect("the scope index is a list")
-        .iter()
-        .find(|row| row["id"] == json!(id))
-        .unwrap_or_else(|| panic!("{id} must be listed, got {index}"))
-}
-
-/// One scope as the API reports it, failing the test when it cannot be read.
-fn scope(server: &TestServer, id: &str) -> Value {
-    let (status, answer) = server.api("GET", &format!("/api/scopes/{id}"), None);
-    assert_eq!(
-        status, 200,
-        "reading the scope {id} must succeed, got {answer}"
-    );
-    answer
-}
-
-/// A memory file with a generated name, for the tests that need more memories
-/// than the example store has.
-fn generated_memory(index: usize) -> (String, Option<Vec<u8>>) {
-    let name = format!("note-{index:02}");
-    let text = format!(
-        "---\nname: {name}\ndescription: Generated note {index}, written to test concurrent writes\n---\n# {name}\n\nfirst text\n"
-    );
-    (format!("memories/{name}.md"), Some(text.into_bytes()))
-}
-
-/// The text a hook answer injects, or the empty string when it injects nothing.
-fn context_of(answer: &Value) -> &str {
-    additional_context(answer).unwrap_or_default()
-}
-
-/// A memory whose file carries keys forgetmenot does not interpret and a source
-/// that is neither of the two conventional values: the shape of a file written
-/// by Claude Code and kept by hand. The content is invented.
-const KEPT_METADATA_MEMORY: &str = concat!(
-    "---\n",
-    "name: collet-rack\n",
-    "description: Collets go back in the rack by size after every job\n",
-    "metadata:\n",
-    "  kind: knowledge\n",
-    "  scopes:\n",
-    "  - global\n",
-    "  source: derived\n",
-    "  type: feedback\n",
-    "  strength: hard\n",
-    "---\n",
-    "# Collets go back in the rack\n",
-    "\n",
-    "Every collet goes back in its own slot, by size, before the next job is\n",
-    "set up.\n",
-);
-
-const KEPT_METADATA_PATH: &str = "memories/collet-rack.md";
-
-/// The example store with that memory in it.
-fn store_with_kept_metadata() -> Vec<(String, Option<Vec<u8>>)> {
-    let mut files = example_store_files();
-    files.push((
-        KEPT_METADATA_PATH.to_string(),
-        Some(KEPT_METADATA_MEMORY.as_bytes().to_vec()),
-    ));
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    files
-}
-
-/// The one line of a memory file that starts with `prefix`, as it stands, so
-/// that a line a write did not name can be compared byte for byte afterwards.
-fn line_with(file: &str, prefix: &str) -> String {
-    let mut found = file.lines().filter(|line| line.starts_with(prefix));
-    let line = found
-        .next()
-        .unwrap_or_else(|| panic!("no line starts with {prefix:?} in:\n{file}"));
-    assert!(
-        found.next().is_none(),
-        "more than one line starts with {prefix:?} in:\n{file}"
-    );
-    format!("\n{line}\n")
-}
-
-/// The bytes of a memory file after its frontmatter, which a write that only
-/// sets fields must leave exactly as they were.
-fn body_of(file: &str) -> &str {
-    let after_open = file
-        .strip_prefix("---\n")
-        .unwrap_or_else(|| panic!("a memory file opens its frontmatter, got:\n{file}"));
-    let end = after_open
-        .find("\n---\n")
-        .unwrap_or_else(|| panic!("a memory file closes its frontmatter, got:\n{file}"));
-    &after_open[end + "\n---\n".len()..]
+        .find(|row| row["key"] == json!(key))
+        .unwrap_or_else(|| panic!("{key} must be listed, got {answer}"))
 }
 
 // ---------------------------------------------------------------------------
-// Writes
+// The memory routes
 // ---------------------------------------------------------------------------
 
-/// Detects a write that answers 200 without committing, commits under the
-/// server's own name instead of the caller's, loses the caller's message, or
-/// commits content other than what was sent: the history would then not say who
-/// changed what, and the editor would show text the store does not hold.
+/// Detects a write route that answers 200 without saying what it committed: the
+/// editor needs the version to send as the next write's `base_version`, and the
+/// commit to link to, or it can neither save again nor show what it just did.
+/// Detects a body whose `body` and `description` never reach the operation as
+/// well, which would answer success for a write of something else.
 #[test]
-fn a_write_from_the_current_version_makes_one_commit_with_the_given_author_and_message() {
+fn putting_a_memory_answers_200_with_the_commit_and_the_version_it_wrote() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let message = "note where the binder lives";
     let description = "The workshop references are in the binder on the shelf by the door";
     let body = format!("# Where the workshop references live\n\n{NEW_LINE}\n");
-    let before = commits_touching(&server, "memories/reading-list.md").len();
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/memories/reading-list",
-        Some(&write_of(
-            &document(&server, "reading-list"),
-            description,
-            &body,
-            message,
-        )),
+    let mut request = write_of(
+        &document(&server, "reading-list"),
+        &body,
+        "note where the binder lives",
     );
+    request["description"] = json!(description);
+
+    let (status, answer) = server.api("PUT", "/api/memories/reading-list", Some(&request));
 
     assert_eq!(status, 200, "the write must be accepted, got {answer}");
-    let commits = commits_touching(&server, "memories/reading-list.md");
     assert_eq!(
-        commits.len(),
-        before + 1,
-        "the write must make exactly one commit, got {commits:?}"
-    );
-    assert_eq!(
-        commits[0],
-        (AUTHOR.to_string(), message.to_string()),
-        "the commit must carry the author and the message the write gave"
+        answer["commit_oid"].as_str(),
+        Some(head(&server).as_str()),
+        "the answer must name the commit the write made, got {answer}"
     );
     let written = document(&server, "reading-list");
     assert_eq!(
-        written["body"].as_str(),
-        Some(body.as_str()),
-        "the document must read back with the body that was written"
-    );
-    assert_eq!(
-        written["description"].as_str(),
-        Some(description),
-        "the document must read back with the description that was written"
+        (written["body"].as_str(), written["description"].as_str()),
+        (Some(body.as_str()), Some(description)),
+        "the document must read back with the body and the description that were written"
     );
     assert_eq!(
         written["version"].as_str(),
         answer["version"].as_str(),
-        "the write must report the version the document now has"
+        "the write must report the version the document now has, got {answer}"
     );
 }
 
-/// Detects a write path that accepts a commit message the history cannot show as
-/// one line: an empty title, a title past the limit, or one spanning lines. Each
-/// case must be refused and must leave the store untouched.
+/// Detects a create route that does not take the id out of the body, or that
+/// answers without the commit: a memory created through the page would be
+/// unreachable at the id it was given, and the page would have nothing to
+/// navigate to.
 #[test]
-fn a_commit_message_the_history_cannot_show_is_refused_and_makes_no_commit() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let document = document(&server, "reading-list");
-    let before = head(&server);
-
-    for (case, message) in [
-        ("no message", String::new()),
-        ("only spaces", "   ".to_string()),
-        ("past the title limit", "a".repeat(MAX_MESSAGE_TITLE + 1)),
-        ("two lines", "first line\nsecond line".to_string()),
-    ] {
-        let (status, answer) = server.api(
-            "PUT",
-            "/api/memories/reading-list",
-            Some(&write_of(
-                &document,
-                "The workshop references are all on paper in the binder, nothing online",
-                "# Where the workshop references live\n\nsome text\n",
-                &message,
-            )),
-        );
-        assert_eq!(
-            status, 422,
-            "a write with {case} must be refused, got {answer}"
-        );
-        assert!(
-            answer["errors"]
-                .as_array()
-                .is_some_and(|errors| !errors.is_empty()),
-            "a write with {case} must say what was wrong, got {answer}"
-        );
-    }
-
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused write must leave the store as it was"
-    );
-}
-
-/// Detects a write that ignores the version it was made from: two editors saving
-/// from the same version would overwrite each other, and the second would never
-/// see the first one's text.
-#[test]
-fn a_write_from_a_stale_version_is_refused_with_the_current_document_and_makes_no_commit() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let stale = document(&server, "reading-list");
-    let first_body = "# Where the workshop references live\n\nthe first writer's text\n";
-    let (status, _) = server.api(
-        "PUT",
-        "/api/memories/reading-list",
-        Some(&write_of(
-            &stale,
-            "d",
-            first_body,
-            "write from the first editor",
-        )),
-    );
-    assert_eq!(status, 200, "the first write must land");
-    let after_first = head(&server);
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/memories/reading-list",
-        Some(&write_of(
-            &stale,
-            "d",
-            "# Where the workshop references live\n\nthe second writer's text\n",
-            "write from the second editor",
-        )),
-    );
-
-    assert_eq!(
-        status, 409,
-        "a write from a stale version must be refused, got {answer}"
-    );
-    assert_eq!(
-        answer["current"]["body"].as_str(),
-        Some(first_body),
-        "the refusal must carry the document as the store has it, got {answer}"
-    );
-    assert_ne!(
-        answer["current"]["version"].as_str(),
-        stale["version"].as_str(),
-        "the refusal must carry the version that made it stale, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        after_first,
-        "a refused write must leave the store as it was"
-    );
-}
-
-/// Detects a write path that skips the store's validation: a memory outside a
-/// session silo that links into one would make a session's notes readable from
-/// anywhere, which is the rule the silo exists for.
-#[test]
-fn a_write_whose_body_links_into_a_session_silo_is_refused_and_makes_no_commit() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let before = head(&server);
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/memories/reading-list",
-        Some(&write_of(
-            &document(&server, "reading-list"),
-            "The workshop references are all on paper in the binder, nothing online",
-            "# Where the workshop references live\n\nSee [[sessions/alpha/session-1/notes]].\n",
-            "link the session notes",
-        )),
-    );
-
-    assert_eq!(
-        status, 422,
-        "a link into a session silo must be refused, got {answer}"
-    );
-    let errors = answer["errors"]
-        .as_array()
-        .expect("the refusal lists problems");
-    assert!(
-        errors.iter().any(|error| {
-            error["path"] == json!("memories/reading-list.md")
-                && error["message"]
-                    .as_str()
-                    .is_some_and(|message| message.contains("sessions/alpha/session-1/notes"))
-        }),
-        "the refusal must name the file and the target it may not link to, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused write must leave the store as it was"
-    );
-}
-
-/// Detects a create that overwrites the memory already at that id, which would
-/// silently replace someone else's memory with a new one.
-#[test]
-fn creating_a_memory_at_an_id_that_exists_is_refused_with_the_current_document() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let before = head(&server);
-
-    let (status, answer) = server.api(
-        "POST",
-        "/api/memories",
-        Some(&json!({
-            "id": "reading-list",
-            "description": "A second memory claiming an id that is taken",
-            "kind": "knowledge",
-            "scopes": ["global"],
-            "source": "user",
-            "body": "# Another reading list\n\ntext\n",
-            "author": AUTHOR,
-            "message": "create a second reading list",
-        })),
-    );
-
-    assert_eq!(
-        status, 409,
-        "creating over an existing id must be refused, got {answer}"
-    );
-    assert_eq!(
-        answer["current"]["id"].as_str(),
-        Some("reading-list"),
-        "the refusal must carry the memory that is already there, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused create must leave the store as it was"
-    );
-}
-
-/// Detects a create that does not record when the memory was made, and an index
-/// filter that ignores the scope it was given: a memory would then appear in
-/// every scope's list.
-#[test]
-fn a_created_memory_is_stamped_and_listed_only_under_its_own_scope() {
+fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_its_id() {
     let server = TestServer::start(example_store_files(), |_| {});
 
     let (status, answer) = server.api(
@@ -489,215 +158,114 @@ fn a_created_memory_is_stamped_and_listed_only_under_its_own_scope() {
             "message": "record the bracket tolerance",
         })),
     );
+
     assert_eq!(status, 200, "the create must be accepted, got {answer}");
-
+    assert_eq!(
+        answer["commit_oid"].as_str(),
+        Some(head(&server).as_str()),
+        "the answer must name the commit the create made, got {answer}"
+    );
     let created = document(&server, "bracket-tolerances");
-    assert!(
-        created["created"].is_string(),
-        "a created memory must record when it was made, got {created}"
-    );
-    assert!(
-        index_ids(&server, "").contains(&"bracket-tolerances".to_string()),
-        "a created memory must appear in the index"
-    );
-    assert!(
-        index_ids(&server, "?scope=widgets").contains(&"bracket-tolerances".to_string()),
-        "a created memory must appear under the scope it names"
-    );
-    assert!(
-        !index_ids(&server, "?scope=rocketry").contains(&"bracket-tolerances".to_string()),
-        "a memory must not appear under a scope it does not name"
+    assert_eq!(
+        (created["kind"].as_str(), created["scopes"].clone()),
+        (Some("knowledge"), json!(["widgets"])),
+        "the memory must read back with the kind and the scopes the body gave, got {created}"
     );
 }
 
-/// Detects a field write that rewrites the keys it was not given, or the body:
-/// a session adding one key to a memory it did not write would silently drop
-/// the keys its keeper put there and reformat text nobody edited.
+/// Detects an index route that drops its query string, or that answers a filter
+/// it cannot read with an empty list: a page asking for one scope's memories
+/// would be given the whole store, and a mistyped filter would look like a scope
+/// with nothing in it.
 #[test]
-fn setting_one_metadata_key_leaves_the_body_and_the_other_metadata_keys_as_they_were() {
-    let server = TestServer::start(store_with_kept_metadata(), |_| {});
-    let before = server.store().file_text(KEPT_METADATA_PATH);
-
-    let (status, answer) = server.api(
-        "POST",
-        "/api/memories/collet-rack/fields",
-        Some(&json!({
-            "metadata": { "node_type": "memory" },
-            "author": AUTHOR,
-            "message": "record where the collet rule came from",
-        })),
-    );
-
-    assert_eq!(
-        status, 200,
-        "the field write must be accepted, got {answer}"
-    );
-    let after = server.store().file_text(KEPT_METADATA_PATH);
-    assert_eq!(
-        body_of(&after),
-        body_of(&before),
-        "the body must be the bytes it was, got:\n{after}"
-    );
-    for kept in ["  type:", "  strength:"] {
-        let was = line_with(&before, kept);
-        assert!(
-            after.contains(&was),
-            "the line {was:?} was not given and must be the bytes it was, got:\n{after}"
-        );
-    }
-    assert_eq!(
-        document(&server, "collet-rack")["metadata"],
-        json!({ "type": "feedback", "strength": "hard", "node_type": "memory" }),
-        "the memory must read back with the key added and the others kept"
-    );
-}
-
-/// Detects a `null` written into the file as a value, or one that clears the
-/// whole metadata block: the key the write asked to remove is the only one that
-/// may go, and a key left behind with a null value is a key still in the file.
-#[test]
-fn a_metadata_key_set_to_null_is_the_only_key_removed() {
-    let server = TestServer::start(store_with_kept_metadata(), |_| {});
-    let before = server.store().file_text(KEPT_METADATA_PATH);
-
-    let (status, answer) = server.api(
-        "POST",
-        "/api/memories/collet-rack/fields",
-        Some(&json!({
-            "metadata": { "strength": null },
-            "author": AUTHOR,
-            "message": "the collet rule is no longer a hard rule",
-        })),
-    );
-
-    assert_eq!(
-        status, 200,
-        "the field write must be accepted, got {answer}"
-    );
-    let after = server.store().file_text(KEPT_METADATA_PATH);
-    assert!(
-        !after.contains("strength"),
-        "the key set to null must be out of the file, got:\n{after}"
-    );
-    let kept = line_with(&before, "  type:");
-    assert!(
-        after.contains(&kept),
-        "the line {kept:?} was not named by the write and must be the bytes it was, got:\n{after}"
-    );
-    assert_eq!(
-        body_of(&after),
-        body_of(&before),
-        "the body must be the bytes it was, got:\n{after}"
-    );
-    assert_eq!(
-        document(&server, "collet-rack")["metadata"],
-        json!({ "type": "feedback" }),
-        "only the key set to null may be removed"
-    );
-}
-
-/// Detects a `source` restricted to the two conventional values: a memory
-/// directory in use carries others, and a write that refused one, or stored it
-/// as something else, would either fail the import or change what the file
-/// says. `forgetmenot check` has to accept the file it leaves behind, because a
-/// store it calls invalid is one no session can be delivered from.
-#[test]
-fn a_source_that_is_neither_user_nor_assistant_is_written_read_back_and_accepted_by_check() {
+fn the_memory_index_route_applies_its_filters_and_refuses_a_kind_it_has_no_notion_of() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let current = document(&server, "bench-power");
+    let listed = |query: &str| {
+        let (status, answer) = server.api("GET", &format!("/api/memories{query}"), None);
+        assert_eq!(status, 200, "the index must be readable, got {answer}");
+        ids(&answer)
+    };
 
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/memories/bench-power",
-        Some(&json!({
-            "description": current["description"],
-            "kind": current["kind"],
-            "scopes": current["scopes"],
-            "source": "derived",
-            "body": current["body"],
-            "base_version": current["version"],
-            "author": AUTHOR,
-            "message": "record that the bench rule was derived",
-        })),
-    );
-
-    assert_eq!(status, 200, "the write must be accepted, got {answer}");
+    // `widget-naming` is the example store's only memory in `widgets`, and it
+    // is critical.
     assert_eq!(
-        document(&server, "bench-power")["source"],
-        json!("derived"),
-        "the source must read back as it was written"
+        listed("?scope=widgets"),
+        vec!["widget-naming"],
+        "only the memories carrying the scope asked for may be listed"
     );
-    let checked = std::process::Command::new(common::binary_path())
-        .args(["check", "--store"])
-        .arg(server.store().path())
-        .output()
-        .expect("the forgetmenot binary runs");
+    assert_eq!(
+        listed("?scope=widgets&kind=knowledge"),
+        Vec::<String>::new(),
+        "both filters must apply, so a critical memory must not answer a knowledge filter"
+    );
     assert!(
-        checked.status.success(),
-        "check must accept a store whose memory carries this source, got {}{}",
-        String::from_utf8_lossy(&checked.stdout),
-        String::from_utf8_lossy(&checked.stderr)
+        listed("").len() > 1,
+        "without a filter every memory must be listed"
+    );
+
+    let (status, answer) = server.api("GET", "/api/memories?kind=rules", None);
+    assert_eq!(
+        status, 400,
+        "a kind this route has no notion of must be refused, got {answer}"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("critical")),
+        "the refusal must say which kinds the route takes, got {answer}"
     );
 }
 
-/// Detects a memory moved out of every scope a session works in being withdrawn
-/// as a scope the session turned off: no scope was turned off, and a session
-/// told otherwise would look for a change it never made. Detects a move that
-/// never reaches the contexts the memory was delivered to as well.
+/// Detects the `fields` action being routed to the whole-document write, which
+/// would need a body the page does not send and would truncate the memory, and
+/// an action this API has no notion of being answered as a write.
 #[test]
-fn a_memory_moved_out_of_every_active_scope_is_withdrawn_as_one_no_active_scope_covers() {
+fn setting_one_field_answers_200_and_a_path_naming_no_action_is_reported_as_missing() {
     let server = TestServer::start(example_store_files(), |_| {});
-    // bench-power is the example store's global critical memory, so it arrives
-    // in full at a session start, before it is moved anywhere.
-    let (_, delivered) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    assert!(
-        context_of(&delivered).contains(BENCH_POWER_BODY),
-        "the memory has to have been delivered before it can be withdrawn, got {delivered}"
-    );
+    let before = document(&server, "bench-power");
 
-    // `widgets` is a scope of the example store that this session has not
-    // turned on, so the memory is covered by no scope it works in.
     let (status, answer) = server.api(
         "POST",
         "/api/memories/bench-power/fields",
         Some(&json!({
-            "scopes": ["widgets"],
+            "description": "Cut bench power at the wall and prove the rail reads zero",
             "author": AUTHOR,
-            "message": "the bench rule belongs to the widgets work",
+            "message": "sharpen the bench power description",
         })),
     );
-    assert_eq!(status, 200, "the move must be accepted, got {answer}");
 
-    let (status, withdrawn) = server.hook("alpha", SOME_TOKENS, &hook_fixture("stop"));
-    assert_eq!(status, 200, "the next event must be answered");
-    let text = context_of(&withdrawn);
-    assert!(
-        has_retracted_line(text, "bench-power", "no longer in an active scope"),
-        "the memory must be reported as one no active scope covers, got {text:?}"
+    assert_eq!(
+        status, 200,
+        "the field write must be accepted, got {answer}"
     );
-    assert!(
-        !has_retracted_line(text, "bench-power", "deleted"),
-        "a memory still in the store must not be reported as deleted, got {text:?}"
+    let after = document(&server, "bench-power");
+    assert_eq!(
+        after["description"].as_str(),
+        Some("Cut bench power at the wall and prove the rail reads zero"),
+        "the field the write named must have changed, got {after}"
+    );
+    assert_eq!(
+        after["body"], before["body"],
+        "a field write must leave the body alone, got {after}"
+    );
+
+    let (status, answer) = server.api(
+        "POST",
+        "/api/memories/bench-power/sharpen",
+        Some(&json!({ "author": AUTHOR, "message": "m" })),
+    );
+    assert_eq!(
+        status, 404,
+        "a path naming no action of this API must be reported as missing, got {answer}"
     );
 }
 
-/// Detects a delete that answers 200 without taking the file out of the store,
-/// one that removes it in more than one commit, and one that never reaches the
-/// contexts the memory was delivered to: a session that was given a rule in full
-/// has to be told the rule is gone, because nothing else in its context says so.
+/// Detects a delete that answers 200 while the memory is still readable: the
+/// page navigates away on the answer, and the answer names the commit it links
+/// to.
 #[test]
-fn deleting_a_memory_removes_the_file_in_one_commit_and_withdraws_it_where_it_was_delivered() {
+fn deleting_a_memory_answers_200_with_the_commit_and_the_memory_is_then_missing() {
     let server = TestServer::start(example_store_files(), |_| {});
-    // bench-power is the example store's global critical memory, so it arrives in
-    // full at a session start, before anything is deleted.
-    let (_, delivered) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    assert!(
-        context_of(&delivered).contains(BENCH_POWER_BODY),
-        "the memory has to have been delivered before it can be withdrawn, got {delivered}"
-    );
-    let path = "memories/bench-power.md";
-    let before = commits_touching(&server, path).len();
-    let message = "the bench was taken out of the workshop";
 
     let (status, answer) = server.api(
         "DELETE",
@@ -705,111 +273,60 @@ fn deleting_a_memory_removes_the_file_in_one_commit_and_withdraws_it_where_it_wa
         Some(&json!({
             "base_version": document(&server, "bench-power")["version"],
             "author": AUTHOR,
-            "message": message,
+            "message": "the bench was taken out of the workshop",
         })),
     );
 
     assert_eq!(status, 200, "the delete must be accepted, got {answer}");
-    let commits = commits_touching(&server, path);
     assert_eq!(
-        commits.len(),
-        before + 1,
-        "the delete must make exactly one commit, got {commits:?}"
-    );
-    assert_eq!(
-        commits[0],
-        (AUTHOR.to_string(), message.to_string()),
-        "the commit must carry the author and the message the delete gave"
-    );
-    assert_eq!(
-        file_at(
-            &server,
-            answer["commit_oid"]
-                .as_str()
-                .unwrap_or_else(|| panic!("the answer must name the commit, got {answer}")),
-            path,
-        ),
-        None,
-        "the commit the delete reports must be one whose tree has no file for the memory"
-    );
-    assert!(
-        !index_ids(&server, "").contains(&"bench-power".to_string()),
-        "a deleted memory must not be in the index"
+        answer["commit_oid"].as_str(),
+        Some(head(&server).as_str()),
+        "the answer must name the commit the delete made, got {answer}"
     );
     let (status, gone) = server.api("GET", "/api/memories/bench-power", None);
     assert_eq!(
         status, 404,
         "a deleted memory must no longer be readable, got {gone}"
     );
-
-    let (status, withdrawn) = server.hook("alpha", SOME_TOKENS, &hook_fixture("stop"));
-    assert_eq!(status, 200, "the next event must be answered");
-    let text = context_of(&withdrawn);
+    let (status, index) = server.api("GET", "/api/memories", None);
+    assert_eq!(status, 200, "the index must be readable, got {index}");
     assert!(
-        has_retracted_line(text, "bench-power", "deleted"),
-        "the deleted memory must be reported as withdrawn because it was deleted, got {text:?}"
-    );
-    assert!(
-        !text.contains(BENCH_POWER_BODY),
-        "a deleted memory must not be delivered again, got {text:?}"
+        !ids(&index).contains(&"bench-power".to_string()),
+        "a deleted memory must not be in the index, got {index}"
     );
 }
 
-/// Detects a delete that ignores the version it was made from: an editor holding
-/// a memory as it was before someone else rewrote it would remove text it never
-/// saw, and the person who wrote it would have no way to find out.
+/// Detects a memory id with slashes in it being split by the route, which is
+/// every memory in a session silo: the page that reads one would be answered
+/// with nothing, or with another memory.
 #[test]
-fn a_delete_from_a_stale_version_is_refused_and_leaves_the_memory_in_the_store() {
+fn a_memory_id_with_slashes_is_read_and_its_history_is_addressable_under_the_same_path() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let stale = document(&server, "reading-list");
-    let (status, _) = server.api(
-        "PUT",
-        "/api/memories/reading-list",
-        Some(&write_of(
-            &stale,
-            "The workshop references are all on paper in the binder, nothing online",
-            &format!("# Where the workshop references live\n\n{NEW_LINE}\n"),
-            "write from the other editor",
-        )),
-    );
-    assert_eq!(status, 200, "the other editor's write must land");
-    let after_write = head(&server);
+    let id = "sessions/alpha/session-1/notes";
 
-    let (status, answer) = server.api(
-        "DELETE",
-        "/api/memories/reading-list",
-        Some(&json!({
-            "base_version": stale["version"],
-            "author": AUTHOR,
-            "message": "the reading list is not needed any more",
-        })),
-    );
+    let read = document(&server, id);
 
     assert_eq!(
-        status, 409,
-        "a delete from a stale version must be refused, got {answer}"
+        read["id"].as_str(),
+        Some(id),
+        "the memory must be answered under the id that was asked for, got {read}"
     );
-    assert_ne!(
-        answer["current"]["version"].as_str(),
-        stale["version"].as_str(),
-        "the refusal must carry the document as the store has it, got {answer}"
-    );
+    let (status, commits) = server.api("GET", &format!("/api/memories/{id}/history"), None);
     assert_eq!(
-        head(&server),
-        after_write,
-        "a refused delete must leave the store as it was"
+        status, 200,
+        "the history of a memory in a silo must be readable, got {commits}"
     );
     assert!(
-        index_ids(&server, "").contains(&"reading-list".to_string()),
-        "a refused delete must leave the memory in the index"
+        !commits.as_array().expect("a history is a list").is_empty(),
+        "the memory's history must carry the commit that wrote it, got {commits}"
     );
 }
 
-/// Detects a history that does not show the write just made, and a per-commit
-/// diff that does not say what changed: the two things the history pages exist
-/// for.
+/// Detects a history route that does not report who wrote a commit or why, and
+/// a per-commit route that carries neither the change nor the file: those four
+/// values are the whole of what the history page shows.
 #[test]
-fn the_history_of_a_write_lists_its_commit_and_its_diff_marks_the_added_line() {
+fn the_memory_history_routes_answer_the_commits_and_one_commits_diff_and_content() {
     let server = TestServer::start(example_store_files(), |_| {});
     let message = "note where the binder lives";
     let (status, _) = server.api(
@@ -817,7 +334,6 @@ fn the_history_of_a_write_lists_its_commit_and_its_diff_marks_the_added_line() {
         "/api/memories/reading-list",
         Some(&write_of(
             &document(&server, "reading-list"),
-            "The workshop references are all on paper in the binder, nothing online",
             &format!("# Where the workshop references live\n\n{NEW_LINE}\n"),
             message,
         )),
@@ -825,17 +341,13 @@ fn the_history_of_a_write_lists_its_commit_and_its_diff_marks_the_added_line() {
     assert_eq!(status, 200, "the write must land");
 
     let (status, commits) = server.api("GET", "/api/memories/reading-list/history", None);
+
     assert_eq!(status, 200, "the history must be readable, got {commits}");
-    let newest = &commits.as_array().expect("the history is a list")[0];
+    let newest = &commits.as_array().expect("a history is a list")[0];
     assert_eq!(
-        newest["title"].as_str(),
-        Some(message),
-        "the newest commit must be the write just made, got {commits}"
-    );
-    assert_eq!(
-        newest["author"].as_str(),
-        Some(AUTHOR),
-        "the commit must name the author the write gave, got {commits}"
+        (newest["title"].as_str(), newest["author"].as_str()),
+        (Some(message), Some(AUTHOR)),
+        "the newest commit must carry the message and the author the write sent, got {commits}"
     );
 
     let oid = newest["oid"].as_str().expect("a commit has an oid");
@@ -845,10 +357,11 @@ fn the_history_of_a_write_lists_its_commit_and_its_diff_marks_the_added_line() {
         None,
     );
     assert_eq!(status, 200, "the commit must be readable, got {entry}");
-    let diff = entry["diff"].as_str().expect("the entry carries a diff");
     assert!(
-        diff.lines().any(|line| line == format!("+{NEW_LINE}")),
-        "the diff must show the added line as added, got {diff:?}"
+        entry["diff"]
+            .as_str()
+            .is_some_and(|diff| diff.lines().any(|line| line == format!("+{NEW_LINE}"))),
+        "the entry must carry the change that commit made, got {entry}"
     );
     assert!(
         entry["content"]
@@ -858,530 +371,153 @@ fn the_history_of_a_write_lists_its_commit_and_its_diff_marks_the_added_line() {
     );
 }
 
-/// A write to one memory, made through the API, reporting the title it carries.
-fn write_line_to(server: &TestServer, id: &str, message: &str) -> String {
-    let (status, answer) = server.api(
+/// Detects a store history route that ignores `limit` or `before`, which would
+/// leave every page but the first unreachable, and one that answers a limit it
+/// cannot read with a page of some other size. Detects a commit route that says
+/// nothing about the files as well.
+#[test]
+fn the_store_history_routes_parse_limit_and_before_and_answer_a_commits_files() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let (status, _) = server.api(
         "PUT",
-        &format!("/api/memories/{id}"),
+        "/api/memories/reading-list",
         Some(&write_of(
-            &document(server, id),
-            "the description this write leaves behind",
-            &format!("# {id}\n\n{NEW_LINE}\n"),
-            message,
+            &document(&server, "reading-list"),
+            &format!("# Where the workshop references live\n\n{NEW_LINE}\n"),
+            "note where the binder lives",
         )),
     );
-    assert_eq!(status, 200, "the write to {id} must land, got {answer}");
-    message.to_string()
-}
+    assert_eq!(status, 200, "the write must land");
+    let page = |query: &str| {
+        let (status, answer) = server.api("GET", &format!("/api/history{query}"), None);
+        assert_eq!(
+            status, 200,
+            "the store's history must be readable, got {answer}"
+        );
+        answer
+    };
 
-/// One page of the store's history, failing the test when it cannot be read.
-fn history_page(server: &TestServer, query: &str) -> Value {
-    let (status, answer) = server.api("GET", &format!("/api/history{query}"), None);
+    let first = page("?limit=1");
     assert_eq!(
-        status, 200,
-        "the store's history must be readable, got {answer}"
-    );
-    answer
-}
-
-/// The titles a page of the store's history lists, in the order it lists them.
-fn page_titles(page: &Value) -> Vec<String> {
-    page["commits"]
-        .as_array()
-        .expect("a page carries a list of commits")
-        .iter()
-        .map(|commit| commit["title"].as_str().unwrap_or_default().to_string())
-        .collect()
-}
-
-/// Detects a store history that lists the commits in another order, or that
-/// cannot be paged through: the list page shows the newest first and reads the
-/// rest by asking for the commits older than the last one it was given.
-#[test]
-fn the_store_history_lists_every_commit_newest_first_and_pages_past_the_one_it_names() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let older = write_line_to(&server, "reading-list", "note where the binder lives");
-    let newer = write_line_to(&server, "bench-power", "note the wall switch");
-
-    let page = history_page(&server, "");
-    let titles = page_titles(&page);
-    assert_eq!(
-        titles.first().map(String::as_str),
-        Some(newer.as_str()),
-        "the newest commit must come first, got {titles:?}"
-    );
-    assert_eq!(
-        titles.get(1).map(String::as_str),
-        Some(older.as_str()),
-        "the write before it must come second, got {titles:?}"
-    );
-    assert!(
-        titles.contains(&"build the fixture store".to_string()),
-        "the commit that seeded the store must be listed too, got {titles:?}"
-    );
-    assert!(
-        page["next_before"].is_null(),
-        "a page holding the whole history must offer no next page, got {page}"
-    );
-
-    let newest = &page["commits"][0];
-    assert_eq!(
-        newest["author"].as_str(),
-        Some(AUTHOR),
-        "a commit must name the author its write gave, got {newest}"
-    );
-    assert!(
-        newest["time"]
-            .as_str()
-            .is_some_and(|time| chrono::DateTime::parse_from_rfc3339(time).is_ok()),
-        "a commit's time must be ISO 8601, got {newest}"
-    );
-
-    let first = history_page(&server, "?limit=1");
-    assert_eq!(
-        page_titles(&first),
-        vec![newer.clone()],
+        first["commits"].as_array().map(Vec::len),
+        Some(1),
         "a limit of one must answer with one commit, got {first}"
+    );
+    assert_eq!(
+        first["commits"][0]["title"].as_str(),
+        Some("note where the binder lives"),
+        "the newest commit must come first, got {first}"
     );
     let before = first["next_before"]
         .as_str()
         .unwrap_or_else(|| panic!("a full page must name the next page's start, got {first}"));
-    let second = history_page(&server, &format!("?limit=1&before={before}"));
-    assert_eq!(
-        page_titles(&second),
-        vec![older],
+    let second = page(&format!("?limit=1&before={before}"));
+    assert_ne!(
+        second["commits"][0]["oid"], first["commits"][0]["oid"],
         "the next page must start after the commit it was given, got {second}"
     );
-}
 
-/// Detects a commit page that reports files the commit did not change, that
-/// carries no diff, or that leaves the frontend to work out which document a
-/// path holds.
-#[test]
-fn a_commit_page_lists_only_the_file_that_commit_changed_with_its_diff_and_its_memory() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    write_line_to(&server, "reading-list", "note where the binder lives");
-    let oid = head(&server);
-
-    let (status, answer) = server.api("GET", &format!("/api/history/{oid}"), None);
-    assert_eq!(status, 200, "the commit must be readable, got {answer}");
-    let files = answer["files"]
-        .as_array()
-        .expect("a commit lists its files");
-    let paths: Vec<&str> = files
-        .iter()
-        .map(|file| file["path"].as_str().unwrap_or_default())
-        .collect();
+    let (status, answer) = server.api("GET", "/api/history?limit=none", None);
     assert_eq!(
-        paths,
-        vec!["memories/reading-list.md"],
-        "the commit must list the one file it changed, got {answer}"
-    );
-    let file = &files[0];
-    assert_eq!(
-        file["status"].as_str(),
-        Some("modified"),
-        "a file the commit rewrote must be reported as modified, got {file}"
-    );
-    assert!(
-        file["diff"]
-            .as_str()
-            .is_some_and(|diff| diff.lines().any(|line| line == format!("+{NEW_LINE}"))),
-        "the file's diff must show the added line as added, got {file}"
-    );
-    assert_eq!(
-        file["memory_id"].as_str(),
-        Some("reading-list"),
-        "the file must name the memory it holds, got {file}"
-    );
-}
-
-/// Detects the commit that has no parent being answered as a server failure, or
-/// as having changed nothing: the store's first commit is the one every file was
-/// added in, and it is reachable from the history list like any other.
-#[test]
-fn the_commit_that_added_every_file_is_reported_as_what_it_added() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
-    let page = history_page(&server, "");
-    let commits = page["commits"].as_array().expect("the history is a list");
-    let root = commits
-        .last()
-        .expect("the store has at least one commit")
-        .clone();
-    let (status, answer) = server.api(
-        "GET",
-        &format!("/api/history/{}", root["oid"].as_str().unwrap_or_default()),
-        None,
-    );
-    assert_eq!(
-        status, 200,
-        "the commit with no parent must be readable, got {answer}"
+        status, 400,
+        "a limit this route cannot read must be refused, got {answer}"
     );
 
-    let seeding = commits
-        .iter()
-        .find(|commit| commit["title"].as_str() == Some("build the fixture store"))
-        .expect("the history lists the commit that seeded the store");
-    let (status, answer) = server.api(
-        "GET",
-        &format!(
-            "/api/history/{}",
-            seeding["oid"].as_str().unwrap_or_default()
+    let (status, commit) = server.api("GET", &format!("/api/history/{}", head(&server)), None);
+    assert_eq!(status, 200, "the commit must be readable, got {commit}");
+    let file = &commit["files"][0];
+    assert_eq!(
+        (
+            file["path"].as_str(),
+            file["status"].as_str(),
+            file["memory_id"].as_str()
         ),
-        None,
-    );
-    assert_eq!(
-        status, 200,
-        "the seeding commit must be readable, got {answer}"
-    );
-    let listed: BTreeSet<String> = answer["files"]
-        .as_array()
-        .expect("a commit lists its files")
-        .iter()
-        .map(|file| file["path"].as_str().unwrap_or_default().to_string())
-        .collect();
-    let seeded: BTreeSet<String> = example_store_files()
-        .into_iter()
-        .map(|(path, _)| path)
-        .collect();
-    assert_eq!(
-        listed, seeded,
-        "the commit that added every file must list every one of them, got {answer}"
+        (
+            Some("memories/reading-list.md"),
+            Some("modified"),
+            Some("reading-list")
+        ),
+        "a commit's file must name its path, what happened to it and the memory it holds, got \
+         {commit}"
     );
     assert!(
-        answer["files"]
-            .as_array()
-            .expect("a commit lists its files")
-            .iter()
-            .all(|file| file["status"].as_str() == Some("added")),
-        "every file of that commit must be reported as added, got {answer}"
-    );
-    assert!(
-        answer["files"]
-            .as_array()
-            .expect("a commit lists its files")
-            .iter()
-            .any(|file| file["scope_id"].as_str() == Some("widgets")),
-        "a scope's file must name the scope it holds, got {answer}"
+        file["diff"].is_string(),
+        "a commit's file must carry its diff, got {commit}"
     );
 }
 
-/// Detects a commit the store does not have being answered as a server failure,
-/// which a mistyped or stale address in the frontend would produce.
+// ---------------------------------------------------------------------------
+// The scope routes
+// ---------------------------------------------------------------------------
+
+/// Detects a scope write whose body never reaches the file, and a scope index
+/// that does not carry the file the edit page reads: the page that edits a scope
+/// reads it back from the index row as well as from the scope itself, and a key
+/// the store keeps but the API hides cannot be edited or even seen.
 #[test]
-fn a_commit_the_store_does_not_have_is_reported_as_missing() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
-    for oid in ["f".repeat(40), "not-a-commit".to_string()] {
-        let (status, answer) = server.api("GET", &format!("/api/history/{oid}"), None);
-        assert_eq!(
-            status, 404,
-            "the commit `{oid}` must be a 404, got {answer}"
-        );
-        assert!(
-            answer["error"].is_string(),
-            "a 404 must carry a message, got {answer}"
-        );
-    }
-}
-
-/// Detects a write to a memory that is not there being answered as anything
-/// other than "no such memory": a mistyped id would otherwise create a memory,
-/// or fail as a server error the frontend cannot explain.
-#[test]
-fn reading_or_writing_a_memory_that_does_not_exist_is_reported_as_missing() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let before = head(&server);
-
-    let (status, answer) = server.api("GET", "/api/memories/no-such-memory", None);
-    assert_eq!(
-        status, 404,
-        "reading a missing memory must be a 404, got {answer}"
-    );
-    assert!(
-        answer["error"].is_string(),
-        "a 404 must carry a message, got {answer}"
-    );
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/memories/no-such-memory",
-        Some(&json!({
-            "description": "d",
-            "kind": "knowledge",
-            "scopes": ["global"],
-            "source": "user",
-            "body": "text\n",
-            "base_version": before,
-            "author": AUTHOR,
-            "message": "write to a memory that does not exist",
-        })),
-    );
-    assert_eq!(
-        status, 404,
-        "writing to a missing memory must be a 404, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused write must leave the store as it was"
-    );
-}
-
-/// Detects a scope write that skips validation: a trigger pattern that does not
-/// compile would leave the store with a scope no context can ever turn on, and
-/// the failure would only show at the next catalog load.
-#[test]
-fn a_scope_write_with_a_pattern_that_does_not_compile_is_refused_and_makes_no_commit() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let (status, scope) = server.api("GET", "/api/scopes/widgets", None);
-    assert_eq!(status, 200, "the scope must be readable, got {scope}");
-    let before = head(&server);
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/scopes/widgets",
-        Some(&json!({
-            "implies": scope["implies"],
-            "triggers": [{ "on": "tool_input", "pattern": "(unclosed" }],
-            "base_version": scope["version"],
-            "author": AUTHOR,
-            "message": "add a pattern that does not compile",
-        })),
-    );
-
-    assert_eq!(
-        status, 422,
-        "a pattern that does not compile must be refused, got {answer}"
-    );
-    assert!(
-        answer["errors"].as_array().is_some_and(|errors| errors
-            .iter()
-            .any(|error| error["path"] == json!("scopes/widgets.yaml"))),
-        "the refusal must name the scope file, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused write must leave the store as it was"
-    );
-}
-
-/// Detects a write path that refuses `machine` on a trigger that names a text
-/// field: `machine` is a plain conjunct on every trigger, so a scope restricted
-/// to the tools of one machine must be savable through the API that the scope
-/// page writes with.
-#[test]
-fn a_scope_write_with_a_machine_on_a_tool_name_trigger_is_accepted_and_kept() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let (status, scope) = server.api("GET", "/api/scopes/widgets", None);
-    assert_eq!(status, 200, "the scope must be readable, got {scope}");
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/scopes/widgets",
-        Some(&json!({
-            "implies": scope["implies"],
-            "triggers": [{ "on": "tool_name", "pattern": "Bash", "machine": "alpha" }],
-            "base_version": scope["version"],
-            "author": AUTHOR,
-            "message": "restrict the tool trigger to alpha",
-        })),
-    );
-    assert_eq!(
-        status, 200,
-        "a machine on a tool_name trigger must be accepted, got {answer}"
-    );
-
-    let (status, saved) = server.api("GET", "/api/scopes/widgets", None);
-    assert_eq!(status, 200, "the scope must be readable again, got {saved}");
-    assert_eq!(
-        saved["triggers"],
-        json!([{ "on": "tool_name", "pattern": "Bash", "machine": "alpha" }]),
-        "the machine must survive the write, got {saved}"
-    );
-}
-
-/// Detects a scope's message dropped anywhere between the write and the reader:
-/// the page that edits a scope reads it back from the index row as well as from
-/// the scope itself, and a message the store keeps but the API hides cannot be
-/// edited or even seen.
-///
-/// Source: issue #7, where a scope file may carry a short message.
-#[test]
-fn a_scope_written_with_a_message_reads_back_with_it_in_the_scope_and_in_the_index() {
+fn writing_a_scope_answers_200_and_it_reads_back_through_the_scope_and_the_index_routes() {
     let server = TestServer::start(example_store_files(), |_| {});
     let read = scope(&server, "widgets");
     let message = "Part numbers are never renumbered.";
+    let triggers = json!([{ "on": "tool_name", "pattern": "Bash", "machine": "alpha" }]);
 
     let (status, answer) = server.api(
         "PUT",
         "/api/scopes/widgets",
         Some(&json!({
             "implies": read["implies"],
-            "triggers": read["triggers"],
+            "triggers": triggers,
             "scope_message": message,
-            "base_version": read["version"],
-            "author": AUTHOR,
-            "message": "give the widgets scope a message",
-        })),
-    );
-    assert_eq!(
-        status, 200,
-        "a write with a message must be taken, got {answer}"
-    );
-
-    assert_eq!(
-        scope(&server, "widgets")["message"],
-        json!(message),
-        "the scope must read back with the message it was written with"
-    );
-    assert_eq!(
-        index_row(&scope_index(&server), "widgets")["file"]["message"],
-        json!(message),
-        "the index row's file must carry the message"
-    );
-    assert!(
-        server
-            .store()
-            .file_text("scopes/widgets.yaml")
-            .contains(message),
-        "the message must be in the scope file, got {:?}",
-        server.store().file_text("scopes/widgets.yaml")
-    );
-}
-
-/// Detects a scope's forget rule dropped between the write and the reader: the
-/// page that edits a scope reads it back from the index row as well as from the
-/// scope itself, and a rule the store keeps but the API hides cannot be edited or
-/// even seen.
-///
-/// Source: this ticket, where a scope file may declare when it turns itself off.
-#[test]
-fn a_scope_written_with_a_forget_rule_reads_back_with_it_in_the_scope_and_in_the_index() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let read = scope(&server, "widgets");
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/scopes/widgets",
-        Some(&json!({
-            "implies": read["implies"],
-            "triggers": read["triggers"],
             "forget": { "tokens_since_trigger": 50000 },
             "base_version": read["version"],
             "author": AUTHOR,
-            "message": "let the widgets scope forget itself",
+            "message": "restrict the widgets trigger and give the scope a message",
         })),
     );
+
     assert_eq!(
         status, 200,
-        "a write with a forget rule must be taken, got {answer}"
+        "the scope write must be accepted, got {answer}"
+    );
+    let written = scope(&server, "widgets");
+    assert_eq!(
+        (
+            written["message"].clone(),
+            written["triggers"].clone(),
+            written["forget"].clone()
+        ),
+        (
+            json!(message),
+            triggers.clone(),
+            json!({ "tokens_since_trigger": 50000 })
+        ),
+        "the scope must read back with everything the write sent, got {written}"
     );
 
+    let (status, index) = server.api("GET", "/api/scopes", None);
+    assert_eq!(status, 200, "the scopes must be readable, got {index}");
+    let row = index
+        .as_array()
+        .expect("the scope index is a list")
+        .iter()
+        .find(|row| row["id"] == json!("widgets"))
+        .unwrap_or_else(|| panic!("widgets must be listed, got {index}"));
     assert_eq!(
-        scope(&server, "widgets")["forget"],
-        json!({ "tokens_since_trigger": 50000 }),
-        "the scope must read back with the rule it was written with"
-    );
-    assert_eq!(
-        index_row(&scope_index(&server), "widgets")["file"]["forget"],
-        json!({ "tokens_since_trigger": 50000 }),
-        "the index row's file must carry the rule"
-    );
-    assert!(
-        server
-            .store()
-            .file_text("scopes/widgets.yaml")
-            .contains("tokens_since_trigger: 50000"),
-        "the rule must be in the scope file, got {:?}",
-        server.store().file_text("scopes/widgets.yaml")
-    );
-
-    let (status, refused) = server.api(
-        "PUT",
-        "/api/scopes/widgets",
-        Some(&json!({
-            "implies": read["implies"],
-            "triggers": read["triggers"],
-            "forget": { "tokens_since_trigger": 0 },
-            "base_version": scope(&server, "widgets")["version"],
-            "author": AUTHOR,
-            "message": "forget the widgets scope at once",
-        })),
-    );
-    assert_eq!(
-        status, 422,
-        "a count of zero must be refused, got {refused}"
+        (row["kind"].clone(), row["file"]["message"].clone()),
+        (json!("file"), json!(message)),
+        "the index row must report the kind and carry the scope's file, got {row}"
     );
 }
 
-/// Detects a reader that rejects the `type` label scope files used to carry,
-/// which would make every scope of a store written before the label was dropped
-/// unreadable, and a writer that puts the label back into the file it saves.
-#[test]
-fn a_scope_file_with_a_legacy_type_key_loads_and_the_key_is_not_written_back() {
-    let mut files = example_store_files();
-    files.push((
-        "scopes/legacy.yaml".to_owned(),
-        Some(b"id: legacy\ntype: project\nimplies: [rocketry]\n".to_vec()),
-    ));
-    let server = TestServer::start(files, |_| {});
-
-    let (status, scope) = server.api("GET", "/api/scopes/legacy", None);
-    assert_eq!(
-        status, 200,
-        "a scope file carrying a legacy type key must still load, got {scope}"
-    );
-    assert_eq!(
-        scope["implies"],
-        json!(["rocketry"]),
-        "the keys the format defines must survive the legacy key, got {scope}"
-    );
-    assert!(
-        scope.get("type").is_none(),
-        "a scope must not report a type, got {scope}"
-    );
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/scopes/legacy",
-        Some(&json!({
-            "implies": ["rocketry"],
-            "triggers": [{ "on": "tool_input", "pattern": "legacy" }],
-            "base_version": scope["version"],
-            "author": AUTHOR,
-            "message": "add a trigger to the legacy scope",
-        })),
-    );
-    assert_eq!(status, 200, "the write must succeed, got {answer}");
-
-    let on_disk = std::fs::read_to_string(server.store().path().join("scopes/legacy.yaml"))
-        .expect("the saved scope file is readable");
-    assert!(
-        !on_disk.contains("type"),
-        "the saved file must not carry the legacy key, got {on_disk:?}"
-    );
-    assert!(
-        on_disk.contains("legacy"),
-        "the saved file must carry the write, got {on_disk:?}"
-    );
-}
-
-/// Detects a scope delete that answers 200 without taking the file out of the
-/// store, one that removes it in more than one commit, and one that leaves the
-/// scope in the index a person picks scopes from: an editor would keep offering a
-/// scope that is gone.
+/// Detects a scope delete that answers 200 while the scope is still readable, or
+/// that leaves it in the index a person picks scopes from: an editor would keep
+/// offering a scope that is gone.
 ///
 /// `workshop` is the example store's scope that no memory lists and no other
 /// scope implies, so nothing about the store refuses this deletion.
 #[test]
-fn deleting_an_unreferenced_scope_removes_the_file_in_one_commit_and_stops_listing_it() {
+fn deleting_a_scope_answers_200_with_the_commit_and_the_scope_is_then_missing() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let path = "scopes/workshop.yaml";
-    let before = commits_touching(&server, path).len();
-    let message = "the workshop directory moved off this machine";
 
     let (status, answer) = server.api(
         "DELETE",
@@ -1389,418 +525,26 @@ fn deleting_an_unreferenced_scope_removes_the_file_in_one_commit_and_stops_listi
         Some(&json!({
             "base_version": scope(&server, "workshop")["version"],
             "author": AUTHOR,
-            "message": message,
+            "message": "the workshop directory moved off this machine",
         })),
     );
 
     assert_eq!(status, 200, "the delete must be accepted, got {answer}");
-    let commits = commits_touching(&server, path);
     assert_eq!(
-        commits.len(),
-        before + 1,
-        "the delete must make exactly one commit, got {commits:?}"
-    );
-    assert_eq!(
-        commits[0],
-        (AUTHOR.to_string(), message.to_string()),
-        "the commit must carry the author and the message the delete gave"
-    );
-    assert_eq!(
-        file_at(
-            &server,
-            answer["commit_oid"]
-                .as_str()
-                .unwrap_or_else(|| panic!("the answer must name the commit, got {answer}")),
-            path,
-        ),
-        None,
-        "the commit the delete reports must be one whose tree has no file for the scope"
-    );
-    assert!(
-        !scope_ids(&server).contains(&"workshop".to_string()),
-        "a deleted scope must not be in the scope index"
+        answer["commit_oid"].as_str(),
+        Some(head(&server).as_str()),
+        "the answer must name the commit the delete made, got {answer}"
     );
     let (status, gone) = server.api("GET", "/api/scopes/workshop", None);
     assert_eq!(
         status, 404,
         "a deleted scope must no longer be readable, got {gone}"
     );
-}
-
-/// Detects a scope delete that goes ahead while a memory still lists the scope:
-/// the store would be left with a memory naming a scope that does not exist,
-/// which `forgetmenot check` calls invalid, and the memory would be due in no
-/// context with nothing saying why.
-#[test]
-fn deleting_a_scope_a_memory_still_lists_is_refused_naming_that_memory_and_makes_no_commit() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    // widget-naming is the example store's memory scoped to `widgets`.
-    let version = scope(&server, "widgets")["version"].clone();
-    let before = head(&server);
-
-    let (status, answer) = server.api(
-        "DELETE",
-        "/api/scopes/widgets",
-        Some(&json!({
-            "base_version": version,
-            "author": AUTHOR,
-            "message": "widgets are not made here any more",
-        })),
-    );
-
-    assert_eq!(
-        status, 422,
-        "deleting a scope a memory lists must be refused, got {answer}"
-    );
+    let (status, index) = server.api("GET", "/api/scopes", None);
+    assert_eq!(status, 200, "the scopes must be readable, got {index}");
     assert!(
-        answer["errors"].as_array().is_some_and(|errors| errors
-            .iter()
-            .any(|error| error["path"] == json!("memories/widget-naming.md"))),
-        "the refusal must name the memory that has to be edited first, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused delete must leave the store as it was"
-    );
-    assert!(
-        scope_ids(&server).contains(&"widgets".to_string()),
-        "a refused delete must leave the scope in the index"
-    );
-}
-
-/// Detects a scope delete that only looks at the memories: a scope whose
-/// `implies` target is gone is just as invalid, and the implication would
-/// silently stop turning anything on.
-#[test]
-fn deleting_a_scope_another_scope_implies_is_refused_naming_that_scope_and_makes_no_commit() {
-    let mut files = example_store_files();
-    files.push((
-        "scopes/bench.yaml".to_owned(),
-        Some(b"id: bench\nimplies: [workshop]\n".to_vec()),
-    ));
-    let server = TestServer::start(files, |_| {});
-    let before = head(&server);
-
-    let (status, answer) = server.api(
-        "DELETE",
-        "/api/scopes/workshop",
-        Some(&json!({
-            "base_version": scope(&server, "workshop")["version"],
-            "author": AUTHOR,
-            "message": "the workshop directory moved off this machine",
-        })),
-    );
-
-    assert_eq!(
-        status, 422,
-        "deleting a scope another scope implies must be refused, got {answer}"
-    );
-    assert!(
-        answer["errors"].as_array().is_some_and(|errors| errors
-            .iter()
-            .any(|error| error["path"] == json!("scopes/bench.yaml"))),
-        "the refusal must name the scope that has to be edited first, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused delete must leave the store as it was"
-    );
-    assert!(
-        scope_ids(&server).contains(&"workshop".to_string()),
-        "a refused delete must leave the scope in the index"
-    );
-}
-
-/// Detects a scope delete that ignores the version it was made from: an editor
-/// holding a scope as it was before someone else changed its triggers would
-/// remove work it never saw.
-#[test]
-fn a_scope_delete_from_a_stale_version_is_refused_and_leaves_the_scope_in_the_store() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let stale = scope(&server, "workshop");
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/scopes/workshop",
-        Some(&json!({
-            "implies": stale["implies"],
-            "triggers": [{ "on": "tool_input", "pattern": "bench" }],
-            "base_version": stale["version"],
-            "author": AUTHOR,
-            "message": "match the bench in tool input as well",
-        })),
-    );
-    assert_eq!(
-        status, 200,
-        "the other editor's write must land, got {answer}"
-    );
-    let after_write = head(&server);
-
-    let (status, answer) = server.api(
-        "DELETE",
-        "/api/scopes/workshop",
-        Some(&json!({
-            "base_version": stale["version"],
-            "author": AUTHOR,
-            "message": "the workshop directory moved off this machine",
-        })),
-    );
-
-    assert_eq!(
-        status, 409,
-        "a delete from a stale version must be refused, got {answer}"
-    );
-    assert_ne!(
-        answer["current"]["version"].as_str(),
-        stale["version"].as_str(),
-        "the refusal must carry the scope as the store has it, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        after_write,
-        "a refused delete must leave the store as it was"
-    );
-    assert!(
-        scope_ids(&server).contains(&"workshop".to_string()),
-        "a refused delete must leave the scope in the index"
-    );
-}
-
-/// Detects an implicit scope being answered as a document that could be deleted:
-/// `global` has no file, and a delete that reported anything but a refusal would
-/// suggest a session's own scopes can be taken away from it.
-#[test]
-fn deleting_an_implicit_scope_is_refused_as_a_bad_request() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let before = head(&server);
-
-    let (status, answer) = server.api(
-        "DELETE",
-        "/api/scopes/global",
-        Some(&json!({
-            "base_version": before,
-            "author": AUTHOR,
-            "message": "remove the global scope",
-        })),
-    );
-
-    assert_eq!(
-        status, 400,
-        "deleting an implicit scope must be a bad request, got {answer}"
-    );
-    assert!(
-        answer["error"].is_string(),
-        "a 400 must carry a message, got {answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused delete must leave the store as it was"
-    );
-}
-
-/// The name the user gave the session of the scope index tests, which is what
-/// the index reports for that session's scope.
-const INDEX_SESSION_TITLE: &str = "Bracket rework on the vacuum former";
-
-/// A memory of a machine the server has never heard from, for the test that a
-/// store file is enough to make that machine's scope exist. The content is
-/// invented.
-const GAMMA_MEMORY: &str = concat!(
-    "---\n",
-    "name: lathe-coolant\n",
-    "description: The lathe on gamma runs on neat cutting oil, never emulsion\n",
-    "metadata:\n",
-    "  kind: knowledge\n",
-    "  scopes:\n",
-    "  - machine:gamma\n",
-    "  source: user\n",
-    "---\n",
-    "# The lathe on gamma runs on neat cutting oil\n",
-    "\n",
-    "The lathe takes neat cutting oil; emulsion is for the mill.\n",
-);
-
-/// Detects an index that reports one family of scopes only: a page that offers
-/// the file-backed scopes alone cannot show what a session is working under,
-/// and one that reports no kind cannot tell a scope that has a file to edit
-/// from one that has none. It also detects an id invented for a row, which
-/// would offer a scope that no file and no context names.
-///
-/// Source: a scope with a file exists by its file, `global` exists always, and
-/// a machine or a session scope exists once the server has seen that machine or
-/// that session or a store file names it. The example store has three scope
-/// files and a memory in the silo of `alpha/session-1`; the event below is the
-/// only one this server has ever had.
-#[test]
-fn the_scope_index_lists_every_existing_scope_with_its_kind() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook_named(
-        "alpha",
-        SOME_TOKENS,
-        Some(INDEX_SESSION_TITLE),
-        None,
-        &hook_fixture("session_start"),
-    );
-
-    let index = scope_index(&server);
-
-    assert_eq!(
-        index_row_ids(&index),
-        vec![
-            "global",
-            "machine:alpha",
-            "rocketry",
-            "session:alpha/session-1",
-            "widgets",
-            "workshop",
-        ],
-        "the index must list every scope that exists, each once and in order of \
-         id, and nothing else, got {index}"
-    );
-    let global = index_row(&index, "global");
-    assert_eq!(
-        global["kind"],
-        json!("global"),
-        "the scope every session starts in must be reported as such, got {global}"
-    );
-    assert_eq!(
-        global["file"],
-        json!(null),
-        "a scope with no file must carry none, got {global}"
-    );
-    assert_eq!(
-        index_row(&index, "machine:alpha")["kind"],
-        json!("machine"),
-        "the scope of the machine that sent the event must be reported as a \
-         machine, got {index}"
-    );
-    let session = index_row(&index, "session:alpha/session-1");
-    assert_eq!(
-        session["kind"],
-        json!("session"),
-        "the scope of the session that sent the event must be reported as a \
-         session, got {session}"
-    );
-    assert_eq!(
-        session["name"],
-        json!(INDEX_SESSION_TITLE),
-        "a session with a live context must be named as the contexts page names \
-         it, got {session}"
-    );
-    for id in ["rocketry", "widgets", "workshop"] {
-        let row = index_row(&index, id);
-        assert_eq!(
-            row["kind"],
-            json!("file"),
-            "a scope with a file must be reported as such, got {row}"
-        );
-        assert!(
-            row["file"]["version"].is_string(),
-            "a file row must carry the version a write goes against, got {row}"
-        );
-        assert!(
-            row["file"]["implies"].is_array() && row["file"]["triggers"].is_array(),
-            "a file row must carry what the scope file says, got {row}"
-        );
-    }
-}
-
-/// Detects an index that takes a context's active set as a source of scopes: a
-/// scope that was deleted has no file and nothing else names it, so it exists
-/// no longer, and an index that listed it would offer a scope that cannot be
-/// read, edited or deleted. The context's own set is reported as it stands,
-/// because that is what the session is working under.
-///
-/// Source: a reference never creates a scope of the file kind. `workshop` is
-/// the example store's scope that no memory lists and no other scope implies,
-/// and its directory trigger turns it on for a session on `alpha`.
-#[test]
-fn a_deleted_scope_leaves_the_index_while_a_context_still_names_it() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let mut start = hook_fixture("session_start");
-    start["cwd"] = json!("/workshop/bench");
-    server.hook("alpha", SOME_TOKENS, &start);
-    assert!(
-        active_scopes(&server, "alpha/session-1").contains("workshop"),
-        "the directory must turn the scope on, or there is nothing to delete \
-         under the session"
-    );
-
-    let (status, answer) = server.api(
-        "DELETE",
-        "/api/scopes/workshop",
-        Some(&json!({
-            "base_version": scope(&server, "workshop")["version"],
-            "author": AUTHOR,
-            "message": "the workshop directory moved off this machine",
-        })),
-    );
-    assert_eq!(status, 200, "the delete must be accepted, got {answer}");
-
-    let index = scope_index(&server);
-    assert!(
-        !index_row_ids(&index).contains(&"workshop".to_string()),
-        "a scope whose file is gone must leave the index, whatever a context \
-         still has on, got {index}"
-    );
-    assert!(
-        active_scopes(&server, "alpha/session-1").contains("workshop"),
-        "the context must be reported with the scopes it has on, as they stand"
-    );
-}
-
-/// Detects a session scope listed only while a context is live: the session a
-/// silo belongs to exists as long as its notes are in the store, and a page
-/// that dropped it would leave those notes under a scope nobody can find. It
-/// also detects a name invented for a session nothing is known about.
-///
-/// Source: a session scope exists once the server has seen that session or a
-/// store file names it; the example store carries the memory
-/// `sessions/alpha/session-1/notes` and this server has had no event at all.
-#[test]
-fn a_session_with_a_silo_memory_is_listed_without_a_live_context() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
-    let index = scope_index(&server);
-
-    let row = index_row(&index, "session:alpha/session-1");
-    assert_eq!(
-        row["kind"],
-        json!("session"),
-        "the scope of the session the silo belongs to must be reported as a \
-         session, got {row}"
-    );
-    assert_eq!(
-        row["name"],
-        json!(null),
-        "a session with no live context has nothing to be named by, got {row}"
-    );
-}
-
-/// Detects a machine list read from the events alone: a memory written for a
-/// machine that has sent nothing names a scope that exists, and an index
-/// without it would report the memory as belonging to no scope in the store.
-///
-/// Source: a machine scope exists once the server has seen that machine or a
-/// store file names it; no event in this test comes from `gamma`.
-#[test]
-fn a_machine_named_only_by_a_memory_is_listed() {
-    let mut files = example_store_files();
-    files.push((
-        "memories/lathe-coolant.md".to_owned(),
-        Some(GAMMA_MEMORY.as_bytes().to_vec()),
-    ));
-    let server = TestServer::start(files, |_| {});
-
-    let index = scope_index(&server);
-
-    assert_eq!(
-        index_row(&index, "machine:gamma")["kind"],
-        json!("machine"),
-        "the scope of the machine the memory names must be listed as a machine, \
-         got {index}"
+        !ids(&index).contains(&"workshop".to_string()),
+        "a deleted scope must not be in the scope index, got {index}"
     );
 }
 
@@ -1808,26 +552,22 @@ fn a_machine_named_only_by_a_memory_is_listed() {
 // Settings
 // ---------------------------------------------------------------------------
 
-/// The settings of the store the server is answering from.
-fn settings(server: &TestServer) -> Value {
-    let (status, answer) = server.api("GET", "/api/settings", None);
-    assert_eq!(
-        status, 200,
-        "reading the settings must succeed, got {answer}"
-    );
-    answer
-}
-
 /// Detects a store with no settings file reported as anything other than the
 /// documented defaults, and one reported with a version a write could send back:
 /// an editor told the file exists would write against a version that is not
-/// there, and one told the wrong defaults would show a behaviour nobody has.
+/// there, and one told the wrong defaults would show a behaviour nobody has. The
+/// schema is what an editor offers the keys from, so a key it does not describe
+/// is a key nobody can set.
+///
+/// Source: the defaults are the ones the README documents for a store nobody has
+/// configured.
 #[test]
-fn the_settings_of_a_store_without_a_file_are_the_defaults_at_no_version() {
+fn the_settings_of_a_store_without_a_file_are_the_defaults_and_the_schema_describes_every_key() {
     let server = TestServer::start(example_store_without_settings(), |_| {});
 
-    let answer = settings(&server);
+    let (status, answer) = server.api("GET", "/api/settings", None);
 
+    assert_eq!(status, 200, "the settings must be readable, got {answer}");
     assert_eq!(
         answer["version"],
         Value::Null,
@@ -1864,14 +604,12 @@ fn the_settings_of_a_store_without_a_file_are_the_defaults_at_no_version() {
     );
 }
 
-/// Detects a write of the first setting that does not create the file, one that
-/// answers 200 without committing, and a change that does not reach the settings
-/// the server answers from: the whole point of the file is that the next read
-/// sees it.
+/// Detects a settings write whose key never leaves the path, or whose answer
+/// does not name the version: the editor sends that version back as the next
+/// write's `base_version`, and without it every second change is a conflict.
 #[test]
-fn writing_a_setting_creates_the_file_in_one_commit_and_changes_what_is_read_back() {
+fn writing_a_setting_answers_200_with_the_version_the_next_write_sends_back() {
     let server = TestServer::start(example_store_without_settings(), |_| {});
-    let before = head(&server);
 
     let (status, written) = server.api(
         "PUT",
@@ -1884,13 +622,8 @@ fn writing_a_setting_creates_the_file_in_one_commit_and_changes_what_is_read_bac
     );
 
     assert_eq!(status, 200, "the write must be accepted, got {written}");
-    assert_ne!(head(&server), before, "the write must make a commit");
-    assert_eq!(
-        commits_touching(&server, "config.yml").len(),
-        1,
-        "the write must make exactly one commit on the settings file"
-    );
-    let answer = settings(&server);
+    let (status, answer) = server.api("GET", "/api/settings", None);
+    assert_eq!(status, 200, "the settings must be readable, got {answer}");
     assert_eq!(
         answer["settings"]["reminder_tokens"],
         json!(150_000),
@@ -1902,136 +635,16 @@ fn writing_a_setting_creates_the_file_in_one_commit_and_changes_what_is_read_bac
     );
 }
 
-/// Detects a write that leaves the settings the store already had: a change to
-/// one key must not quietly take every other one back to its default.
-#[test]
-fn writing_one_setting_leaves_the_others_as_the_store_had_them() {
-    let server = TestServer::start(
-        example_store_with_settings("reminder_tokens: 120000\n"),
-        |_| {},
-    );
-
-    let (status, written) = server.api(
-        "PUT",
-        "/api/settings/deliver_knowledge_index",
-        Some(&json!({
-            "value": false,
-            "author": AUTHOR,
-            "message": "fetch knowledge on demand instead of indexing it",
-        })),
-    );
-
-    assert_eq!(status, 200, "the write must be accepted, got {written}");
-    let answer = settings(&server);
-    assert_eq!(
-        answer["settings"]["deliver_knowledge_index"],
-        json!(false),
-        "the written key must change, got {answer}"
-    );
-    assert_eq!(
-        answer["settings"]["reminder_tokens"],
-        json!(120_000),
-        "the key the write did not name must be left alone, got {answer}"
-    );
-}
-
-/// Detects a settings write that accepts a key this server does not act on, or a
-/// value of the wrong type: either would be a setting written down, committed and
-/// silently doing nothing.
-#[test]
-fn a_setting_this_server_does_not_have_or_a_value_of_the_wrong_type_is_refused() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let before = head(&server);
-
-    let (unknown_key, unknown_answer) = server.api(
-        "PUT",
-        "/api/settings/remind_tokens",
-        Some(&json!({
-            "value": 1_000,
-            "author": AUTHOR,
-            "message": "set a reminder threshold",
-        })),
-    );
-    let (wrong_type, wrong_answer) = server.api(
-        "PUT",
-        "/api/settings/interrupt_on_critical",
-        Some(&json!({
-            "value": "yes",
-            "author": AUTHOR,
-            "message": "hold tool calls for critical memories",
-        })),
-    );
-
-    assert_eq!(
-        unknown_key, 422,
-        "a key this server does not have must be refused, got {unknown_answer}"
-    );
-    assert_eq!(
-        wrong_type, 422,
-        "a value of the wrong type must be refused, got {wrong_answer}"
-    );
-    assert_eq!(
-        head(&server),
-        before,
-        "a refused settings write must leave the store as it was"
-    );
-}
-
-/// Detects a settings write that ignores the version it was made from: two
-/// people changing the settings at once would overwrite each other, and the
-/// second would never see that the first had written anything.
-#[test]
-fn a_settings_write_from_a_stale_version_is_refused_with_the_settings_as_they_are() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let stale = settings(&server);
-    let (status, _) = server.api(
-        "PUT",
-        "/api/settings/reminder_tokens",
-        Some(&json!({
-            "value": 90_000,
-            "base_version": stale["version"],
-            "author": AUTHOR,
-            "message": "remind the agent of the rules every 90k tokens",
-        })),
-    );
-    assert_eq!(status, 200, "the first write must land");
-
-    let (status, answer) = server.api(
-        "PUT",
-        "/api/settings/reminder_tokens",
-        Some(&json!({
-            "value": 10_000,
-            "base_version": stale["version"],
-            "author": AUTHOR,
-            "message": "remind the agent of the rules every 10k tokens",
-        })),
-    );
-
-    assert_eq!(
-        status, 409,
-        "a write from a version that is no longer current must be refused, got {answer}"
-    );
-    assert_eq!(
-        answer["current"]["settings"]["reminder_tokens"],
-        json!(90_000),
-        "the refusal must carry the settings as the store has them, got {answer}"
-    );
-    assert_eq!(
-        settings(&server)["settings"]["reminder_tokens"],
-        json!(90_000),
-        "the refused write must not have changed anything"
-    );
-}
-
 // ---------------------------------------------------------------------------
-// Reads that answer a question about the live server
+// The reads that answer a question about the live server
 // ---------------------------------------------------------------------------
 
 /// Detects a trigger test that reports nothing for a text a scope's pattern
 /// matches, or that does not say which pattern matched: the page exists to show
-/// a person why a scope turns on.
+/// a person why a scope turns on, and a hit without its field and its pattern
+/// says only that something matched.
 #[test]
-fn the_trigger_test_names_the_scope_and_pattern_a_matching_text_fires() {
+fn the_trigger_test_route_names_the_scope_the_field_and_the_pattern_a_text_fires() {
     let server = TestServer::start(example_store_files(), |_| {});
 
     let (status, answer) = server.api(
@@ -2045,10 +658,9 @@ fn the_trigger_test_names_the_scope_and_pattern_a_matching_text_fires() {
     );
 
     assert_eq!(status, 200, "a trigger test must be answered, got {answer}");
-    let fired = answer["fired"]
+    let widgets = answer["fired"]
         .as_array()
-        .expect("the answer lists what fired");
-    let widgets = fired
+        .expect("the answer lists what fired")
         .iter()
         .find(|hit| hit["scope_id"] == json!("widgets"))
         .unwrap_or_else(|| panic!("the widgets trigger must fire on this text, got {answer}"));
@@ -2065,184 +677,66 @@ fn the_trigger_test_names_the_scope_and_pattern_a_matching_text_fires() {
     );
 }
 
-/// Detects a trigger test that ignores the machine qualifier: a path means
-/// different things on different machines, and a directory scope would otherwise
-/// look as if it fired everywhere.
-#[test]
-fn the_trigger_test_applies_the_machine_qualifier_of_a_directory_trigger() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let test_on = |machine: &str| {
-        let (status, answer) = server.api(
-            "POST",
-            "/api/triggers/test",
-            Some(&json!({
-                "field": "shell_directory",
-                "text": "/home/dev/workshop/bench",
-                "machine": machine,
-            })),
-        );
-        assert_eq!(status, 200, "a trigger test must be answered, got {answer}");
-        answer
-    };
-
-    let own_machine = test_on("alpha");
-    assert!(
-        own_machine["fired"]
-            .as_array()
-            .is_some_and(|fired| fired.iter().any(|hit| hit["scope_id"] == json!("workshop"))),
-        "the trigger must fire for the machine it names, got {own_machine}"
-    );
-
-    let other_machine = test_on("beta");
-    assert_eq!(
-        other_machine["fired"],
-        json!([]),
-        "the trigger must not fire for another machine, got {other_machine}"
-    );
-}
-
-/// Detects an `any` trigger that the page cannot show anything about: the
-/// example store's `rocketry` trigger names no field, so it is about every text
-/// a session produces, and a test of a tool input must report it as firing there
-/// like any trigger written for that field.
-#[test]
-fn the_trigger_test_reports_an_any_trigger_for_the_field_it_was_asked_about() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
-    let (status, answer) = server.api(
-        "POST",
-        "/api/triggers/test",
-        Some(&json!({
-            "field": "tool_input",
-            "text": "cargo test -p rocketry",
-            "machine": "beta",
-        })),
-    );
-
-    assert_eq!(status, 200, "a trigger test must be answered, got {answer}");
-    let hit = answer["fired"]
-        .as_array()
-        .expect("the answer lists what fired")
-        .iter()
-        .find(|hit| hit["scope_id"] == json!("rocketry"))
-        .unwrap_or_else(|| panic!("the any trigger must fire on a tool input, got {answer}"));
-    assert_eq!(
-        hit["field"],
-        json!("tool_input"),
-        "the hit must name the field the text was matched as, got {hit}"
-    );
-    assert!(
-        hit["pattern"]
-            .as_str()
-            .is_some_and(|pattern| pattern.contains("rocket")),
-        "the hit must name the pattern that matched, got {hit}"
-    );
-}
-
-/// Detects a trigger test that refuses `any` as the field it is asked about, or
-/// answers it from one field's patterns: `any` is what a person picks when they
-/// do not know which text their pattern will meet, so it must report every
-/// trigger the text fires, whatever field each trigger's own file names.
-#[test]
-fn the_trigger_test_accepts_any_as_the_field_and_reports_every_trigger_the_text_fires() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
-    let (status, answer) = server.api(
-        "POST",
-        "/api/triggers/test",
-        Some(&json!({
-            "field": "any",
-            "text": "the widget on the rocket",
-            "machine": "beta",
-        })),
-    );
-
-    assert_eq!(status, 200, "a trigger test must be answered, got {answer}");
-    let scopes: BTreeSet<&str> = answer["fired"]
-        .as_array()
-        .expect("the answer lists what fired")
-        .iter()
-        .map(|hit| hit["scope_id"].as_str().expect("a scope id is text"))
-        .collect();
-    assert!(
-        scopes.contains("widgets"),
-        "a trigger written for one field must be reported when the field is any, got {answer}"
-    );
-    assert!(
-        scopes.contains("rocketry"),
-        "an any trigger must be reported when the field is any, got {answer}"
-    );
-}
-
 /// Detects a pattern check that calls a pattern the store would refuse good,
 /// which would let an editor save a trigger that can never fire, and one that
 /// reports the refusal without the compiler's message, which leaves the author
 /// with nothing to fix.
 #[test]
-fn the_pattern_check_refuses_a_pattern_that_does_not_compile_and_says_why() {
+fn the_pattern_check_route_says_whether_a_pattern_compiles_and_what_is_wrong_with_it() {
     let server = TestServer::start(example_store_files(), |_| {});
+    let check = |pattern: &str| {
+        let (status, answer) = server.api(
+            "POST",
+            "/api/triggers/validate",
+            Some(&json!({ "pattern": pattern })),
+        );
+        assert_eq!(
+            status, 200,
+            "a pattern check must be answered, got {answer}"
+        );
+        answer
+    };
 
-    let (status, answer) = server.api(
-        "POST",
-        "/api/triggers/validate",
-        Some(&json!({ "pattern": "[unclosed" })),
-    );
-
+    let refused = check("[unclosed");
     assert_eq!(
-        status, 200,
-        "a pattern check must be answered, got {answer}"
-    );
-    assert_eq!(
-        answer["ok"],
+        refused["ok"],
         json!(false),
-        "a pattern that does not compile must not be reported as good, got {answer}"
+        "a pattern that does not compile must not be reported as good, got {refused}"
     );
     assert!(
-        answer["error"]
+        refused["error"]
             .as_str()
             .is_some_and(|message| !message.is_empty()),
-        "the answer must carry what was wrong with the pattern, got {answer}"
-    );
-}
-
-/// Detects a pattern check that refuses a pattern the store carries, which
-/// would stop an editor saving a trigger that works: the pattern here is one of
-/// the example store's own.
-#[test]
-fn the_pattern_check_accepts_a_pattern_the_store_already_carries() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
-    let (status, answer) = server.api(
-        "POST",
-        "/api/triggers/validate",
-        Some(&json!({ "pattern": r"\brocket(s|ry)?\b" })),
+        "the answer must carry what was wrong with the pattern, got {refused}"
     );
 
+    // One of the example store's own patterns, so a check that refuses it would
+    // refuse a trigger the store already carries.
+    let accepted = check(r"\brocket(s|ry)?\b");
     assert_eq!(
-        status, 200,
-        "a pattern check must be answered, got {answer}"
-    );
-    assert_eq!(
-        answer["ok"],
+        accepted["ok"],
         json!(true),
-        "a pattern that compiles must be reported as good, got {answer}"
+        "a pattern that compiles must be reported as good, got {accepted}"
     );
     assert!(
-        answer.get("error").is_none(),
-        "a pattern that compiles must carry no error, got {answer}"
+        accepted.get("error").is_none(),
+        "a pattern that compiles must carry no error, got {accepted}"
     );
 }
 
-/// Detects a machine list read from the live contexts alone, or from the log
-/// alone: a restart empties neither, but a machine whose sessions are over is
-/// only in the log, and the list is what the frontend offers wherever a machine
-/// is picked, so a name missing from it cannot be chosen at all.
+/// Detects a machines route that answers something other than a list of names:
+/// it is what the frontend offers wherever a machine is picked, so a machine
+/// missing from it cannot be chosen at all.
 #[test]
-fn the_machines_page_lists_every_machine_that_has_sent_an_event_across_a_restart() {
-    let mut server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    server.hook("beta", SOME_TOKENS, &hook_fixture("session_start"));
-    server.restart();
+fn the_machines_route_answers_every_machine_that_has_sent_an_event_as_a_list_of_names() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    for machine in ["alpha", "beta"] {
+        server.hook(
+            machine,
+            Some(10_000),
+            &common::hook_fixture("session_start"),
+        );
+    }
 
     let (status, answer) = server.api("GET", "/api/machines", None);
 
@@ -2253,450 +747,100 @@ fn the_machines_page_lists_every_machine_that_has_sent_an_event_across_a_restart
         .iter()
         .map(|machine| machine.as_str().expect("a machine name is text"))
         .collect();
-    for expected in ["alpha", "beta"] {
-        assert!(
-            machines.contains(&expected),
-            "{expected} sent an event, so it must be listed, got {answer}"
-        );
-    }
-    let mut sorted_without_repeats = machines.clone();
-    sorted_without_repeats.sort_unstable();
-    sorted_without_repeats.dedup();
     assert_eq!(
-        machines, sorted_without_repeats,
-        "the machines must be sorted and named once each, got {answer}"
+        machines,
+        vec!["alpha", "beta"],
+        "every machine that sent an event must be named once, got {answer}"
     );
 }
 
-/// The name the user gave the session in the tests below, longer than the 80
-/// characters a task or a prompt is cut to: a title is a name the user typed,
-/// so it is listed whole.
-const GIVEN_TITLE: &str =
-    "Rebuild the vacuum former thermocouple rig and write up what the old one did";
-
-/// A first prompt whose 80th character falls inside a word, and which carries
-/// multi-byte characters before that point, so that a cut counting bytes lands
-/// somewhere else and a cut that splits a character is not valid text at all.
-const FIRST_PROMPT: &str = "Prüfe die Späne am Drehbankbett und melde jeden Wert über neunzig Grad sofort der Werkstatt weiter";
-
-/// What [`FIRST_PROMPT`] is listed as. Computed from the rule rather than
-/// captured: its first 80 characters end "… sofort de", the last space among
-/// them is the one before "der", so what is kept is the 77 characters up to
-/// "sofort" and one `…` stands for the rest.
-const FIRST_PROMPT_NAME: &str =
-    "Prüfe die Späne am Drehbankbett und melde jeden Wert über neunzig Grad sofort…";
-
-/// The row of one context in the answer of `GET /api/contexts`.
-fn context_row<'answer>(answer: &'answer Value, key: &str) -> &'answer Value {
-    answer
-        .as_array()
-        .expect("the contexts are a list")
-        .iter()
-        .find(|row| row["key"] == json!(key))
-        .unwrap_or_else(|| panic!("{key} must be listed, got {answer}"))
-}
-
-/// The scopes one context has active, as `GET /api/contexts` reports them.
-fn active_scopes(server: &TestServer, key: &str) -> BTreeSet<String> {
-    let (status, answer) = server.api("GET", "/api/contexts", None);
-    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    context_row(&answer, key)["active_scopes"]
-        .as_array()
-        .expect("the active scopes are a list")
-        .iter()
-        .map(|scope| scope.as_str().expect("a scope is text").to_string())
-        .collect()
-}
-
-/// The keys of every context in the answer of `GET /api/contexts`, in the order
-/// the answer lists them.
-fn context_keys(answer: &Value) -> Vec<&str> {
-    answer
-        .as_array()
-        .expect("the contexts are a list")
-        .iter()
-        .map(|row| row["key"].as_str().expect("a key is text"))
-        .collect()
-}
-
-/// One recorded payload as an event of the session `session_id`, for the tests
-/// that need more than the one session the payloads carry.
-fn event_of_session(name: &str, session_id: &str) -> Value {
-    let mut event = hook_fixture(name);
-    event
-        .as_object_mut()
-        .expect("the payload is an object")
-        .insert("session_id".to_string(), json!(session_id));
-    event
-}
-
-/// Detects a contexts page that lists sessions by their identifiers alone: the
-/// name the user gave a session with `/rename` is the only thing that says what
-/// the session is, and a page that drops it cannot be read. It also detects the
-/// name being recorded before the session start wipes the context clean, which
-/// would leave the session that had just been named nameless.
+/// Detects a contexts row that leaves out one of the columns the page is built
+/// from: the name, the session a subagent runs in, the scopes it works under,
+/// how much it holds and when it was last heard from are the whole of the table,
+/// and a column the API does not carry is one the page cannot show.
 #[test]
-fn the_contexts_page_names_a_session_by_the_title_the_user_gave_it() {
+fn the_contexts_route_answers_a_row_with_the_name_parent_scopes_and_counts_the_page_shows() {
     let server = TestServer::start(example_store_files(), |_| {});
+    let title = "Bracket rework on the vacuum former";
+    let task = "Survey the rocketry crate and list its public functions";
     server.hook_named(
         "alpha",
-        SOME_TOKENS,
-        Some(GIVEN_TITLE),
-        Some(FIRST_PROMPT),
-        &hook_fixture("session_start"),
-    );
-
-    let (status, answer) = server.api("GET", "/api/contexts", None);
-
-    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    let row = context_row(&answer, "alpha/session-1");
-    assert_eq!(
-        row["name"],
-        json!(GIVEN_TITLE),
-        "a session the user named must be listed under that name, whole, got {row}"
-    );
-}
-
-/// Detects a name cut by bytes rather than by characters, and one cut in the
-/// middle of a word: a session nobody named is listed by its first prompt, and
-/// a prompt runs to paragraphs, so it is cut to fit one cell of the table. A
-/// cut counted in bytes lands in a different place, and one that splits a
-/// multi-byte character produces text no reader can show.
-#[test]
-fn the_contexts_page_names_an_unnamed_session_by_its_first_prompt_cut_at_a_word_boundary() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook_named(
-        "alpha",
-        SOME_TOKENS,
+        Some(10_000),
+        Some(title),
         None,
-        Some(FIRST_PROMPT),
-        &hook_fixture("session_start"),
+        &common::hook_fixture("session_start"),
     );
-
-    let (status, answer) = server.api("GET", "/api/contexts", None);
-
-    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    let row = context_row(&answer, "alpha/session-1");
-    assert_eq!(
-        row["name"],
-        json!(FIRST_PROMPT_NAME),
-        "a session nobody named must be listed by its first prompt, cut at a word \
-         boundary and counted in characters, got {row}"
-    );
-}
-
-/// The task the client reads for a subagent out of its metadata file, which is
-/// the only thing that says what a subagent is doing: a `SubagentStart` carries
-/// the subagent's id and type and no task at all.
-const SUBAGENT_TASK: &str = "Survey the rocketry crate and list its public functions";
-
-/// Detects a subagent listed as a session of its own: a subagent's row has to
-/// say which session it runs in, or the list cannot be put in order, and it has
-/// to be named for the task it was given, because a subagent has no title of
-/// its own and its session's first prompt says nothing about what it is doing.
-///
-/// The task is sent with the request and not in the event: the recorded payload
-/// is the one Claude Code 2.1.270 sends, which names no task.
-#[test]
-fn the_contexts_page_reports_a_subagents_parent_and_names_it_by_its_task() {
-    let server = TestServer::start(example_store_files(), |_| {});
-
     server.hook_tasked(
         "alpha",
-        SOME_TOKENS,
-        Some(SUBAGENT_TASK),
-        &hook_fixture("subagent_start"),
+        Some(10_000),
+        Some(task),
+        &common::hook_fixture("subagent_start"),
     );
 
     let (status, answer) = server.api("GET", "/api/contexts", None);
 
     assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    let row = context_row(&answer, "alpha/session-1/agent-7f3a");
+    let session = context_row(&answer, "alpha/session-1");
     assert_eq!(
-        row["parent"],
-        json!("alpha/session-1"),
-        "a subagent must report the session it runs in, got {row}"
+        session["name"],
+        json!(title),
+        "a row must carry the name the page lists the context under, got {session}"
     );
-    assert_eq!(
-        row["name"],
-        json!(SUBAGENT_TASK),
-        "a subagent must be named for the task it was given, not for its session, got {row}"
-    );
-}
-
-/// Detects a subagent whose task could not be read being listed under its
-/// session's name, or under nothing at all: the metadata file may be missing at
-/// the moment the subagent starts, and the kind of subagent is then the only
-/// thing the event says about it.
-#[test]
-fn the_contexts_page_names_a_subagent_with_no_task_by_the_kind_of_subagent_it_is() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let event = hook_fixture("subagent_start");
-    let agent_type = event["agent_type"]
-        .as_str()
-        .expect("the recorded payload names the kind of subagent")
-        .to_string();
-    // The session is named, so a subagent that falls through to its session's
-    // name is caught rather than passing on an empty string.
-    server.hook_named("alpha", SOME_TOKENS, Some(GIVEN_TITLE), None, &event);
-
-    let (status, answer) = server.api("GET", "/api/contexts", None);
-
-    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    let row = context_row(&answer, "alpha/session-1/agent-7f3a");
-    assert_eq!(
-        row["name"],
-        json!(agent_type),
-        "a subagent with no task must be named for what kind of subagent it is, got {row}"
-    );
-}
-
-/// Detects a task recorded only at the event that opens a subagent: the
-/// metadata file is written by Claude Code and may not be readable at the
-/// moment the subagent starts, so a subagent whose first events say nothing
-/// would stay nameless for its whole life although every later event carries
-/// the task.
-#[test]
-fn a_task_carried_by_a_later_event_names_a_subagent_its_start_left_nameless() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let mut start = hook_fixture("subagent_start");
-    // A start that says nothing about the subagent but its id, which is what a
-    // Claude Code that sends no agent_type gives.
-    start
-        .as_object_mut()
-        .expect("the payload is an object")
-        .remove("agent_type");
-    server.hook_tasked("alpha", SOME_TOKENS, None, &start);
-    let (_, before) = server.api("GET", "/api/contexts", None);
-
-    server.hook_tasked(
-        "alpha",
-        SOME_TOKENS,
-        Some(SUBAGENT_TASK),
-        &hook_fixture("pre_tool_use_in_subagent"),
-    );
-    let (status, after) = server.api("GET", "/api/contexts", None);
-
-    assert_eq!(status, 200, "the contexts must be readable, got {after}");
-    assert_eq!(
-        context_row(&before, "alpha/session-1/agent-7f3a")["name"],
-        json!(""),
-        "a subagent nothing has said anything about has no name to show, got {before}"
-    );
-    assert_eq!(
-        context_row(&after, "alpha/session-1/agent-7f3a")["name"],
-        json!(SUBAGENT_TASK),
-        "a task carried by an event inside the subagent must name it, got {after}"
-    );
-}
-
-/// Detects a name overwritten with nothing by an event whose transcript could
-/// not be read: the transcript is missing or unreadable at any event, the
-/// client then sends no name, and a context that took that as the name being
-/// taken away would blink out of the list and back into it as the session ran.
-#[test]
-fn an_event_that_carries_no_title_does_not_erase_the_name_the_context_holds() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let prompt = hook_fixture("user_prompt_submit");
-    server.hook_named(
-        "alpha",
-        SOME_TOKENS,
-        Some(GIVEN_TITLE),
-        Some(FIRST_PROMPT),
-        &prompt,
-    );
-
-    server.hook_named("alpha", SOME_TOKENS, None, None, &prompt);
-    let (_, after_nothing) = server.api("GET", "/api/contexts", None);
-    let renamed = "The thermocouple rig, second attempt";
-    server.hook_named("alpha", SOME_TOKENS, Some(renamed), None, &prompt);
-    let (_, after_rename) = server.api("GET", "/api/contexts", None);
-
-    assert_eq!(
-        context_row(&after_nothing, "alpha/session-1")["name"],
-        json!(GIVEN_TITLE),
-        "an event that says nothing about the name must leave the one held alone, \
-         got {after_nothing}"
-    );
-    assert_eq!(
-        context_row(&after_rename, "alpha/session-1")["name"],
-        json!(renamed),
-        "the last name the user gave the session must be the one listed, got {after_rename}"
-    );
-}
-
-/// Detects a contexts page that cannot see the live state: after a session has
-/// been delivered to, it must be listed with the scopes it works in, or nobody
-/// can tell what a session is currently working under.
-#[test]
-fn the_contexts_page_lists_a_session_after_its_first_event() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-
-    let (status, answer) = server.api("GET", "/api/contexts", None);
-
-    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    let rows = answer.as_array().expect("the contexts are a list");
-    let row = rows
-        .iter()
-        .find(|row| row["key"] == json!("alpha/session-1"))
-        .unwrap_or_else(|| panic!("the session that had an event must be listed, got {answer}"));
-    let scopes: BTreeSet<&str> = row["active_scopes"]
+    let scopes: Vec<&str> = session["active_scopes"]
         .as_array()
         .expect("the active scopes are a list")
         .iter()
         .map(|scope| scope.as_str().expect("a scope is text"))
         .collect();
-    for expected in ["global", "machine:alpha", "session:alpha/session-1"] {
-        assert!(
-            scopes.contains(expected),
-            "the session must be listed as working in {expected}, got {row}"
-        );
-    }
+    assert_eq!(
+        scopes,
+        vec!["global", "machine:alpha", "session:alpha/session-1"],
+        "a row must carry the scopes the context works in, got {session}"
+    );
     assert!(
-        row["delivered_count"]
+        session["delivered_count"]
             .as_u64()
-            .is_some_and(|count| count > 0),
-        "a session that was delivered to must report what it has, got {row}"
+            .is_some_and(|count| count > 0)
+            && session["last_seen"].is_string(),
+        "a row must say how much the context holds and when it was last seen, got {session}"
     );
-    assert!(
-        row["last_seen"].is_string(),
-        "a context must report when it was last seen, got {row}"
+    assert_eq!(
+        context_row(&answer, "alpha/session-1/agent-7f3a")["parent"],
+        json!("alpha/session-1"),
+        "a subagent's row must report the session it runs in, got {answer}"
     );
 }
 
-/// Detects contexts listed in key order, or oldest first: the page is read to
-/// see what is working now, so the session heard from last leads the list and a
-/// session nothing has happened in sinks. Source: the contexts page is ordered
-/// by "Last seen", most recent first (issue #21).
-///
-/// Two lists are read, because each wrong order matches the right one on one of
-/// them: oldest first differs on the list taken after `session-1` is prompted,
-/// key order differs on the one taken after `session-2` is prompted in turn.
+/// Detects a prompt route that does not report the size of the text it renders,
+/// which is the one thing the page is read for, and a mode it has no notion of
+/// answered as though it were one it has, which would show the reader the wrong
+/// text under the right heading.
 #[test]
-fn the_contexts_are_listed_with_the_session_heard_from_last_at_the_top() {
+fn the_prompt_route_answers_the_text_with_its_size_and_refuses_a_mode_it_has_no_notion_of() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let step = Duration::minutes(3);
     server.hook(
         "alpha",
-        SOME_TOKENS,
-        &event_of_session("session_start", "session-1"),
+        Some(10_000),
+        &common::hook_fixture("session_start"),
     );
-    server.advance(step);
-    server.hook(
-        "alpha",
-        SOME_TOKENS,
-        &event_of_session("session_start", "session-2"),
-    );
-    server.advance(step);
 
-    server.hook(
-        "alpha",
-        SOME_TOKENS,
-        &event_of_session("user_prompt_submit", "session-1"),
-    );
-    let (status, after_first) = server.api("GET", "/api/contexts", None);
-    server.advance(step);
-    server.hook(
-        "alpha",
-        SOME_TOKENS,
-        &event_of_session("user_prompt_submit", "session-2"),
-    );
-    let (_, after_second) = server.api("GET", "/api/contexts", None);
+    let (status, all) = server.api("GET", "/api/contexts/alpha/session-1/prompt?mode=all", None);
 
+    assert_eq!(status, 200, "the prompt must be readable, got {all}");
+    let text = all["text"].as_str().expect("the prompt carries text");
     assert_eq!(
-        status, 200,
-        "the contexts must be readable, got {after_first}"
-    );
-    assert_eq!(
-        context_keys(&after_first),
-        vec!["alpha/session-1", "alpha/session-2"],
-        "the session prompted last must lead the list, got {after_first}"
-    );
-    assert_eq!(
-        context_keys(&after_second),
-        vec!["alpha/session-2", "alpha/session-1"],
-        "the list must follow the last event and not the keys, got {after_second}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// The text a context would be given next
-// ---------------------------------------------------------------------------
-
-/// One context's prompt as the API renders it, failing the test when it cannot
-/// be read. `query` is the mode, empty for what the next event would deliver.
-fn prompt(server: &TestServer, key: &str, query: &str) -> Value {
-    let (status, answer) = server.api("GET", &format!("/api/contexts/{key}/prompt{query}"), None);
-    assert_eq!(
-        status, 200,
-        "the prompt of {key} must be readable, got {answer}"
-    );
-    answer
-}
-
-/// The rendered text of one prompt.
-fn prompt_text(answer: &Value) -> &str {
-    answer["text"].as_str().expect("the prompt carries text")
-}
-
-/// How many memories one context is recorded as holding, as `GET /api/contexts`
-/// reports it.
-fn delivered_count(server: &TestServer, key: &str) -> u64 {
-    let (status, answer) = server.api("GET", "/api/contexts", None);
-    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
-    context_row(&answer, key)["delivered_count"]
-        .as_u64()
-        .expect("the delivered count is a number")
-}
-
-/// Detects a due prompt that repeats what the context already holds: a session
-/// that has just been given everything is owed nothing, and a page that shows it
-/// the whole of its rules again would say the next event costs context it does
-/// not cost.
-#[test]
-fn the_due_prompt_of_a_context_that_was_just_given_everything_is_empty() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let (_, start) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    assert!(
-        context_of(&start).contains(BENCH_POWER_BODY),
-        "the session start must have delivered everything this session is owed, got {start}"
-    );
-
-    let due = prompt(&server, "alpha/session-1", "");
-
-    assert_eq!(
-        prompt_text(&due),
-        "",
-        "a context that is owed nothing must render no text, got {due}"
-    );
-    assert_eq!(
-        due["bytes"],
-        json!(0),
-        "an empty text must be reported as no bytes, got {due}"
-    );
-}
-
-/// Detects a whole-prompt mode computed against the context's delivered record
-/// instead of against an empty one: it would answer the same as the due prompt
-/// and never show what a set of scopes costs in full. Detects a byte count or a
-/// token estimate that does not describe the text beside it as well.
-#[test]
-fn the_whole_prompt_of_a_context_carries_every_critical_memory_of_its_scopes_with_its_size() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-
-    let all = prompt(&server, "alpha/session-1", "?mode=all");
-
-    let text = prompt_text(&all);
-    assert!(
-        text.contains(BENCH_POWER_BODY),
-        "the whole prompt must carry the global critical memory in full, got {text:?}"
-    );
-    assert_eq!(
-        all["bytes"],
-        json!(text.len()),
-        "the byte count must be the length of the text beside it, got {all}"
+        (
+            all["bytes"].as_u64(),
+            all["mode"].as_str(),
+            all["key"].as_str()
+        ),
+        (
+            Some(text.len() as u64),
+            Some("all"),
+            Some("alpha/session-1")
+        ),
+        "the answer must carry the size of the text beside it and name the mode and the \
+         context it was rendered for, got {all}"
     );
     assert!(
         all["tokens_estimate"]
@@ -2704,120 +848,23 @@ fn the_whole_prompt_of_a_context_carries_every_critical_memory_of_its_scopes_wit
             .is_some_and(|tokens| tokens >= 1),
         "a text that is not empty must be estimated at a token or more, got {all}"
     );
-    assert_eq!(
-        all["mode"],
-        json!("all"),
-        "the answer must name the mode it was rendered in, got {all}"
-    );
-    assert_eq!(
-        all["key"],
-        json!("alpha/session-1"),
-        "the answer must name the context it was rendered for, got {all}"
-    );
-}
-
-/// Detects a prompt that records what it rendered as delivered: the next hook
-/// event would then leave out the rules a person had only looked at, and the
-/// session would never be given them.
-#[test]
-fn rendering_a_contexts_prompt_leaves_what_it_holds_alone() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    let before = delivered_count(&server, "alpha/session-1");
-    assert!(
-        before > 0,
-        "the session start must have recorded what it delivered"
-    );
-
-    prompt(&server, "alpha/session-1", "");
-    prompt(&server, "alpha/session-1", "?mode=all");
-
-    assert_eq!(
-        delivered_count(&server, "alpha/session-1"),
-        before,
-        "neither prompt may change what the context is recorded as holding"
-    );
-}
-
-/// Detects a prompt route that creates the context it is asked about: a mistyped
-/// key would leave a context nothing ever delivers to in the list, and the
-/// missing one would be answered as though it existed.
-#[test]
-fn a_prompt_for_a_key_no_context_has_been_seen_at_is_not_found_and_creates_nothing() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-
-    let (status, answer) = server.api("GET", "/api/contexts/alpha/nobody/prompt", None);
-
-    assert_eq!(
-        status, 404,
-        "a key no context has been seen at must be reported as missing, got {answer}"
-    );
-    let (status, contexts) = server.api("GET", "/api/contexts", None);
-    assert_eq!(status, 200, "the contexts must be readable, got {contexts}");
-    assert!(
-        !context_keys(&contexts).contains(&"alpha/nobody"),
-        "the key must not have been created by asking about it, got {contexts}"
-    );
-}
-
-/// Detects a due prompt read from what the last event delivered rather than from
-/// the store as it is now: a rule rewritten outside the server is owed to the
-/// session at its next event, and a page that cannot show it before that event
-/// says nothing is coming when a rule is.
-#[test]
-fn the_due_prompt_carries_a_memory_rewritten_since_the_last_event() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    let (_, start) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    assert!(
-        context_of(&start).contains(BENCH_POWER_BODY),
-        "the memory has to have been delivered before it can change, got {start}"
-    );
-    let path = "memories/bench-power.md";
-    let mut text = server.store().file_text(path);
-    text.push_str("\nThe key to the bench cupboard hangs by the door.\n");
-    server.commit(
-        "add the cupboard key to the bench rule",
-        vec![(path.to_string(), Some(text.into_bytes()))],
-    );
-
-    let due = prompt(&server, "alpha/session-1", "");
-
-    assert!(
-        prompt_text(&due).contains(BENCH_POWER_BODY),
-        "the rewritten rule must be due in full before the next event, got {due}"
-    );
-    assert!(
-        due["bytes"].as_u64().is_some_and(|bytes| bytes > 0),
-        "a prompt that carries a rule must report the bytes it costs, got {due}"
-    );
-}
-
-/// Detects a mode the route does not understand being answered as though it were
-/// one it does: a reader asking for a text this route has no notion of would be
-/// shown the due prompt and read it as the other one.
-#[test]
-fn a_prompt_mode_the_route_does_not_know_is_refused() {
-    let server = TestServer::start(example_store_files(), |_| {});
-    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
 
     let (status, answer) = server.api(
         "GET",
         "/api/contexts/alpha/session-1/prompt?mode=everything",
         None,
     );
-
     assert_eq!(
         status, 400,
         "a mode this route has no notion of must be refused, got {answer}"
     );
 }
 
-/// Detects a review page computed once at start instead of from the store as it
-/// is: a link broken by a commit made outside the server would never be
-/// reported, and the page would say the store is clean while it is not.
+/// Detects a review route that answers only one of the two things the page
+/// shows: what is wrong with the store, and the critical memories that reach
+/// every session on every machine.
 #[test]
-fn the_review_page_reports_a_link_left_unresolved_by_a_later_commit() {
+fn the_review_route_answers_the_stores_problems_and_its_global_only_critical_memories() {
     let server = TestServer::start(example_store_files(), |_| {});
     let (status, clean) = server.api("GET", "/api/review", None);
     assert_eq!(status, 200, "the review must be readable, got {clean}");
@@ -2825,6 +872,18 @@ fn the_review_page_reports_a_link_left_unresolved_by_a_later_commit() {
         clean["errors"],
         json!([]),
         "the example store must start clean, got {clean}"
+    );
+    let global_only: Vec<&str> = clean["global_only_critical"]
+        .as_array()
+        .expect("the report lists the global-only critical memories")
+        .iter()
+        .map(|id| id.as_str().expect("an id is text"))
+        .collect();
+    assert_eq!(
+        global_only,
+        vec!["bench-power"],
+        "a critical memory scoped only to global must be listed and one with a scope of its \
+         own must not, got {clean}"
     );
 
     server.commit(
@@ -2840,76 +899,227 @@ fn the_review_page_reports_a_link_left_unresolved_by_a_later_commit() {
 
     let (status, answer) = server.api("GET", "/api/review", None);
     assert_eq!(status, 200, "the review must be readable, got {answer}");
-    let errors = answer["errors"]
-        .as_array()
-        .expect("the report lists errors");
     assert!(
-        errors.iter().any(|error| {
-            error["path"] == json!("memories/bench-checks.md")
-                && error["message"]
-                    .as_str()
-                    .is_some_and(|message| message.contains("meter-calibration"))
-        }),
-        "the unresolved link must be reported with its file and target, got {answer}"
+        answer["errors"]
+            .as_array()
+            .expect("the report lists errors")
+            .iter()
+            .any(|error| {
+                error["path"] == json!("memories/bench-checks.md") && error["message"].is_string()
+            }),
+        "a problem must be reported with the file it is in and a message, got {answer}"
     );
 }
 
-/// Detects a review page that does not single out the critical memories every
-/// session gets: a critical memory whose only scope is `global` interrupts every
-/// session on every machine, which is what the page exists to make visible.
+// ---------------------------------------------------------------------------
+// How an operation's failure is answered
+// ---------------------------------------------------------------------------
+
+/// Detects a refusal answered as a server failure, or as a plain message: the
+/// edit form shows one entry per problem beside the file it is in, so a refusal
+/// without `errors`, or with an entry naming no path, leaves the author with
+/// nothing to correct.
 #[test]
-fn the_review_page_lists_the_critical_memories_that_are_global_only() {
+fn a_write_the_store_refuses_is_422_with_an_errors_entry_naming_the_file() {
     let server = TestServer::start(example_store_files(), |_| {});
+    let current = document(&server, "reading-list");
+    let before = head(&server);
+    let refused = |body: &Value| {
+        let (status, answer) = server.api("PUT", "/api/memories/reading-list", Some(body));
+        assert_eq!(status, 422, "the write must be refused, got {answer}");
+        answer
+    };
 
-    let (status, answer) = server.api("GET", "/api/review", None);
-
-    assert_eq!(status, 200, "the review must be readable, got {answer}");
-    let global_only: Vec<&str> = answer["global_only_critical"]
-        .as_array()
-        .expect("the report lists the global-only critical memories")
-        .iter()
-        .map(|id| id.as_str().expect("an id is text"))
-        .collect();
+    // A memory outside a session silo may not link into one, which is the rule
+    // the silo exists for.
+    let linking = refused(&write_of(
+        &current,
+        "# Where the workshop references live\n\nSee [[sessions/alpha/session-1/notes]].\n",
+        "link the session notes",
+    ));
     assert!(
-        global_only.contains(&"bench-power"),
-        "a critical memory scoped only to global must be listed, got {answer}"
+        linking["errors"]
+            .as_array()
+            .expect("the refusal lists problems")
+            .iter()
+            .any(|error| {
+                error["path"] == json!("memories/reading-list.md")
+                    && error["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("sessions/alpha/session-1/notes"))
+            }),
+        "the refusal must name the file and the target it may not link to, got {linking}"
     );
+
+    // A commit message the history cannot show as one line: the store refuses
+    // it and the answer has to carry the same shape.
+    let blank = refused(&write_of(
+        &current,
+        "# Where the workshop references live\n\nsome text\n",
+        "   ",
+    ));
     assert!(
-        !global_only.contains(&"widget-naming"),
-        "a critical memory with a scope of its own must not be listed, got {answer}"
+        blank["errors"]
+            .as_array()
+            .is_some_and(|errors| errors.len() == 1 && errors[0]["message"].is_string()),
+        "a blank message must be refused with one problem and its message, got {blank}"
+    );
+
+    assert_eq!(
+        head(&server),
+        before,
+        "a refused write must leave the store as it was"
     );
 }
 
-/// Detects a catalog that is not rebuilt after a write through the API: a session
-/// would keep the version it was given and never see the edit, which is the
-/// whole point of delivering changed memories.
+/// Detects a stale write answered as a refusal or a server failure: the editor
+/// tells the two apart by the status, and the document it shows beside the
+/// author's own text is the one the answer carries, so a 409 without `current`
+/// leaves the author with no way to save at all.
 #[test]
-fn a_hook_event_after_a_write_delivers_the_changed_memory() {
+fn a_write_from_a_stale_version_is_409_carrying_the_document_the_store_has_now() {
     let server = TestServer::start(example_store_files(), |_| {});
-    let first = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
-    assert!(
-        !context_of(&first.1).contains(NEW_LINE),
-        "the new line cannot be in the store yet, got {first:?}"
+    let stale = document(&server, "reading-list");
+    let first_body = "# Where the workshop references live\n\nthe first writer's text\n";
+    let (status, _) = server.api(
+        "PUT",
+        "/api/memories/reading-list",
+        Some(&write_of(&stale, first_body, "write from the first editor")),
     );
+    assert_eq!(status, 200, "the first write must land");
 
     let (status, answer) = server.api(
         "PUT",
-        "/api/memories/bench-power",
+        "/api/memories/reading-list",
         Some(&write_of(
-            &document(&server, "bench-power"),
-            "Cut bench power at the wall before rewiring and confirm with the meter",
-            &format!("# Cut bench power before rewiring\n\n{NEW_LINE}\n"),
-            "note where the binder lives",
+            &stale,
+            "# Where the workshop references live\n\nthe second writer's text\n",
+            "write from the second editor",
         )),
     );
-    assert_eq!(status, 200, "the write must land, got {answer}");
 
-    let (status, next) = server.hook("alpha", SOME_TOKENS, &hook_fixture("stop"));
+    assert_eq!(
+        status, 409,
+        "a write from a stale version must be a conflict, got {answer}"
+    );
+    assert_eq!(
+        answer["current"]["body"].as_str(),
+        Some(first_body),
+        "the conflict must carry the document as the store has it, got {answer}"
+    );
+    assert_ne!(
+        answer["current"]["version"].as_str(),
+        stale["version"].as_str(),
+        "the conflict must carry the version that made the write stale, got {answer}"
+    );
+}
 
-    assert_eq!(status, 200, "the next event must be answered");
+/// Detects a resource that is not there, and a request this API will not act on
+/// at all, answered as a server failure: the frontend shows "not found" for the
+/// one and the message for the other, and can do neither with a 500. Every one
+/// of them carries `error`, which is the only body the frontend reads.
+#[test]
+fn a_missing_resource_is_404_and_a_request_the_api_refuses_outright_is_400_each_with_a_message() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let before = head(&server);
+
+    let not_found = [
+        (
+            "a memory the store does not have",
+            "/api/memories/no-such-memory",
+        ),
+        (
+            "a scope the store does not have",
+            "/api/scopes/no-such-scope",
+        ),
+        (
+            "a commit the store does not have",
+            &format!("/api/history/{}", "f".repeat(40)),
+        ),
+        (
+            "an oid that is not a commit at all",
+            "/api/history/not-a-commit",
+        ),
+        (
+            "a context no session has been seen at",
+            "/api/contexts/alpha/nobody/prompt",
+        ),
+    ];
+    for (case, path) in not_found {
+        let (status, answer) = server.api("GET", path, None);
+        assert_eq!(status, 404, "{case} must be a 404, got {answer}");
+        assert!(
+            answer["error"].is_string(),
+            "{case} must be answered with a message, got {answer}"
+        );
+    }
+
+    // `global` has no file, so there is nothing to delete; a delete reported as
+    // anything but a refusal would suggest a session's own scopes can be taken
+    // away from it.
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/scopes/global",
+        Some(&json!({
+            "base_version": before,
+            "author": AUTHOR,
+            "message": "remove the global scope",
+        })),
+    );
+    assert_eq!(
+        status, 400,
+        "deleting an implicit scope must be a bad request, got {answer}"
+    );
     assert!(
-        context_of(&next).contains(NEW_LINE),
-        "the edited memory must be delivered again in full, got {next}"
+        answer["error"].is_string(),
+        "a 400 must carry a message, got {answer}"
+    );
+
+    // A body this route cannot read at all, which is what a client sending the
+    // wrong shape produces.
+    let (status, text) = server.post_raw("/api/memories", "{\"id\":");
+    assert_eq!(
+        status, 400,
+        "a body that is not JSON must be a 400, got {text}"
+    );
+    assert!(
+        text.contains("\"error\""),
+        "a 400 must carry a message, got {text}"
+    );
+
+    assert_eq!(
+        head(&server),
+        before,
+        "none of these may have written anything"
+    );
+}
+
+/// Detects a failure the caller cannot act on answered as a refusal it could:
+/// the frontend would show an editing problem where the store itself is broken,
+/// and the author would rewrite the document for nothing. A 500 carries `error`
+/// like every other failure, because that is the only body the frontend reads.
+#[test]
+fn a_failure_the_caller_cannot_act_on_is_500_with_a_message() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let request = write_of(
+        &document(&server, "reading-list"),
+        &format!("# Where the workshop references live\n\n{NEW_LINE}\n"),
+        "note where the binder lives",
+    );
+    // The store is taken away under the running server, which is the shape of
+    // every failure of the repository itself: nothing about the request is
+    // wrong, and no rewriting of it would help.
+    std::fs::remove_dir_all(server.store().path()).expect("the store directory is removable");
+
+    let (status, answer) = server.api("PUT", "/api/memories/reading-list", Some(&request));
+
+    assert_eq!(
+        status, 500,
+        "a store that cannot be written must be a server failure, got {answer}"
+    );
+    assert!(
+        answer["error"].is_string(),
+        "a 500 must carry a message, got {answer}"
     );
 }
 
@@ -2917,10 +1127,35 @@ fn a_hook_event_after_a_write_delivers_the_changed_memory() {
 // Several writers at once
 // ---------------------------------------------------------------------------
 
-/// Detects a write path that loses a commit under concurrency: sixteen writes to
-/// sixteen different memories must all land, one commit each, in one line of
-/// history with every file present at the end. A lost update or a branch would
-/// mean a memory whose edit is nowhere.
+/// A memory file with a generated name, for the tests that need more memories
+/// than the example store has.
+fn generated_memory(index: usize) -> (String, Option<Vec<u8>>) {
+    let name = format!("note-{index:02}");
+    let text = format!(
+        "---\nname: {name}\ndescription: Generated note {index}, written to test concurrent writes\n---\n# {name}\n\nfirst text\n"
+    );
+    (format!("memories/{name}.md"), Some(text.into_bytes()))
+}
+
+/// Every commit reachable from the store's head, with how many parents it has,
+/// read with a second handle on the repository.
+fn commits_from_head(server: &TestServer) -> Vec<(String, usize)> {
+    let repository = git2::Repository::open(server.store().path()).expect("the store opens");
+    let mut walk = repository.revwalk().expect("the history can be walked");
+    walk.push_head().expect("the store has a head");
+    walk.map(|oid| {
+        let commit = repository
+            .find_commit(oid.expect("an oid in the walk"))
+            .expect("a commit in the walk");
+        (commit.id().to_string(), commit.parent_count())
+    })
+    .collect()
+}
+
+/// Detects a write path that loses a commit under concurrency: sixteen requests
+/// to sixteen different memories, arriving at once over the network, must all
+/// land, one commit each, in one line of history with every file present at the
+/// end. A lost update or a branch would mean a memory whose edit is nowhere.
 #[test]
 fn sixteen_concurrent_writes_to_different_memories_all_land_in_one_line_of_history() {
     let writers = 16;
@@ -2974,12 +1209,6 @@ fn sixteen_concurrent_writes_to_different_memories_all_land_in_one_line_of_histo
         assert_eq!(*status, 200, "the write to note-{index:02} must land");
     }
     for index in 0..writers {
-        let path = format!("memories/note-{index:02}.md");
-        assert_eq!(
-            commits_touching(&server, &path).len(),
-            2,
-            "note-{index:02} must have its fixture commit and exactly one write"
-        );
         let written = document(&server, &format!("note-{index:02}"));
         assert!(
             written["body"]
@@ -3004,7 +1233,7 @@ fn sixteen_concurrent_writes_to_different_memories_all_land_in_one_line_of_histo
 
 /// Detects optimistic concurrency that admits more than one writer: several
 /// editors saving the same memory from the same version must produce one winner
-/// and refusals for the rest, and the store must hold the winner's text.
+/// and a conflict for the rest, and the store must hold the winner's text.
 #[test]
 fn concurrent_writes_to_one_memory_from_one_version_admit_exactly_one() {
     let writers = 8;
@@ -3064,32 +1293,11 @@ fn concurrent_writes_to_one_memory_from_one_version_admit_exactly_one() {
             );
         }
     }
-    let winner = accepted[0];
     let stored = document(&server, "reading-list");
     assert!(
         stored["body"]
             .as_str()
-            .is_some_and(|body| body.contains(&format!("text from writer {winner}"))),
+            .is_some_and(|body| body.contains(&format!("text from writer {}", accepted[0]))),
         "the store must hold the accepted writer's text, got {stored}"
     );
-    assert_eq!(
-        commits_touching(&server, "memories/reading-list.md").len(),
-        2,
-        "only the accepted write may have been committed"
-    );
-}
-
-/// Every commit reachable from the store's head, with how many parents it has,
-/// read with a second handle on the repository.
-fn commits_from_head(server: &TestServer) -> Vec<(String, usize)> {
-    let repository = git2::Repository::open(server.store().path()).expect("the store opens");
-    let mut walk = repository.revwalk().expect("the history can be walked");
-    walk.push_head().expect("the store has a head");
-    walk.map(|oid| {
-        let commit = repository
-            .find_commit(oid.expect("an oid in the walk"))
-            .expect("a commit in the walk");
-        (commit.id().to_string(), commit.parent_count())
-    })
-    .collect()
 }

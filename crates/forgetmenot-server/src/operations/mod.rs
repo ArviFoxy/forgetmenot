@@ -2423,3 +2423,135 @@ fn with_final_newline(body: &str) -> String {
 pub(crate) fn iso8601(instant: DateTime<Utc>) -> String {
     instant.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session's own context, with nothing said about it yet.
+    fn session_record() -> ContextRecord {
+        ContextRecord {
+            key: ContextKey::main("alpha", "session-1"),
+            state: ContextState::fresh(BTreeSet::new(), None, Utc::now()),
+        }
+    }
+
+    /// A subagent's context, with nothing said about it yet.
+    fn subagent_record() -> ContextRecord {
+        let parent = ContextKey::main("alpha", "session-1");
+        ContextRecord {
+            key: ContextKey::subagent("alpha", "session-1", "agent-7f3a"),
+            state: ContextState::fresh(BTreeSet::new(), Some(parent), Utc::now()),
+        }
+    }
+
+    /// Detects a session listed by its identifier alone, or by a title cut to
+    /// fit a cell: the name the user gave a session with `/rename` is the only
+    /// thing that says what the session is, and the part that tells two
+    /// sessions apart may be anywhere in it. Detects a title losing to the
+    /// first prompt as well, which would name the session by what was said in
+    /// it rather than by what the user called it.
+    ///
+    /// Source: the doc comment of [`context_name`], which uses a title whole
+    /// and prefers it over the first prompt.
+    #[test]
+    fn a_session_the_user_named_is_named_by_that_title_whole() {
+        let title =
+            "Rebuild the vacuum former thermocouple rig and write up what the old one did wrong";
+        assert!(
+            title.chars().count() > NAME_CHARACTERS,
+            "the title has to be longer than the cut, or a cut title would pass"
+        );
+        let mut record = session_record();
+        record.state.session_title = Some(title.to_string());
+        record.state.first_prompt = Some("Prüfe die Späne am Drehbankbett".to_string());
+
+        assert_eq!(
+            context_name(&record),
+            title,
+            "a session the user named must be named by that title, whole"
+        );
+    }
+
+    /// Detects a name cut by bytes rather than by characters, and one cut in
+    /// the middle of a word: a session nobody named is named by its first
+    /// prompt, and a prompt runs to paragraphs, so it is cut to fit one cell of
+    /// a table. A cut counted in bytes lands somewhere else, and one that
+    /// splits a multi-byte character produces text no reader can show.
+    ///
+    /// The expectation is computed from the rule rather than captured: the
+    /// prompt's first 80 characters end "… sofort de", the last space among
+    /// them is the one before "der", so what is kept is the 77 characters up to
+    /// "sofort" and one `…` stands for the rest.
+    #[test]
+    fn a_session_nobody_named_is_named_by_its_first_prompt_cut_at_a_word_boundary() {
+        let prompt = "Prüfe die Späne am Drehbankbett und melde jeden Wert über neunzig Grad \
+                      sofort der Werkstatt weiter";
+        let mut record = session_record();
+        record.state.first_prompt = Some(prompt.to_string());
+
+        assert_eq!(
+            context_name(&record),
+            "Prüfe die Späne am Drehbankbett und melde jeden Wert über neunzig Grad sofort…",
+            "a first prompt must be cut at a word boundary and counted in characters"
+        );
+    }
+
+    /// Detects a subagent named by its session: a subagent has no title of its
+    /// own and its session's first prompt says nothing about what the subagent
+    /// is doing, so the task it was given is the only thing that names it, and
+    /// the kind of subagent is what is left when no task was read.
+    ///
+    /// Source: the doc comment of [`context_name`], which takes the task first,
+    /// then the agent type, and falls through to the session's name only when
+    /// neither is there.
+    #[test]
+    fn a_subagent_is_named_by_its_task_and_by_its_kind_when_no_task_was_read() {
+        let session_title = "Rebuild the vacuum former thermocouple rig";
+        let task = "Survey the rocketry crate and list its public functions";
+
+        let mut tasked = subagent_record();
+        tasked.state.session_title = Some(session_title.to_string());
+        tasked.state.task = Some(task.to_string());
+        tasked.state.agent_type = Some("general-purpose".to_string());
+        assert_eq!(
+            context_name(&tasked),
+            task,
+            "a subagent must be named for the task it was given"
+        );
+
+        let mut untasked = subagent_record();
+        untasked.state.session_title = Some(session_title.to_string());
+        untasked.state.agent_type = Some("general-purpose".to_string());
+        assert_eq!(
+            context_name(&untasked),
+            "general-purpose",
+            "a subagent with no task must be named for what kind of subagent it is"
+        );
+
+        let unknown = subagent_record();
+        assert_eq!(
+            context_name(&unknown),
+            "",
+            "a subagent nothing has said anything about has no name to show"
+        );
+    }
+
+    /// Detects a name built from a prompt's line breaks and runs of spaces: a
+    /// prompt is written over several lines, and a cell of a table holding the
+    /// newlines would break the row it is in.
+    ///
+    /// Source: the doc comment of [`context_name`], which collapses whitespace
+    /// and trims before anything else.
+    #[test]
+    fn a_name_collapses_the_whitespace_of_the_text_it_comes_from() {
+        let mut record = session_record();
+        record.state.session_title = Some("  the thermocouple\n\trig,\n\nsecond attempt  ".into());
+
+        assert_eq!(
+            context_name(&record),
+            "the thermocouple rig, second attempt",
+            "every run of whitespace must collapse to one space and the ends must be trimmed"
+        );
+    }
+}

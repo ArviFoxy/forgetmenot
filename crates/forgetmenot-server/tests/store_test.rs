@@ -459,6 +459,61 @@ fn diff_for_path_shows_a_newly_created_file_as_entirely_added() {
     );
 }
 
+/// Detects a blame that attributes a line to the wrong commit: a line carrying
+/// the commit of an edit it was not part of, or one that never leaves the
+/// commit the file was seeded by, makes "who wrote this sentence" wrong while
+/// looking right, which is worse than no answer. Detects line numbers that do
+/// not count the file's own lines from one as well, which would point the
+/// reader at a different line than the one blamed. Source: issue #10, which
+/// asks for the commit behind each line of a memory.
+#[test]
+fn blame_attributes_each_line_of_the_file_to_the_commit_that_last_set_it() {
+    let store = store_with_history();
+    let path = "memories/bench-power.md";
+    let log = store
+        .repository()
+        .log_for_path(path)
+        .expect("the log reads");
+    let edit = log.first().expect("the file has a latest commit").oid;
+    let seed = log.last().expect("the file has a first commit").oid;
+
+    let lines = store.repository().blame(path).expect("the blame reads");
+
+    let changed = lines
+        .iter()
+        .find(|line| line.text == "Confirm with the meter that the rail reads zero.")
+        .unwrap_or_else(|| panic!("the added line must be in the blame, got {lines:?}"));
+    assert_eq!(
+        changed.oid,
+        edit.to_string(),
+        "the added line must carry the commit that added it"
+    );
+    let untouched = lines
+        .iter()
+        .find(|line| line.text == "Switch the supply off at the wall.")
+        .unwrap_or_else(|| panic!("the untouched line must be in the blame, got {lines:?}"));
+    assert_eq!(
+        untouched.oid,
+        seed.to_string(),
+        "a line the edit left alone must carry the commit that seeded it"
+    );
+
+    let file = store.file_text(path);
+    assert_eq!(
+        lines.len(),
+        file.lines().count(),
+        "the blame must have one line per line of the file, got {lines:?}"
+    );
+    for (index, text) in file.lines().enumerate() {
+        let number = index + 1;
+        assert_eq!(
+            (lines[index].line, lines[index].text.as_str()),
+            (number, text),
+            "line {number} of the file must be blamed as line {number} with its own text"
+        );
+    }
+}
+
 // ------------------------------------------------------------------ catalogue
 
 /// Detects an implies closure that only follows one step, which would leave a

@@ -278,4 +278,52 @@ mod tests {
             "a scope that forgets nothing must carry no forget key, got {rendered:?}"
         );
     }
+
+    /// Detects a scope's own `message` dropped on the way in or on the way out:
+    /// the text a scope delivers whenever it becomes active would vanish the
+    /// moment anybody saved the scope, and nothing else in the file says it was
+    /// ever there. Source: issue #7, where a scope file may carry a short
+    /// message.
+    #[test]
+    fn a_scope_message_is_read_and_written_back_under_the_same_key() {
+        let text = "id: widgets\nmessage: Part numbers are never renumbered.\n";
+        let scope = ScopeDocument::parse(text.as_bytes()).expect("a scope may carry a message");
+
+        assert_eq!(
+            scope.message.as_deref(),
+            Some("Part numbers are never renumbered."),
+            "the message must be read from the file"
+        );
+
+        let rendered = scope.render().expect("the scope renders");
+        assert_eq!(
+            ScopeDocument::parse(rendered.as_bytes()).expect("the rendered scope parses"),
+            scope,
+            "rendering and parsing again must give the same scope, got {rendered:?}"
+        );
+    }
+
+    /// Detects a reader that refuses the `type` label scope files used to
+    /// carry, which would make every scope of a store written before the label
+    /// was dropped unreadable, and a writer that puts the label back into the
+    /// file it saves. Source: the doc comment of [`ScopeDocument`], which says
+    /// keys the format no longer defines are ignored and not written back.
+    #[test]
+    fn a_legacy_type_key_is_ignored_and_is_not_written_back() {
+        let text = "id: legacy\ntype: project\nimplies:\n- rocketry\n";
+        let scope =
+            ScopeDocument::parse(text.as_bytes()).expect("a legacy type key must not stop a parse");
+
+        assert_eq!(
+            scope.implies,
+            vec![ScopeId::new("rocketry")],
+            "the keys the format defines must survive the legacy key"
+        );
+
+        let rendered = scope.render().expect("the scope renders");
+        assert!(
+            !rendered.contains("type"),
+            "the saved file must not carry the legacy key, got {rendered:?}"
+        );
+    }
 }
