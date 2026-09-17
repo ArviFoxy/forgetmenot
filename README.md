@@ -171,7 +171,7 @@ forgetmenot serve --store /path/to/store --listen 0.0.0.0:7373 --web-dist web/di
 forgetmenot stats --stats-path /var/lib/forgetmenot/stats.sqlite
 ```
 
-`--allowed-host` lists every `Host` header value clients use to reach `/mcp`; loopback is always accepted. Session state and open branches are kept indefinitely unless `--context-retention-days` or `--branch-retention-days` is set. How the server behaves towards the agent is the store's own [`config.yml`](#settings), not a flag. `forgetmenot stats` prints the same statistics the frontend shows, or JSON with `--json`.
+`--allowed-host` lists every `Host` header value clients use to reach `/mcp`; loopback is always accepted. Session state and open branches are kept indefinitely unless `--context-retention-days` or `--branch-retention-days` is set. How the server behaves towards the agent is the store's own [`config.yml`](#settings), not a flag. `forgetmenot stats` prints the same statistics the frontend shows, with byte counts in the unit that fits them (`24.6 KB`, `1.2 MB`, 1024 per step), or JSON with raw byte counts with `--json`.
 
 On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the hooks block from `examples/claude-code/settings-hooks.json` to Claude Code's settings with the server address and a machine name filled in, and register the MCP server with `claude mcp add --transport http forgetmenot http://SERVER/mcp`.
 

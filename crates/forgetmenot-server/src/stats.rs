@@ -650,6 +650,32 @@ fn nearest_rank(sorted: &[u64], percentile: u64) -> u64 {
     sorted[rank as usize - 1]
 }
 
+/// The units above bytes, 1024 apart, the way a file manager counts them.
+const UNITS_ABOVE_BYTES: [&str; 3] = ["KB", "MB", "GB"];
+
+/// A byte count in the unit that fits it: a plain count below 1024, then one
+/// decimal in KB, MB or GB (`24.6 KB`, `1.2 MB`). A count that would print as
+/// `1024.0` of a unit moves up to the next one, so far as GB.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut scaled = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    let mut tenths = (scaled * 10.0).round() as u64;
+    while tenths >= 10_240 && unit + 1 < UNITS_ABOVE_BYTES.len() {
+        scaled /= 1024.0;
+        unit += 1;
+        tenths = (scaled * 10.0).round() as u64;
+    }
+    format!(
+        "{}.{} {}",
+        tenths / 10,
+        tenths % 10,
+        UNITS_ABOVE_BYTES[unit]
+    )
+}
+
 /// The tables of the statistics database.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
@@ -865,6 +891,30 @@ mod tests {
             0,
             "nothing measured has no percentile"
         );
+    }
+
+    /// Detects a count printed in the wrong unit, divided by 1000 instead of
+    /// 1024, or shown without its one decimal.
+    ///
+    /// Expectation source: the unit table decided in issue #12, which the
+    /// frontend's `formatBytes` is pinned to as well.
+    #[test]
+    fn a_byte_count_is_shown_in_the_unit_that_fits_it() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(25_205), "24.6 KB");
+        assert_eq!(format_bytes(1_258_291), "1.2 MB");
+        assert_eq!(format_bytes(2_684_354_560), "2.5 GB");
+    }
+
+    /// Detects a count whose decimal rounds up to 1024.0 of a unit keeping that
+    /// unit, which is not the unit that fits it.
+    #[test]
+    fn a_count_that_rounds_up_to_a_full_unit_moves_up_a_unit() {
+        assert_eq!(format_bytes(1_048_530), "1.0 MB");
+        assert_eq!(format_bytes(1_073_689_396), "1.0 GB");
     }
 
     /// Detects a newest timestamp chosen by string order across a boundary

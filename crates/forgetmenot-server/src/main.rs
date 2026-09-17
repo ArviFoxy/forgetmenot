@@ -10,6 +10,7 @@ use forgetmenot_server::clock::SystemClock;
 use forgetmenot_server::config::{Config, DEFAULT_SNAPSHOT_DEBOUNCE_MS};
 use forgetmenot_server::stats::{
     DenyDayRow, LatencyRow, MemoryStatsRow, SessionBytesRow, StatsReader, TriggerStatsRow,
+    format_bytes,
 };
 use forgetmenot_server::store::catalog::Catalog;
 use forgetmenot_server::store::git::GitRepo;
@@ -378,8 +379,8 @@ fn print_report(report: &StatsReport) {
             .map(|row| {
                 vec![
                     row.session_key.clone(),
-                    row.bytes_full.to_string(),
-                    row.bytes_index.to_string(),
+                    format_bytes(row.bytes_full),
+                    format_bytes(row.bytes_index),
                 ]
             })
             .collect(),

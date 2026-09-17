@@ -10,6 +10,7 @@ import type {
 } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
+import { formatBytes } from '../model/units';
 import { paths } from '../routes';
 
 /**
@@ -179,6 +180,7 @@ export class FmnStatsView extends PageElement {
     </div>`;
   }
 
+  /** The byte counts in the unit that fits, with the exact count in a `title`. */
   private renderSessions(rows: SessionBytesRow[]): TemplateResult {
     return html`<div class="table-wrap">
       <table class="data stats">
@@ -193,8 +195,8 @@ export class FmnStatsView extends PageElement {
           ${FmnStatsView.sorted(rows, (row) => row.session_key).map(
             (row) => html`<tr>
               <td><code>${row.session_key}</code></td>
-              <td class="number">${row.bytes_full}</td>
-              <td class="number">${row.bytes_index}</td>
+              <td class="number" title=${row.bytes_full}>${formatBytes(row.bytes_full)}</td>
+              <td class="number" title=${row.bytes_index}>${formatBytes(row.bytes_index)}</td>
             </tr>`,
           )}
         </tbody>
