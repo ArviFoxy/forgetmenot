@@ -95,6 +95,26 @@ const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 const SESSION_NOTES_DESCRIPTION: &str =
     "Working notes for the bracket rework, measured in millimetres";
 
+/// A memory in the `workshop` scope, which the example store has none of, so
+/// that a call naming two scopes has one memory of its own per scope. The
+/// store's `widgets` implies `rocketry`, so those two are delivered together by
+/// a call that names either of them.
+const WORKSHOP_RULE: &str = concat!(
+    "---\n",
+    "name: workshop-tidy\n",
+    "description: The bench is cleared before the next job is set up\n",
+    "metadata:\n",
+    "  kind: critical\n",
+    "  scopes:\n",
+    "  - workshop\n",
+    "  source: user\n",
+    "---\n",
+    "# Clear the bench between jobs\n\nEvery tool goes back on the wall before the next job is set up.\n",
+);
+
+/// The line of [`WORKSHOP_RULE`] that appears in no other memory.
+const WORKSHOP_RULE_BODY: &str = "Every tool goes back on the wall";
+
 /// A memory file in the shape Claude Code's auto-memory writes: its own `type`,
 /// a `source` that is neither of the two conventional values, the strength its
 /// keeper marks rules with, and Claude Code's bookkeeping keys. The content is
@@ -670,7 +690,7 @@ fn a_scope_turned_on_through_mcp_delivers_that_scopes_memories_at_the_next_hook_
 
     let answer = session.call(
         "session_scope_on",
-        json!({ "session_key": "alpha/session-1", "scope": "widgets" }),
+        json!({ "session_key": "alpha/session-1", "scopes": ["widgets"] }),
     );
 
     assert_ne!(
@@ -703,7 +723,7 @@ fn a_scope_turned_off_through_mcp_leaves_its_memories_reported_as_out_of_scope()
     let session = server.mcp();
     session.call(
         "session_scope_on",
-        json!({ "session_key": "alpha/session-1", "scope": "widgets" }),
+        json!({ "session_key": "alpha/session-1", "scopes": ["widgets"] }),
     );
     let delivered = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
     assert!(
@@ -713,7 +733,7 @@ fn a_scope_turned_off_through_mcp_leaves_its_memories_reported_as_out_of_scope()
 
     let answer = session.call(
         "session_scope_off",
-        json!({ "session_key": "alpha/session-1", "scope": "widgets" }),
+        json!({ "session_key": "alpha/session-1", "scopes": ["widgets"] }),
     );
 
     assert_ne!(
@@ -728,6 +748,108 @@ fn a_scope_turned_off_through_mcp_leaves_its_memories_reported_as_out_of_scope()
     assert!(
         has_retracted_line(text, "widget-naming", "no longer in an active scope"),
         "the memory must be reported as withdrawn because the scope was turned off, got {text:?}"
+    );
+}
+
+/// Detects a call that turns on only one of the scopes it was given: the model
+/// asked to work in several, would get the memories of one, and would read the
+/// answer as all of them being on. Source: the ticket for the list form of the
+/// session scope tools.
+#[test]
+fn two_scopes_turned_on_in_one_mcp_call_both_deliver_their_memories() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.commit(
+        "keep the bench clear between jobs",
+        vec![(
+            "memories/workshop-tidy.md".to_string(),
+            Some(WORKSHOP_RULE.as_bytes().to_vec()),
+        )],
+    );
+    let session = server.mcp();
+
+    let answer = session.call(
+        "session_scope_on",
+        json!({ "session_key": "alpha/session-1", "scopes": ["widgets", "workshop"] }),
+    );
+
+    assert_ne!(
+        answer.is_error,
+        Some(true),
+        "turning on two scopes of the store must be answered as done, got {}",
+        tool_text(&answer)
+    );
+    let scopes = tool_json(&answer);
+    let active: BTreeSet<String> = scopes["active"]
+        .as_array()
+        .expect("the answer lists the active scopes")
+        .iter()
+        .map(|id| id.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        active.contains("widgets"),
+        "the answer must report the first scope as active, got {scopes}"
+    );
+    assert!(
+        active.contains("workshop"),
+        "the answer must report the second scope as active, got {scopes}"
+    );
+    let (status, delivered) = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
+    assert_eq!(status, 200, "the next event must be answered");
+    assert!(
+        context_of(&delivered).contains(WIDGET_NAMING_BODY),
+        "the first scope's memory must be delivered in full, got {delivered}"
+    );
+    assert!(
+        context_of(&delivered).contains(WORKSHOP_RULE_BODY),
+        "the second scope's memory must be delivered in full, got {delivered}"
+    );
+}
+
+/// Detects a list that turns on the ids it knows and then refuses the one it does
+/// not: the model would read the call as failed while the session had moved into
+/// scopes it is not told about. Source: the ticket for the list form of the
+/// session scope tools.
+#[test]
+fn an_id_that_is_not_a_scope_refuses_the_whole_mcp_call_and_turns_none_of_them_on() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let refused = session.call(
+        "session_scope_on",
+        json!({
+            "session_key": "alpha/session-1",
+            "scopes": ["widgets", "spanners", "workshop"]
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a list naming an id the store has no scope for must be refused, got {}",
+        tool_text(&refused)
+    );
+    assert!(
+        tool_text(&refused).contains("spanners"),
+        "the refusal must name the id that is not a scope, got {:?}",
+        tool_text(&refused)
+    );
+    let listed = tool_json(&session.call(
+        "session_scopes",
+        json!({ "session_key": "alpha/session-1" }),
+    ));
+    let available: BTreeSet<String> = listed["available"]
+        .as_array()
+        .expect("the answer lists the scopes available")
+        .iter()
+        .map(|id| id.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        available.contains("widgets"),
+        "the scope named before the unknown id must still be on offer, got {listed}"
+    );
+    assert!(
+        available.contains("workshop"),
+        "the scope named after the unknown id must still be on offer, got {listed}"
     );
 }
 

@@ -73,6 +73,11 @@ pub enum OperationError {
     #[error("`{0}` is not a scope in this store")]
     UnknownScope(ScopeId),
 
+    /// The call to turn scopes on or off carried an empty list, so it named
+    /// nothing to change and cannot be read as a change of anything.
+    #[error("the list names no scope to change")]
+    EmptyScopeList,
+
     #[error("`{0}` is always on for a session and cannot be turned off")]
     ImplicitScope(ScopeId),
 
@@ -1864,64 +1869,85 @@ pub async fn session_scopes(
             |context| context.active.clone(),
         )
         .await;
-    record_tool_call(state, "session_scopes", key, None, true).await;
+    record_tool_call(state, "session_scopes", key, &[], true).await;
     Ok(session_scopes_of(&catalog, active))
 }
 
-/// Turn one scope on for one context, with everything it implies.
+/// Turn scopes on for one context, with everything they imply.
+///
+/// The whole list is one change: every id is checked against the store before
+/// anything is turned on, so a list naming a scope this store does not have
+/// leaves the context working in exactly the scopes it was, and the implication
+/// closure is taken once over the scopes with all of them in.
 pub async fn session_scope_on(
     state: &AppState,
     key: &ContextKey,
-    scope: &ScopeId,
+    scopes: &[ScopeId],
 ) -> Result<SessionScopes, OperationError> {
+    if scopes.is_empty() {
+        record_tool_call(state, "session_scope_on", key, scopes, false).await;
+        return Err(OperationError::EmptyScopeList);
+    }
     let catalog = state.store.snapshot().await?;
-    if !validate::is_known_scope(&catalog, scope) {
-        record_tool_call(state, "session_scope_on", key, Some(scope), false).await;
-        return Err(OperationError::UnknownScope(scope.clone()));
+    if let Some(unknown) = scopes
+        .iter()
+        .find(|scope| !validate::is_known_scope(&catalog, scope))
+    {
+        record_tool_call(state, "session_scope_on", key, scopes, false).await;
+        return Err(OperationError::UnknownScope(unknown.clone()));
     }
     let now = state.clock.now();
     let active = state
         .contexts
         .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-            context.active.insert(scope.clone());
+            context.active.extend(scopes.iter().cloned());
             context.active = catalog.closure(&context.active);
             context.last_seen = now;
             context.active.clone()
         })
         .await;
-    record_tool_call(state, "session_scope_on", key, Some(scope), true).await;
+    record_tool_call(state, "session_scope_on", key, scopes, true).await;
     Ok(session_scopes_of(&catalog, active))
 }
 
-/// Turn one scope off for one context: it stops working in that scope, and
-/// nothing happens to any memory.
+/// Turn scopes off for one context: it stops working in them, and nothing
+/// happens to any memory.
 ///
-/// Only the scope named is turned off. A scope that is on because another scope
-/// implies it stays on, because a scope is a flag and the state does not record
-/// which trigger or which implication set it.
+/// Only the scopes named are turned off. A scope that is on because another
+/// scope implies it stays on, because a scope is a flag and the state does not
+/// record which trigger or which implication set it.
+///
+/// The whole list is one change: a list naming a scope that cannot be turned off
+/// turns none of the others off either.
 pub async fn session_scope_off(
     state: &AppState,
     key: &ContextKey,
-    scope: &ScopeId,
+    scopes: &[ScopeId],
 ) -> Result<SessionScopes, OperationError> {
+    if scopes.is_empty() {
+        record_tool_call(state, "session_scope_off", key, scopes, false).await;
+        return Err(OperationError::EmptyScopeList);
+    }
     // `global`, `machine:<name>` and the context's own session scope are what
     // makes a context a context; without them it could not be delivered to at
     // all, so they cannot be turned off.
-    if scope.is_implicit() {
-        record_tool_call(state, "session_scope_off", key, Some(scope), false).await;
-        return Err(OperationError::ImplicitScope(scope.clone()));
+    if let Some(implicit) = scopes.iter().find(|scope| scope.is_implicit()) {
+        record_tool_call(state, "session_scope_off", key, scopes, false).await;
+        return Err(OperationError::ImplicitScope(implicit.clone()));
     }
     let catalog = state.store.snapshot().await?;
     let now = state.clock.now();
     let active = state
         .contexts
         .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-            context.active.remove(scope);
+            for scope in scopes {
+                context.active.remove(scope);
+            }
             context.last_seen = now;
             context.active.clone()
         })
         .await;
-    record_tool_call(state, "session_scope_off", key, Some(scope), true).await;
+    record_tool_call(state, "session_scope_off", key, scopes, true).await;
     Ok(session_scopes_of(&catalog, active))
 }
 
@@ -1939,7 +1965,7 @@ pub async fn session_inherit(
     // silently creating an empty one to inherit from.
     let snapshot = state.contexts.snapshot(now).await;
     let Some(source) = snapshot.contexts.iter().find(|record| &record.key == from) else {
-        record_tool_call(state, "session_inherit", key, None, false).await;
+        record_tool_call(state, "session_inherit", key, &[], false).await;
         return Err(OperationError::UnknownSession(from.to_string()));
     };
 
@@ -1953,7 +1979,7 @@ pub async fn session_inherit(
             context.active.clone()
         })
         .await;
-    record_tool_call(state, "session_inherit", key, None, true).await;
+    record_tool_call(state, "session_inherit", key, &[], true).await;
     Ok(session_scopes_of(&catalog, active))
 }
 
@@ -1969,13 +1995,22 @@ fn session_scopes_of(catalog: &Catalog, active: BTreeSet<ScopeId>) -> SessionSco
     }
 }
 
+/// Record one row for one session tool call, whatever it did.
+///
+/// A call naming several scopes is one row, with the ids it named in the row's
+/// scope text, because the row stands for the call.
 async fn record_tool_call(
     state: &AppState,
     tool: &str,
     key: &ContextKey,
-    scope: Option<&ScopeId>,
+    scopes: &[ScopeId],
     ok: bool,
 ) {
+    let named = scopes
+        .iter()
+        .map(ScopeId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
     state
         .stats
         .record_tool_call(ToolCallRecord {
@@ -1983,7 +2018,7 @@ async fn record_tool_call(
             tool: tool.to_string(),
             session_key: key.to_string(),
             memory: None,
-            scope: scope.map(ScopeId::to_string),
+            scope: (!named.is_empty()).then_some(named),
             ok,
         })
         .await;

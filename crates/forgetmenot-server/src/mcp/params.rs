@@ -277,13 +277,14 @@ pub struct SessionParams {
     pub session_key: String,
 }
 
-/// Which session, and which scope of it.
+/// Which session, and which scopes of it.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionScopeParams {
     /// The calling session's key, printed in this session's first hook context.
     pub session_key: String,
-    /// The scope id, as `session_scopes` lists it.
-    pub scope: String,
+    /// The scope ids to turn on or off, as `session_scopes` lists them, all in
+    /// one call. One scope is a list of one.
+    pub scopes: Vec<String>,
 }
 
 /// Which session is asking, and which session it takes its scopes from.

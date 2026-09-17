@@ -88,7 +88,8 @@ struct OperationStep {
     name: OperationName,
     /// The calling context, as `<machine>/<session-id>[/<agent-id>]`.
     session_key: String,
-    /// The scope, for `session_scope_on` and `session_scope_off`.
+    /// The one scope a step turns on or off; the operations take a list, and a
+    /// scenario step names one at a time.
     #[serde(default)]
     scope: Option<String>,
     /// The session inherited from, for `session_inherit`.
@@ -271,10 +272,10 @@ fn run_operation(server: &TestServer, operation: &OperationStep) -> Result<(), S
     };
     let outcome = match operation.name {
         OperationName::SessionScopeOn => server
-            .run(operations::session_scope_on(&state, &key, &scope()?))
+            .run(operations::session_scope_on(&state, &key, &[scope()?]))
             .map(|_| ()),
         OperationName::SessionScopeOff => server
-            .run(operations::session_scope_off(&state, &key, &scope()?))
+            .run(operations::session_scope_off(&state, &key, &[scope()?]))
             .map(|_| ()),
         OperationName::SessionInherit => {
             let from = operation

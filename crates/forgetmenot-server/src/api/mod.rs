@@ -161,6 +161,7 @@ impl IntoResponse for OperationError {
                 error_response(StatusCode::SERVICE_UNAVAILABLE, &self.to_string())
             }
             OperationError::UnknownScope(_)
+            | OperationError::EmptyScopeList
             | OperationError::ImplicitScope(_)
             | OperationError::ImplicitScopeHasNoFile(_)
             | OperationError::UnknownSession(_) => {

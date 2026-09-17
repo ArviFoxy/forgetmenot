@@ -140,7 +140,7 @@ Session tools change what the calling session receives and never touch the store
 | Tool | What it does |
 |---|---|
 | `session_scopes` | Show the active scopes and the scopes available |
-| `session_scope_on`, `session_scope_off` | Turn a scope on or off for this session |
+| `session_scope_on`, `session_scope_off` | Turn a list of scopes on or off for this session, all in one call |
 | `session_inherit` | Take over another session's active scopes and its private notes |
 
 Every session tool takes the session key that the first hook event of the session prints.

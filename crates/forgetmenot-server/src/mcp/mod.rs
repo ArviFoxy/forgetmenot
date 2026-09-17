@@ -575,16 +575,19 @@ impl ToolServer {
 
     #[tool(
         description = "Session management family: changes only the calling session and never \
-                       touches the store. This session starts working in the scope, and the \
-                       scope's memories, together with everything it implies, are delivered at \
-                       the next hook event."
+                       touches the store. This session starts working in every scope in scopes, \
+                       and those scopes' memories, together with everything they imply, are \
+                       delivered at the next hook event. Name every scope to turn on in the \
+                       one call; one scope is a list of one. An id that is not a scope of this \
+                       store refuses the whole call, naming that id, and turns none of them on."
     )]
     async fn session_scope_on(
         &self,
         Parameters(params): Parameters<SessionScopeParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let key = parse_session_key(&params.session_key)?;
-        match operations::session_scope_on(&self.state, &key, &ScopeId::new(params.scope)).await {
+        let scopes = requested_scopes(params.scopes);
+        match operations::session_scope_on(&self.state, &key, &scopes).await {
             Ok(scopes) => json_text(&scopes),
             Err(error) => Ok(tool_failure(&error)),
         }
@@ -592,16 +595,20 @@ impl ToolServer {
 
     #[tool(
         description = "Session management family: changes only the calling session and never \
-                       touches the store. This session stops working in that scope; nothing \
-                       happens to any memory, and every other session keeps getting them. The \
-                       scope's memories are reported as withdrawn at the next hook event."
+                       touches the store. This session stops working in every scope in scopes; \
+                       nothing happens to any memory, and every other session keeps getting \
+                       them. Those scopes' memories are reported as withdrawn at the next hook \
+                       event. Name every scope to turn off in the one call; one scope is a \
+                       list of one. An id that is always on for a session refuses the whole \
+                       call, naming that id, and turns none of them off."
     )]
     async fn session_scope_off(
         &self,
         Parameters(params): Parameters<SessionScopeParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let key = parse_session_key(&params.session_key)?;
-        match operations::session_scope_off(&self.state, &key, &ScopeId::new(params.scope)).await {
+        let scopes = requested_scopes(params.scopes);
+        match operations::session_scope_off(&self.state, &key, &scopes).await {
             Ok(scopes) => json_text(&scopes),
             Err(error) => Ok(tool_failure(&error)),
         }
@@ -664,6 +671,14 @@ fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, Box<Call
         None => Ok(None),
         Some(name) => parse_branch(name).map(Some),
     }
+}
+
+/// The scopes a session tool is asked to change, in the order they were named.
+///
+/// An id the store does not have is left for the operation to refuse, which is
+/// where the whole list is either applied or refused.
+fn requested_scopes(scopes: Vec<String>) -> Vec<ScopeId> {
+    scopes.into_iter().map(ScopeId::new).collect()
 }
 
 /// The branch a branch tool is about.

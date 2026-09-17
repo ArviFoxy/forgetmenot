@@ -34,6 +34,10 @@ const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 /// The index entry of the session memory in the example store's silo.
 const SESSION_NOTES_DESCRIPTION: &str =
     "Working notes for the bracket rework, measured in millimetres";
+/// The index entry of the memory in the `rocketry` scope, which the `widgets`
+/// scope of the example store implies.
+const ROCKET_STAGES_DESCRIPTION: &str =
+    "Stage one lights on the pad and later stages count upwards in firing order";
 
 /// The text a hook answer injects, or the empty string when it injects nothing.
 fn context_of(answer: &Value) -> &str {
@@ -93,7 +97,7 @@ fn a_scope_turned_on_for_a_session_delivers_that_scopes_memories_at_the_next_eve
         .run(operations::session_scope_on(
             &state,
             &key,
-            &ScopeId::new("widgets"),
+            &[ScopeId::new("widgets")],
         ))
         .expect("widgets is a scope of the example store");
 
@@ -125,7 +129,11 @@ fn a_scope_turned_off_is_reported_as_withdrawn_at_the_next_event() {
     let key = ContextKey::main(MACHINE, "session-1");
     let widgets = ScopeId::new("widgets");
     server
-        .run(operations::session_scope_on(&state, &key, &widgets))
+        .run(operations::session_scope_on(
+            &state,
+            &key,
+            std::slice::from_ref(&widgets),
+        ))
         .expect("widgets is a scope of the example store");
     let delivered = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
     assert!(
@@ -134,7 +142,11 @@ fn a_scope_turned_off_is_reported_as_withdrawn_at_the_next_event() {
     );
 
     let scopes = server
-        .run(operations::session_scope_off(&state, &key, &widgets))
+        .run(operations::session_scope_off(
+            &state,
+            &key,
+            std::slice::from_ref(&widgets),
+        ))
         .expect("a scope with a file can be turned off");
 
     assert!(
@@ -155,6 +167,68 @@ fn a_scope_turned_off_is_reported_as_withdrawn_at_the_next_event() {
     );
 }
 
+/// Detects a list of scopes of which only one is turned off: the session would
+/// go on receiving the memories of a scope it asked to be taken out of, and the
+/// answer would report it as off. Source: the ticket for the list form of the
+/// session scope tools.
+#[test]
+fn two_scopes_turned_off_in_one_call_are_both_withdrawn_at_the_next_event() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let state = server.state();
+    let key = ContextKey::main(MACHINE, "session-1");
+    let widgets = ScopeId::new("widgets");
+    let rocketry = ScopeId::new("rocketry");
+    // `widgets` implies `rocketry`, so both scopes are on and both have a memory
+    // delivered before anything is turned off.
+    server
+        .run(operations::session_scope_on(
+            &state,
+            &key,
+            std::slice::from_ref(&widgets),
+        ))
+        .expect("widgets is a scope of the example store");
+    let delivered = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
+    let before = context_of(&delivered.1);
+    assert!(
+        before.contains(WIDGET_NAMING_BODY),
+        "the widgets memory has to have been delivered before it can be withdrawn, got {before:?}"
+    );
+    assert!(
+        has_index_line(before, "rocket-stages", ROCKET_STAGES_DESCRIPTION),
+        "the rocketry memory has to have been delivered before it can be withdrawn, got {before:?}"
+    );
+
+    let scopes = server
+        .run(operations::session_scope_off(
+            &state,
+            &key,
+            &[widgets.clone(), rocketry.clone()],
+        ))
+        .expect("both scopes have a file and can be turned off");
+
+    assert!(
+        !scopes.active.contains(&widgets),
+        "widgets must no longer be active, got {:?}",
+        scopes.active
+    );
+    assert!(
+        !scopes.active.contains(&rocketry),
+        "rocketry must no longer be active, got {:?}",
+        scopes.active
+    );
+    let (status, answer) = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
+    assert_eq!(status, 200, "the next event must be answered");
+    let text = context_of(&answer);
+    assert!(
+        has_retracted_line(text, "widget-naming", "no longer in an active scope"),
+        "the widgets memory must be reported as withdrawn, got {text:?}"
+    );
+    assert!(
+        has_retracted_line(text, "rocket-stages", "no longer in an active scope"),
+        "the rocketry memory must be reported as withdrawn, got {text:?}"
+    );
+}
+
 /// Detects an implicit scope that can be turned off: a session without `global`,
 /// its machine or its own session scope could not be delivered to at all, and
 /// nothing would ever turn those back on.
@@ -170,7 +244,11 @@ fn turning_off_a_scope_that_is_always_on_is_refused() {
         ScopeId::machine(MACHINE),
         ScopeId::session(MACHINE, "session-1"),
     ] {
-        let refused = server.run(operations::session_scope_off(&state, &key, &scope));
+        let refused = server.run(operations::session_scope_off(
+            &state,
+            &key,
+            std::slice::from_ref(&scope),
+        ));
         assert!(
             refused.is_err(),
             "turning off {scope} must be refused, got {:?}",
@@ -190,6 +268,79 @@ fn turning_off_a_scope_that_is_always_on_is_refused() {
     );
 }
 
+/// Detects a list that turns off the scopes it may before refusing the one it may
+/// not: the session would be told the call failed while having lost scopes it is
+/// never told about. Source: the ticket for the list form of the session scope
+/// tools.
+#[test]
+fn a_list_naming_a_scope_that_is_always_on_turns_none_of_the_others_off() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let state = server.state();
+    let key = ContextKey::main(MACHINE, "session-1");
+    let widgets = ScopeId::new("widgets");
+    server
+        .run(operations::session_scope_on(
+            &state,
+            &key,
+            std::slice::from_ref(&widgets),
+        ))
+        .expect("widgets is a scope of the example store");
+
+    let refused = server.run(operations::session_scope_off(
+        &state,
+        &key,
+        &[widgets.clone(), ScopeId::global()],
+    ));
+
+    assert!(
+        refused.is_err(),
+        "a list naming the global scope must be refused, got {:?}",
+        refused.map(|scopes| scopes.active)
+    );
+    let after = server
+        .run(operations::session_scopes(&state, &key))
+        .expect("the store is readable");
+    assert!(
+        after.active.contains(&widgets),
+        "the scope named beside it must still be active, got {:?}",
+        after.active
+    );
+    let (status, answer) = server.hook(MACHINE, SOME_TOKENS, &neutral_event("session-1"));
+    assert_eq!(status, 200, "the next event must be answered");
+    assert!(
+        context_of(&answer).contains(WIDGET_NAMING_BODY),
+        "the memory of the scope that is still on must be delivered, got {answer}"
+    );
+}
+
+/// Detects an empty list taken as a change of nothing: the call would be answered
+/// as done, and the model would read the answer as the scopes it asked for.
+/// Source: the ticket for the list form of the session scope tools.
+#[test]
+fn a_scope_change_that_names_no_scope_is_refused() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let state = server.state();
+    let key = ContextKey::main(MACHINE, "session-1");
+
+    let refused_on = server.run(operations::session_scope_on(&state, &key, &[]));
+    let refused_on = refused_on
+        .err()
+        .unwrap_or_else(|| panic!("turning on no scope at all must be refused"));
+    assert!(
+        refused_on.to_string().contains("names no scope"),
+        "the refusal must say that the list names no scope, got {refused_on}"
+    );
+
+    let refused_off = server.run(operations::session_scope_off(&state, &key, &[]));
+    let refused_off = refused_off
+        .err()
+        .unwrap_or_else(|| panic!("turning off no scope at all must be refused"));
+    assert!(
+        refused_off.to_string().contains("names no scope"),
+        "the refusal must say that the list names no scope, got {refused_off}"
+    );
+}
+
 /// Detects inheritance that copies nothing, or that copies the scopes without the
 /// other session's own scope: the point of inheriting is that the other session's
 /// notes become readable here, and those live in its session scope alone.
@@ -206,7 +357,7 @@ fn inheriting_another_session_makes_its_own_memories_due_here() {
         .run(operations::session_scope_on(
             &state,
             &source,
-            &ScopeId::new("widgets"),
+            &[ScopeId::new("widgets")],
         ))
         .expect("widgets is a scope of the example store");
 
@@ -299,7 +450,7 @@ fn the_scopes_offered_to_a_session_are_the_ones_it_is_not_already_working_in() {
         .run(operations::session_scope_on(
             &state,
             &key,
-            &ScopeId::new("workshop"),
+            &[ScopeId::new("workshop")],
         ))
         .expect("workshop is a scope of the example store");
 
@@ -358,14 +509,17 @@ fn a_memory_fetched_for_a_context_comes_back_only_when_it_changes() {
 
 /// Detects a session operation that is not recorded in the statistics: the
 /// statistics answer which session turned what on, and a tool call that leaves no
-/// row is invisible there.
+/// row is invisible there. Also detects a row per scope id of a call that names
+/// several, which would count one call as several.
 #[test]
 fn every_session_operation_records_one_tool_call() {
     let server = TestServer::start(example_store_files(), |_| {});
     let state = server.state();
     let source = ContextKey::main(MACHINE, "session-1");
     let caller = ContextKey::main(MACHINE, "session-2");
-    let widgets = ScopeId::new("widgets");
+    // Two scopes in the one call, because a call that names several is still one
+    // tool call.
+    let two_scopes = [ScopeId::new("widgets"), ScopeId::new("workshop")];
     assert_eq!(
         server.stats().count_rows(Table::ToolCalls),
         0,
@@ -376,11 +530,11 @@ fn every_session_operation_records_one_tool_call() {
         .run(operations::session_scopes(&state, &source))
         .expect("the store is readable");
     server
-        .run(operations::session_scope_on(&state, &source, &widgets))
-        .expect("widgets is a scope of the example store");
+        .run(operations::session_scope_on(&state, &source, &two_scopes))
+        .expect("both are scopes of the example store");
     server
-        .run(operations::session_scope_off(&state, &source, &widgets))
-        .expect("a scope with a file can be turned off");
+        .run(operations::session_scope_off(&state, &source, &two_scopes))
+        .expect("scopes with a file can be turned off");
     server
         .run(operations::session_inherit(&state, &caller, &source))
         .expect("the source session has been seen by this server");
