@@ -10,6 +10,7 @@ export type ControlKind = 'number-or-off' | 'number' | 'switch' | 'tags';
 const controls: Record<SettingType, ControlKind> = {
   'integer or null': 'number-or-off',
   integer: 'number',
+  number: 'number',
   bool: 'switch',
   'list of strings': 'tags',
 };

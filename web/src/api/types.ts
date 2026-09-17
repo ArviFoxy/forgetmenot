@@ -83,7 +83,12 @@ export interface MachineList {
 }
 
 /** The types the settings schema uses, spelled as the server spells them. */
-export type SettingType = 'integer or null' | 'integer' | 'bool' | 'list of strings';
+export type SettingType =
+  | 'integer or null'
+  | 'integer'
+  | 'number'
+  | 'bool'
+  | 'list of strings';
 
 export type SettingValue = number | boolean | string[] | null;
 
@@ -207,8 +212,8 @@ export interface ContextPrompt {
   /** The rendered text, empty when the mode has nothing to deliver. */
   text: string;
   bytes: number;
-  /** One token per four bytes, rounded up: a rule of thumb, not a tokenizer. */
-  tokens_estimate: number;
+  /** The text's characters over the store's `characters_per_token`, rounded up. */
+  tokens: number;
 }
 
 export interface ValidationError {

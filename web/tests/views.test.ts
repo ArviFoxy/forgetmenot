@@ -81,7 +81,7 @@ const contextPrompt: ContextPrompt = {
   mode: 'all',
   text: promptText,
   bytes: promptText.length,
-  tokens_estimate: Math.ceil(promptText.length / 4),
+  tokens: Math.ceil(promptText.length / 3.5),
 };
 
 /**
@@ -382,7 +382,7 @@ test('the prompt page shows the size in raw bytes, or hides the text the context
 
   const size = page.querySelector('.prompt-size')?.textContent ?? '';
   expect(size).toContain(formatBytes(contextPrompt.bytes));
-  expect(size).toContain(String(contextPrompt.tokens_estimate));
+  expect(size).toContain(String(contextPrompt.tokens));
   expect(page.querySelector('pre.prompt')?.textContent).toBe(contextPrompt.text);
 });
 

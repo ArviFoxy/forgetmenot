@@ -84,7 +84,7 @@ export class FmnContextPromptView extends PageElement {
         this.prompt.state,
         (prompt) => html`
           <p class="muted prompt-size">
-            ${formatBytes(prompt.bytes)} · ~${prompt.tokens_estimate} tokens
+            ${formatBytes(prompt.bytes)} · ~${prompt.tokens} tokens
           </p>
           ${this.renderText(prompt)}
         `,

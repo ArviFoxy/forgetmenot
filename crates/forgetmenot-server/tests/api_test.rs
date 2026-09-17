@@ -585,6 +585,7 @@ fn the_settings_of_a_store_without_a_file_are_the_defaults_and_the_schema_descri
             "tool_result_match_limit": 262_144,
             "answer_file_threshold": 10_000,
             "announce_empty_scopes": false,
+            "characters_per_token": 3.5,
         }),
         "the defaults must be the documented ones, got {answer}"
     );
@@ -843,10 +844,8 @@ fn the_prompt_route_answers_the_text_with_its_size_and_refuses_a_mode_it_has_no_
          context it was rendered for, got {all}"
     );
     assert!(
-        all["tokens_estimate"]
-            .as_u64()
-            .is_some_and(|tokens| tokens >= 1),
-        "a text that is not empty must be estimated at a token or more, got {all}"
+        all["tokens"].as_u64().is_some_and(|tokens| tokens >= 1),
+        "a text that is not empty must cost a token or more, got {all}"
     );
 
     let (status, answer) = server.api(
@@ -1299,5 +1298,291 @@ fn concurrent_writes_to_one_memory_from_one_version_admit_exactly_one() {
             .as_str()
             .is_some_and(|body| body.contains(&format!("text from writer {}", accepted[0]))),
         "the store must hold the accepted writer's text, got {stored}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The statistics routes the page reads over a window: the summary, the series
+// and one session's events.
+// ---------------------------------------------------------------------------
+
+/// A prompt naming a widget, which turns the `widgets` scope on in the example
+/// store and delivers what that makes due.
+fn widget_prompt() -> Value {
+    json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "session-1",
+        "cwd": "/home/dev/notes",
+        "prompt": "check the widget numbering before we continue"
+    })
+}
+
+/// A server with one session start and one widget prompt behind it, which is
+/// the smallest log the statistics routes have something to answer for.
+fn server_with_a_session() -> TestServer {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(
+        "alpha",
+        Some(10_000),
+        &common::hook_fixture("session_start"),
+    );
+    server.hook("alpha", Some(10_000), &widget_prompt());
+    server
+}
+
+/// Detects a summary that answers in a shape the page cannot read: it draws one
+/// row of numbers from the four named windows and a live-context count, and a
+/// window missing or named differently leaves a card blank. The figures are
+/// tokens, because the page converts nothing itself.
+#[test]
+fn the_summary_route_answers_the_four_named_windows_in_tokens_with_the_live_contexts() {
+    let server = server_with_a_session();
+
+    let (status, answer) = server.api("GET", "/api/stats/summary", None);
+
+    assert_eq!(status, 200, "the summary must be readable, got {answer}");
+    let windows = answer["windows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the summary must carry its windows: {answer}"));
+    assert_eq!(
+        windows
+            .iter()
+            .map(|row| row["name"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["5m", "1h", "1d", "7d"],
+        "the four windows must be named as the page names them, got {answer}"
+    );
+    for row in windows {
+        for field in ["tokens", "events", "held", "forgettings"] {
+            assert!(
+                row[field].as_u64().is_some(),
+                "every window must report {field} as a number, got {row}"
+            );
+        }
+        assert!(
+            row["tokens"].as_u64().unwrap_or(0) > 0,
+            "both events of the session delivered text, so every window carries tokens: {row}"
+        );
+    }
+    assert_eq!(
+        answer["live_contexts"],
+        json!(1),
+        "the sequence ran in one context, got {answer}"
+    );
+}
+
+/// Detects a series route that answers without saying which bucket it used,
+/// that takes a bucket it has no notion of, or that reads an unparsable time as
+/// "no bound": a chart drawn on the wrong bucket or the wrong range is silently
+/// wrong, which is worse than a refusal.
+#[test]
+fn the_series_route_names_its_bucket_and_refuses_a_bucket_or_a_time_it_cannot_read() {
+    let server = server_with_a_session();
+
+    let (status, answer) = server.api("GET", "/api/stats/series?bucket=hour", None);
+    assert_eq!(status, 200, "the series must be readable, got {answer}");
+    assert_eq!(
+        answer["bucket"],
+        json!("hour"),
+        "the answer must name the bucket its points are in, got {answer}"
+    );
+    let points = answer["points"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the series must carry its points: {answer}"));
+    assert_eq!(
+        points.len(),
+        1,
+        "the clock stood still, so both events fall in one hour: {answer}"
+    );
+    assert!(
+        points[0]["tokens"].as_u64().unwrap_or(0) > 0
+            && points[0]["deliveries"].as_u64().unwrap_or(0) > 0
+            && points[0]["t"]
+                .as_str()
+                .is_some_and(|t| t.ends_with(":00:00Z")),
+        "a point is a bucket start with the tokens and the deliveries in it, got {answer}"
+    );
+
+    let (status, chosen) = server.api("GET", "/api/stats/series", None);
+    assert_eq!(
+        status, 200,
+        "a series with no bucket must be readable, got {chosen}"
+    );
+    assert!(
+        ["minute", "hour", "day"].contains(&chosen["bucket"].as_str().unwrap_or_default()),
+        "the route must choose a bucket and name it, got {chosen}"
+    );
+
+    let (status, refused) = server.api("GET", "/api/stats/series?bucket=fortnight", None);
+    assert_eq!(
+        status, 400,
+        "a bucket this route has no notion of must be refused, got {refused}"
+    );
+    let (status, refused) = server.api("GET", "/api/stats/series?from=yesterday", None);
+    assert_eq!(
+        status, 400,
+        "a bound that is not an RFC 3339 time must be refused, got {refused}"
+    );
+}
+
+/// Detects a window that narrows nothing, which would draw the whole log
+/// whatever range the page asked for, and a filter that silently matches
+/// everything.
+#[test]
+fn the_series_route_honours_the_window_and_the_two_filters_it_is_given() {
+    let server = server_with_a_session();
+
+    let (status, empty) = server.api(
+        "GET",
+        "/api/stats/series?from=2020-01-01T00:00:00Z&to=2020-01-02T00:00:00Z&bucket=day",
+        None,
+    );
+    assert_eq!(
+        status, 200,
+        "a window with nothing in it must be readable, got {empty}"
+    );
+    assert_eq!(
+        empty["points"],
+        json!([]),
+        "a window before every event must carry no points, got {empty}"
+    );
+
+    let (status, scoped) = server.api("GET", "/api/stats/series?scope=widgets&bucket=hour", None);
+    assert_eq!(
+        status, 200,
+        "a scoped series must be readable, got {scoped}"
+    );
+    let (_, whole) = server.api("GET", "/api/stats/series?bucket=hour", None);
+    let tokens = |answer: &Value| answer["points"][0]["tokens"].as_u64().unwrap_or(0);
+    assert!(
+        tokens(&scoped) > 0 && tokens(&scoped) < tokens(&whole),
+        "one scope's text must be part of the whole and not all of it, got {scoped} against \
+         {whole}"
+    );
+
+    let (status, elsewhere) = server.api(
+        "GET",
+        "/api/stats/series?session=alpha/nobody&bucket=hour",
+        None,
+    );
+    assert_eq!(
+        status, 200,
+        "a session with no events must be readable, got {elsewhere}"
+    );
+    assert_eq!(
+        elsewhere["points"],
+        json!([]),
+        "a session nothing was delivered into has no points, got {elsewhere}"
+    );
+}
+
+/// Detects a per-session series answered for a context the log has never seen,
+/// which would show the page an empty chart for a mistyped key instead of
+/// saying there is no such context, and one that drops either of the two
+/// measurements it exists to put side by side.
+#[test]
+fn the_session_series_route_answers_both_measurements_and_is_a_404_for_a_context_it_has_none_of() {
+    let server = server_with_a_session();
+
+    let (status, answer) = server.api("GET", "/api/stats/session/alpha/session-1/series", None);
+
+    assert_eq!(status, 200, "the series must be readable, got {answer}");
+    let events = answer
+        .as_array()
+        .unwrap_or_else(|| panic!("the series is a list of events: {answer}"));
+    assert_eq!(
+        events
+            .iter()
+            .map(|row| row["event"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["SessionStart", "UserPromptSubmit"],
+        "every event of the context must be there, oldest first, got {answer}"
+    );
+    for row in events {
+        assert_eq!(
+            row["context_tokens"],
+            json!(10_000),
+            "the size Claude Code reported must be carried through as it arrived, got {row}"
+        );
+        assert!(
+            row["tokens"].as_u64().is_some(),
+            "the answer's own cost must be a number of tokens, got {row}"
+        );
+    }
+
+    let (status, missing) = server.api("GET", "/api/stats/session/alpha/nobody/series", None);
+    assert_eq!(
+        status, 404,
+        "a context the log has no event of must be a resource that is not there, got {missing}"
+    );
+    let (status, unknown) = server.api("GET", "/api/stats/session/alpha/session-1", None);
+    assert_eq!(
+        status, 404,
+        "a path naming no sub-resource must be a 404, got {unknown}"
+    );
+}
+
+/// Detects a scopes report without the figures the page's table is made of, and
+/// a memory count taken from the log rather than from the catalog: a memory
+/// moved out of a scope stops being one of its memories at once, however often
+/// it was delivered under it.
+#[test]
+fn the_scopes_route_reports_what_a_scope_cost_beside_the_memories_it_holds_now() {
+    let server = server_with_a_session();
+
+    let (status, answer) = server.api("GET", "/api/stats/scopes", None);
+
+    assert_eq!(status, 200, "the scopes must be readable, got {answer}");
+    let rows = answer
+        .as_array()
+        .unwrap_or_else(|| panic!("the report is a list of rows: {answer}"));
+    let widgets = rows
+        .iter()
+        .find(|row| row["scope_id"] == json!("widgets"))
+        .unwrap_or_else(|| panic!("the widgets scope must have a row: {answer}"));
+    assert_eq!(
+        (widgets["deliveries"].as_u64(), widgets["memories"].as_u64()),
+        (Some(1), Some(1)),
+        "the prompt printed one section for the scope and the store gives it one memory: {widgets}"
+    );
+    let tokens = widgets["tokens"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("a scope reports what it cost in tokens: {widgets}"));
+    assert!(
+        tokens > 0,
+        "the scope delivered its memory in full: {widgets}"
+    );
+    assert_eq!(
+        widgets["tokens_per_delivery"].as_f64(),
+        Some(tokens as f64),
+        "one delivery cost the whole of it: {widgets}"
+    );
+}
+
+/// Detects a memories report that loses the scope a memory was printed under,
+/// which is what says where a memory's cost is charged, or that reports no cost
+/// at all.
+#[test]
+fn the_memories_route_reports_what_each_memory_cost_and_the_scope_it_was_printed_under() {
+    let server = server_with_a_session();
+
+    let (status, answer) = server.api("GET", "/api/stats/memories", None);
+
+    assert_eq!(status, 200, "the memories must be readable, got {answer}");
+    let row = answer
+        .as_array()
+        .unwrap_or_else(|| panic!("the report is a list of rows: {answer}"))
+        .iter()
+        .find(|row| row["memory"] == json!("widget-naming"))
+        .unwrap_or_else(|| panic!("the delivered memory must have a row: {answer}"))
+        .clone();
+    assert_eq!(
+        row["most_under"],
+        json!("widgets"),
+        "the memory's only scope is the section it was printed in: {row}"
+    );
+    assert!(
+        row["tokens"].as_u64().unwrap_or(0) > 0,
+        "a memory delivered in full cost tokens: {row}"
     );
 }

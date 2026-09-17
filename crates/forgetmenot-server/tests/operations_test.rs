@@ -18,6 +18,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use forgetmenot_server::clock::{Clock, FixedClock};
 use forgetmenot_server::context::ContextKey;
 use forgetmenot_server::operations::branches::LandRequest;
 use forgetmenot_server::operations::settings::{SettingsDoc, SettingsWriteRequest};
@@ -25,7 +26,7 @@ use forgetmenot_server::operations::{
     self, ContextPrompt, CurrentDocument, DeleteRequest, MemoryDoc, MemoryFilter,
     MemoryWriteRequest, OperationError, PromptMode, ScopeRow, StoreHistory,
 };
-use forgetmenot_server::stats::Table;
+use forgetmenot_server::stats::{Bucket, Filter, Table, Window};
 use forgetmenot_server::store::memory::{MemoryKind, MemorySource};
 use forgetmenot_server::store::validate::WriteMode;
 use forgetmenot_server::store::{MemoryId, ScopeId, ScopeKind};
@@ -1258,7 +1259,7 @@ fn the_whole_prompt_carries_every_critical_memory_of_the_contexts_scopes_with_it
         "the byte count must be the length of the text beside it"
     );
     assert!(
-        all.tokens_estimate >= 1,
+        all.tokens >= 1,
         "a text that is not empty must be estimated at a token or more, got {all:?}"
     );
     assert_eq!(
@@ -1788,4 +1789,241 @@ fn a_list_naming_an_id_that_is_no_scope_turns_none_of_the_others_on() {
             after.active
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The statistics read over a span of time: the summary windows, the series and
+// the per-session series, against the server's own clock.
+// ---------------------------------------------------------------------------
+
+/// The instant the test server's clock starts at, which is when the first event
+/// of a sequence below is recorded.
+fn started() -> chrono::DateTime<chrono::Utc> {
+    FixedClock::at_epoch_day().now()
+}
+
+/// A prompt naming a widget, which turns the `widgets` scope on and delivers
+/// what that makes due.
+fn widget_prompt(session: &str) -> Value {
+    json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": session,
+        "cwd": "/home/dev/notes",
+        "prompt": "check the widget numbering before we continue"
+    })
+}
+
+/// A prompt that names nothing the example store triggers on.
+fn quiet_prompt(session: &str) -> Value {
+    json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": session,
+        "cwd": "/home/dev/notes",
+        "prompt": "carry on where we left off"
+    })
+}
+
+/// Detects a summary that counts every event whatever its age, or that puts an
+/// event in the wrong window: the five-minute figure is what says whether
+/// anything is happening now, and it is useless if an hour-old event is in it.
+///
+/// Expectation source: the sequence below against the server's own clock. A
+/// session start, then the clock moves ten minutes, then a widget prompt. The
+/// five-minute window therefore holds the prompt alone and the hour window holds
+/// both.
+#[test]
+fn a_summary_window_holds_the_events_inside_it_and_none_of_the_older_ones() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
+    server.advance(chrono::Duration::minutes(10));
+    server.hook(MACHINE, SOME_TOKENS, &widget_prompt("session-1"));
+
+    let now = server.state().clock.now();
+    let windows = server
+        .stats()
+        .summary(now)
+        .expect("the summary is readable");
+    let named = |name: &str| {
+        windows
+            .iter()
+            .find(|row| row.name == name)
+            .unwrap_or_else(|| panic!("the summary must report the {name} window: {windows:?}"))
+            .clone()
+    };
+
+    assert_eq!(
+        named("5m").events,
+        1,
+        "the session start is ten minutes old, so only the prompt is in the five minutes: {windows:?}"
+    );
+    assert_eq!(
+        named("1h").events,
+        2,
+        "both events are inside the hour: {windows:?}"
+    );
+    assert!(
+        named("5m").chars > 0 && named("1h").chars > named("5m").chars,
+        "the hour must carry the session start's text as well as the prompt's: {windows:?}"
+    );
+    assert_eq!(
+        named("7d").events,
+        2,
+        "nothing of the sequence is a week old: {windows:?}"
+    );
+}
+
+/// Detects a series that ignores the session it was asked for, one that ignores
+/// the scope, and one that reports a bucket other than the one it bucketed by:
+/// the two filters are the whole point of the chart, and a line narrowed to a
+/// scope that is not narrowed at all reads as that scope costing everything.
+///
+/// Expectation source: the sequence below. Two sessions, one minute apart, each
+/// answered at its own minute; `widgets` is delivered only into the second.
+#[test]
+fn a_series_narrowed_to_a_session_or_a_scope_carries_only_that_sessions_or_scopes_text() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
+    server.advance(chrono::Duration::minutes(1));
+    server.hook(MACHINE, SOME_TOKENS, &quiet_prompt("session-2"));
+    server.hook(MACHINE, SOME_TOKENS, &widget_prompt("session-2"));
+    let stats = server.stats();
+
+    let whole = stats
+        .series(&Filter::all(), Bucket::Minute)
+        .expect("the series is readable");
+    assert_eq!(
+        whole.len(),
+        2,
+        "the two minutes that delivered something are the two points: {whole:?}"
+    );
+    let total: u64 = whole.iter().map(|point| point.chars).sum();
+
+    let first_session = Filter {
+        session: Some(ContextKey::main(MACHINE, "session-1")),
+        ..Filter::all()
+    };
+    let narrowed = stats
+        .series(&first_session, Bucket::Minute)
+        .expect("the series is readable");
+    assert_eq!(
+        narrowed.len(),
+        1,
+        "the first session was answered in one minute only: {narrowed:?}"
+    );
+    assert!(
+        narrowed[0].chars < total,
+        "one session's text must be less than both sessions': {narrowed:?} against {total}"
+    );
+
+    let widgets = Filter {
+        scope: Some("widgets".to_string()),
+        ..Filter::all()
+    };
+    let scoped = stats
+        .series(&widgets, Bucket::Minute)
+        .expect("the series is readable");
+    assert_eq!(
+        scoped.len(),
+        1,
+        "the widgets scope delivered in one minute only: {scoped:?}"
+    );
+    assert!(
+        scoped[0].chars > 0 && scoped[0].chars < total,
+        "the scope's own text must be part of the whole and not all of it: {scoped:?} against \
+         {total}"
+    );
+    assert_eq!(
+        stats
+            .series(
+                &Filter {
+                    scope: Some("nothing-was-printed-here".to_string()),
+                    ..Filter::all()
+                },
+                Bucket::Minute
+            )
+            .expect("the series is readable"),
+        Vec::new(),
+        "a scope nothing was printed under has no points"
+    );
+}
+
+/// Detects a series whose window is not honoured, which would draw the whole log
+/// whatever range the page asked for.
+#[test]
+fn a_series_over_a_window_leaves_out_what_falls_outside_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
+    let first = server.state().clock.now();
+    server.advance(chrono::Duration::hours(2));
+    server.hook(MACHINE, SOME_TOKENS, &widget_prompt("session-1"));
+    let second = server.state().clock.now();
+
+    let stats = server.stats();
+    let later = stats
+        .series(
+            &Filter::over(Window::between(first + chrono::Duration::hours(1), second)),
+            Bucket::Hour,
+        )
+        .expect("the series is readable");
+
+    assert_eq!(
+        later.len(),
+        1,
+        "only the second event is inside the window: {later:?}"
+    );
+    assert_eq!(
+        later[0].t,
+        second.format("%Y-%m-%dT%H:00:00Z").to_string(),
+        "the point must be named by the start of the hour it falls in: {later:?}"
+    );
+}
+
+/// Detects a per-session series that loses the context size Claude Code
+/// reported, or that reports the answer's own length as that size: the two are
+/// different measurements and the chart shows them beside each other.
+///
+/// Expectation source: the sequence below. The session start reports 10 000
+/// tokens and carries text; the quiet prompt afterwards is owed nothing and
+/// carries none.
+#[test]
+fn a_sessions_series_reports_the_size_claude_code_measured_beside_the_answers_own_length() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
+    server.hook(MACHINE, SOME_TOKENS, &quiet_prompt("session-1"));
+
+    let key = ContextKey::main(MACHINE, "session-1");
+    let events = server
+        .stats()
+        .session_series(&key, Window::default())
+        .expect("the series is readable");
+
+    assert_eq!(
+        events
+            .iter()
+            .map(|row| row.event.as_str())
+            .collect::<Vec<_>>(),
+        vec!["SessionStart", "UserPromptSubmit"],
+        "every event of the context must be there, oldest first: {events:?}"
+    );
+    assert!(
+        events.iter().all(|row| row.context_tokens == Some(10_000)),
+        "the size each event reported must be carried through as it arrived: {events:?}"
+    );
+    assert!(
+        events[0].answer_chars > 0 && events[1].answer_chars == 0,
+        "the start carried text and the prompt was owed nothing: {events:?}"
+    );
+    assert!(
+        server
+            .stats()
+            .session_series(&ContextKey::main(MACHINE, "nobody"), Window::default())
+            .expect("the series is readable")
+            .is_empty(),
+        "a context the log has no event of has no series"
+    );
+    assert_eq!(
+        events[0].t,
+        started().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "the events must be timestamped by the server's clock"
+    );
 }

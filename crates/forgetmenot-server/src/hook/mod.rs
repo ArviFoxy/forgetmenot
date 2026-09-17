@@ -8,7 +8,7 @@
 
 pub mod events;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,7 +22,7 @@ use git2::Oid;
 use crate::app::AppState;
 use crate::context::registry::Inheritance;
 use crate::context::{ContextState, Needs, PreviousTexts, compute_needs, record_delivery};
-use crate::render::{self, Delivery};
+use crate::render::{self, Delivery, Rendered};
 use crate::service::Store;
 use crate::stats::{Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, TriggerFire};
 use crate::store::catalog::Catalog;
@@ -116,15 +116,20 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     // is a reason to answer at all but not a delivery: nothing is recorded
     // against the context and no call is held for it.
     let answered = !outcome.needs.is_empty() || !delivery.announced_scopes().is_empty();
-    let response = if answered {
-        let text = render::render(&delivery);
-        if deny {
-            HookResponse::deny(plan.event_name, DENY_REASON, text)
-        } else {
-            HookResponse::with_context(plan.event_name, text)
+    // Rendered once: the text the model is sent and the accounting the
+    // statistics record are the same pass, so what a scope is charged is the
+    // text that was actually sent.
+    let rendered = answered.then(|| render::render(&delivery));
+    let response = match &rendered {
+        Some(rendered) => {
+            let text = rendered.text.clone();
+            if deny {
+                HookResponse::deny(plan.event_name, DENY_REASON, text)
+            } else {
+                HookResponse::with_context(plan.event_name, text)
+            }
         }
-    } else {
-        HookResponse::empty()
+        None => HookResponse::empty(),
     };
 
     let decision = match (deny, answered) {
@@ -141,11 +146,12 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
             agent: plan.key.agent.clone(),
             event: plan.event_name.to_string(),
             context_tokens: tokens_now,
+            answer_chars: rendered.as_ref().map(Rendered::chars).unwrap_or_default(),
             latency_us: started.elapsed().as_micros() as u64,
             decision,
             triggers: outcome.fires,
             forgotten: outcome.forgotten,
-            deliveries: deliveries_of(&outcome.needs, &catalog),
+            deliveries: deliveries_of(&outcome.needs, &catalog, rendered.as_ref()),
         })
         .await;
 
@@ -420,9 +426,28 @@ fn forget_scopes(
 /// One statistics row per memory this event delivered, withdrew, or found had
 /// only shrunk.
 ///
-/// A shrunk memory is recorded with no bytes: the row exists so that the context
-/// the rule did not cost is visible, and nothing was sent.
-fn deliveries_of(needs: &Needs, catalog: &Catalog) -> Vec<crate::stats::Delivery> {
+/// The scope and the size of a delivered memory are read out of `rendered`,
+/// which is the answer that was sent: a memory's cost is the text printed for
+/// it and the scope it is charged to is the section it was printed in, neither
+/// of them worked out again here.
+///
+/// A withdrawal and a memory that only shrank put nothing in the answer, so
+/// neither has a section or a size: the row exists so that the context the rule
+/// did not cost is visible, and nothing was sent.
+fn deliveries_of(
+    needs: &Needs,
+    catalog: &Catalog,
+    rendered: Option<&Rendered>,
+) -> Vec<crate::stats::Delivery> {
+    let mut printed: BTreeMap<&MemoryId, (&ScopeId, u64, u64)> = BTreeMap::new();
+    if let Some(rendered) = rendered {
+        for section in &rendered.sections {
+            for memory in &section.memories {
+                printed.insert(&memory.id, (&section.scope, memory.chars, memory.bytes));
+            }
+        }
+    }
+
     let mut deliveries = Vec::new();
     for (ids, reason) in [
         (&needs.new, "new"),
@@ -435,15 +460,18 @@ fn deliveries_of(needs: &Needs, catalog: &Catalog) -> Vec<crate::stats::Delivery
                 .memory(id)
                 .map(|memory| memory.kind())
                 .unwrap_or(MemoryKind::Knowledge);
+            let (scope, chars, bytes) = match printed.get(id) {
+                Some((scope, chars, bytes)) => (scope.to_string(), *chars, *bytes),
+                None => (String::new(), 0, 0),
+            };
             deliveries.push(crate::stats::Delivery {
                 memory: id.to_string(),
                 kind: kind_name(kind).to_string(),
                 form: crate::context::Form::for_kind(kind).as_str().to_string(),
                 reason: reason.to_string(),
-                bytes: match reason == SHRUNK_REASON {
-                    true => 0,
-                    false => render::delivery_bytes(catalog, id),
-                },
+                scope,
+                chars,
+                bytes,
             });
         }
     }
@@ -455,9 +483,12 @@ fn deliveries_of(needs: &Needs, catalog: &Catalog) -> Vec<crate::stats::Delivery
         deliveries.push(crate::stats::Delivery {
             memory: id.to_string(),
             kind: kind_name(kind).to_string(),
-            // A withdrawal carries no content, so it has no form.
+            // A withdrawal carries no content, so it has no form, no section and
+            // no size.
             form: "none".to_string(),
             reason: format!("retracted:{}", why.as_str().replace(' ', "-")),
+            scope: String::new(),
+            chars: 0,
             bytes: 0,
         });
     }

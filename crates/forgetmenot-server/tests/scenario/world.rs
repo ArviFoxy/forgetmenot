@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use forgetmenot_server::stats::Filter;
 use forgetmenot_server::store::catalog::Catalog;
 use forgetmenot_server::store::settings::SETTINGS_PATH;
 use forgetmenot_server::store::{MemoryId, ScopeId};
@@ -156,7 +157,7 @@ impl World {
         let rows = self
             .server
             .stats()
-            .memory_stats()
+            .memory_stats(&Filter::all())
             .expect("the statistics are readable");
         rows.into_iter()
             .filter(|row| row.memory == memory_id)
@@ -186,12 +187,43 @@ impl World {
         let rows = self
             .server
             .stats()
-            .scope_stats(&active_sets)
+            .scope_stats(&Filter::all(), &active_sets)
             .expect("the statistics are readable");
         rows.into_iter()
             .find(|row| row.scope_id == scope_id)
             .map(|row| serde_json::to_value(row).expect("a statistics row is JSON"))
             .unwrap_or_else(|| panic!("the statistics know no scope {scope_id}"))
+    }
+
+    /// What the statistics summary reports now: one row per window, with the
+    /// tokens the store's divisor turns the delivered characters into.
+    ///
+    /// Read through the route the page reads, so a scenario asks the question
+    /// the page asks.
+    pub fn stats_summary(&self) -> Value {
+        let (status, body) = self.api("GET", "/api/stats/summary", None);
+        assert_eq!(status, 200, "the summary must be readable, got {body}");
+        body
+    }
+
+    /// The delivered-tokens series over the whole log, with the bucket the
+    /// server chose and the points it has.
+    pub fn stats_series(&self, query: &str) -> Value {
+        let (status, body) = self.api("GET", &format!("/api/stats/series?{query}"), None);
+        assert_eq!(status, 200, "the series must be readable, got {body}");
+        body
+    }
+
+    /// What the statistics report for each scope now, one row per scope.
+    pub fn stats_scopes(&self, query: &str) -> Vec<Value> {
+        let (status, body) = self.api("GET", &format!("/api/stats/scopes?{query}"), None);
+        assert_eq!(
+            status, 200,
+            "the scopes report must be readable, got {body}"
+        );
+        body.as_array()
+            .expect("the scopes report is a JSON array")
+            .clone()
     }
 
     /// One request to the JSON API, with its status and its answer.

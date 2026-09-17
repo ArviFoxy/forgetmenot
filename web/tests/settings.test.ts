@@ -47,6 +47,7 @@ const doc: SettingsDoc = {
 test('a type the schema uses has no control on the page', () => {
   expect(controlFor('integer or null')).toBe('number-or-off');
   expect(controlFor('integer')).toBe('number');
+  expect(controlFor('number')).toBe('number');
   expect(controlFor('bool')).toBe('switch');
   expect(controlFor('list of strings')).toBe('tags');
   for (const row of doc.schema) expect(controlFor(row.type)).not.toBeNull();

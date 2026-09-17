@@ -9,11 +9,12 @@ use clap::{Args, Parser, Subcommand};
 use forgetmenot_server::clock::SystemClock;
 use forgetmenot_server::config::{Config, DEFAULT_SNAPSHOT_DEBOUNCE_MS};
 use forgetmenot_server::stats::{
-    DenyDayRow, LatencyRow, MemoryStatsRow, SessionBytesRow, StatsReader, TriggerStatsRow,
-    format_bytes,
+    DenyDayRow, Filter, LatencyRow, MemoryStatsRow, SessionStatsRow, StatsReader, TriggerStatsRow,
+    format_bytes, tokens_of,
 };
 use forgetmenot_server::store::catalog::Catalog;
 use forgetmenot_server::store::git::GitRepo;
+use forgetmenot_server::store::settings::DEFAULT_CHARACTERS_PER_TOKEN;
 use forgetmenot_server::store::validate::validate;
 use serde::Serialize;
 
@@ -196,7 +197,8 @@ struct StatsArgs {
     /// The sqlite database the server appended statistics to.
     #[arg(long, value_name = "PATH")]
     stats_path: PathBuf,
-    /// Print one JSON object holding every aggregate instead of tables.
+    /// Print one JSON object holding every aggregate instead of tables, with
+    /// raw character counts rather than tokens.
     #[arg(long)]
     json: bool,
 }
@@ -205,7 +207,9 @@ struct StatsArgs {
 ///
 /// There is no live-context count here: which contexts are working in a scope
 /// right now is state a running server holds, and this command reads a file, so
-/// the scope report is the activations the log recorded and nothing else.
+/// the scope report is the activations the log recorded and nothing else. The
+/// figures are the raw character counts the log holds; the tables below turn
+/// them into tokens.
 #[derive(Serialize)]
 struct StatsReport {
     memories: Vec<MemoryStatsRow>,
@@ -213,7 +217,7 @@ struct StatsReport {
     scopes: Vec<ScopeActivationsRow>,
     denies: Vec<DenyDayRow>,
     latency: Vec<LatencyRow>,
-    sessions: Vec<SessionBytesRow>,
+    sessions: Vec<SessionStatsRow>,
 }
 
 /// What one scope did, as a file can answer it.
@@ -222,6 +226,8 @@ struct ScopeActivationsRow {
     scope_id: String,
     activations: u64,
     forgettings: u64,
+    chars: u64,
+    deliveries: u64,
 }
 
 /// Report the statistics at `--stats-path`.
@@ -236,20 +242,22 @@ fn stats(arguments: &StatsArgs) -> ExitCode {
     // No active scope sets: see StatsReport.
     let report = (|| {
         Ok::<_, forgetmenot_server::stats::StatsError>(StatsReport {
-            memories: reader.memory_stats()?,
-            triggers: reader.trigger_stats()?,
+            memories: reader.memory_stats(&Filter::all())?,
+            triggers: reader.trigger_stats(&Filter::all())?,
             scopes: reader
-                .scope_stats(&[])?
+                .scope_stats(&Filter::all(), &[])?
                 .into_iter()
                 .map(|row| ScopeActivationsRow {
                     scope_id: row.scope_id,
                     activations: row.activations,
                     forgettings: row.forgettings,
+                    chars: row.chars,
+                    deliveries: row.deliveries,
                 })
                 .collect(),
             denies: reader.deny_days()?,
             latency: reader.latency()?,
-            sessions: reader.session_bytes()?,
+            sessions: reader.session_stats(&Filter::all())?,
         })
     })();
     let report = match report {
@@ -275,7 +283,13 @@ fn stats(arguments: &StatsArgs) -> ExitCode {
 }
 
 /// The report as plain tables, one per aggregate.
+///
+/// The token figures go through the same [`tokens_of`] the server's routes use.
+/// This command reads a file and not a store, so it divides by the documented
+/// default rather than by a store's own setting; `--json` prints the raw
+/// character counts the log holds.
 fn print_report(report: &StatsReport) {
+    let tokens = |chars: u64| tokens_of(chars, DEFAULT_CHARACTERS_PER_TOKEN).to_string();
     print_table(
         "memories",
         &[
@@ -287,6 +301,8 @@ fn print_report(report: &StatsReport) {
             "fetched_full",
             "shrunk",
             "retracted",
+            "tokens",
+            "most_under",
             "last_shown",
         ],
         report
@@ -302,6 +318,8 @@ fn print_report(report: &StatsReport) {
                     row.fetched_full.to_string(),
                     row.shrunk.to_string(),
                     row.retracted.to_string(),
+                    tokens(row.chars),
+                    row.most_under.clone().unwrap_or_default(),
                     row.last_shown.clone().unwrap_or_default(),
                 ]
             })
@@ -334,7 +352,13 @@ fn print_report(report: &StatsReport) {
     );
     print_table(
         "scopes",
-        &["scope_id", "activations", "forgettings"],
+        &[
+            "scope_id",
+            "activations",
+            "forgettings",
+            "tokens",
+            "deliveries",
+        ],
         report
             .scopes
             .iter()
@@ -343,6 +367,8 @@ fn print_report(report: &StatsReport) {
                     row.scope_id.clone(),
                     row.activations.to_string(),
                     row.forgettings.to_string(),
+                    tokens(row.chars),
+                    row.deliveries.to_string(),
                 ]
             })
             .collect(),
@@ -382,7 +408,13 @@ fn print_report(report: &StatsReport) {
     );
     print_table(
         "sessions",
-        &["session_key", "bytes_full", "bytes_index"],
+        &[
+            "session_key",
+            "bytes_full",
+            "bytes_index",
+            "tokens",
+            "last_context_tokens",
+        ],
         report
             .sessions
             .iter()
@@ -391,6 +423,10 @@ fn print_report(report: &StatsReport) {
                     row.session_key.clone(),
                     format_bytes(row.bytes_full),
                     format_bytes(row.bytes_index),
+                    tokens(row.chars),
+                    row.last_context_tokens
+                        .map(|tokens| tokens.to_string())
+                        .unwrap_or_default(),
                 ]
             })
             .collect(),

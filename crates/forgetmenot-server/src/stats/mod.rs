@@ -4,6 +4,14 @@
 //! record to a bounded channel and one writer thread inserts it. The channel
 //! applies backpressure when it is full rather than dropping records, because a
 //! missing row would be read later as "this memory was never delivered".
+//!
+//! A delivery row carries the scope the memory was printed under and the length
+//! of the text printed for it, both as the renderer accounted them at the moment
+//! the answer was sent. A log written before those columns existed opens and is
+//! read: its rows carry null, which is what "recorded before this was recorded"
+//! means. The queries over a span of time are in [`queries`].
+
+pub mod queries;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -15,6 +23,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::context::ContextKey;
 use crate::store::ScopeId;
+
+pub use queries::{
+    Bucket, Filter, SUMMARY_WINDOWS, SeriesPoint, SessionEventRow, SummaryRow, Window, tokens_of,
+};
 
 /// How many records may be queued before senders wait.
 pub const QUEUE_CAPACITY: usize = 4096;
@@ -82,6 +94,13 @@ pub struct Delivery {
     pub form: String,
     /// `new`, `changed`, `stale`, `shrunk` or `retracted`.
     pub reason: String,
+    /// The scope whose section this memory was printed in, empty for a row that
+    /// printed nothing: a withdrawal, or a memory that only shrank.
+    pub scope: String,
+    /// UTF-16 units of the text printed for this memory, zero when nothing was
+    /// printed.
+    pub chars: u64,
+    /// Bytes of the same text, which is the raw log's own unit.
     pub bytes: u64,
 }
 
@@ -94,6 +113,9 @@ pub struct HookEventRecord {
     pub agent: String,
     pub event: String,
     pub context_tokens: Option<u64>,
+    /// UTF-16 units of the whole answer, zero when the event was answered with
+    /// nothing.
+    pub answer_chars: u64,
     pub latency_us: u64,
     pub decision: Decision,
     pub triggers: Vec<TriggerFire>,
@@ -257,6 +279,18 @@ impl StatsReader {
             .map(|count| count as u64)
             .unwrap_or_else(|error| panic!("{query}: {error}"))
     }
+
+    /// The open handle, for the queries in [`queries`].
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
+    pub(crate) fn failed(&self, source: rusqlite::Error) -> StatsError {
+        StatsError::Sqlite {
+            path: self.path.clone(),
+            source,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +332,12 @@ pub struct MemoryStatsRow {
     pub shrunk: u64,
     /// Times this memory was withdrawn from a context.
     pub retracted: u64,
+    /// UTF-16 units of the text delivered for this memory, over every delivery
+    /// of it in the window.
+    pub chars: u64,
+    /// The scope this memory was printed under most often, `None` when it was
+    /// never printed or every row of it predates the column.
+    pub most_under: Option<String>,
     /// When this memory was last delivered in any form, as the log wrote it.
     pub last_shown: Option<String>,
 }
@@ -313,6 +353,8 @@ impl MemoryStatsRow {
             fetched_full: 0,
             shrunk: 0,
             retracted: 0,
+            chars: 0,
+            most_under: None,
             last_shown: None,
         }
     }
@@ -340,6 +382,10 @@ pub struct ScopeStatsRow {
     pub activations: u64,
     /// Times this scope turned itself off because its `forget` rule was reached.
     pub forgettings: u64,
+    /// UTF-16 units printed in this scope's sections over the window.
+    pub chars: u64,
+    /// Events that printed a section for this scope.
+    pub deliveries: u64,
     /// Live contexts working in this scope; this is the registry's answer, not
     /// the log's.
     pub live_contexts: u64,
@@ -385,40 +431,66 @@ pub struct MemoryDeliveryRow {
     /// `new`, `changed`, `stale`, [`SHRUNK_REASON`], or [`RETRACTED_PREFIX`]
     /// and why it was withdrawn.
     pub reason: String,
+    /// The scope this memory was printed under, `None` for a row written before
+    /// the column existed and empty for a row that printed nothing.
+    pub scope: Option<String>,
+    /// UTF-16 units printed for this memory at this event.
+    pub chars: u64,
     pub bytes: u64,
 }
 
-/// What one session was given, in bytes, with the two forms kept apart.
+/// What one session was given, with the two forms' bytes kept apart.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct SessionBytesRow {
+pub struct SessionStatsRow {
     /// `<machine>/<session-id>[/<agent-id>]`, the key the MCP tools take.
     pub session_key: String,
     pub bytes_full: u64,
     pub bytes_index: u64,
+    /// UTF-16 units delivered into this context over the window, both forms
+    /// together, which is what it cost the model to be told them.
+    pub chars: u64,
+    /// The context size Claude Code reported at the last event of this context
+    /// in the window; `None` when no event of it carried one.
+    pub last_context_tokens: Option<u64>,
 }
 
 impl StatsReader {
     /// What was delivered for each memory, by form and reason, one row per
-    /// memory that was ever delivered or fetched, sorted by memory.
-    pub fn memory_stats(&self) -> Result<Vec<MemoryStatsRow>, StatsError> {
+    /// memory that was ever delivered or fetched in the window, sorted by
+    /// memory.
+    pub fn memory_stats(&self, filter: &Filter) -> Result<Vec<MemoryStatsRow>, StatsError> {
         let mut rows: BTreeMap<String, MemoryStatsRow> = BTreeMap::new();
+        // How often each memory was printed under each scope, which decides the
+        // scope it is reported as having been printed under most.
+        let mut under: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+
+        let (clause, values) = filter.clause(true);
         let deliveries = self.rows(
-            "SELECT deliveries.memory, deliveries.form, deliveries.reason, hook_events.ts
-             FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id",
-            params![],
+            &format!(
+                "SELECT deliveries.memory, deliveries.form, deliveries.reason, hook_events.ts,
+                        coalesce(deliveries.chars, 0), deliveries.scope
+                 FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id{clause}"
+            ),
+            &queries::parameters(&values),
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )?;
-        for (memory, form, reason, ts) in deliveries {
+        for (memory, form, reason, ts, chars, scope) in deliveries {
             let row = rows
                 .entry(memory.clone())
-                .or_insert_with(|| MemoryStatsRow::empty(memory));
+                .or_insert_with(|| MemoryStatsRow::empty(memory.clone()));
+            row.chars += chars.max(0) as u64;
+            if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
+                *under.entry(memory).or_default().entry(scope).or_default() += 1;
+            }
             // A shrunk row is counted before the form is read, because nothing
             // was shown in that form: counting it as one would inflate the
             // deliveries this memory is reported to have cost.
@@ -439,12 +511,31 @@ impl StatsReader {
             }
             keep_newest(&mut row.last_shown, ts);
         }
+        for (memory, scopes) in under {
+            // Ties go to the first scope by id, so the answer does not depend on
+            // the order the rows came back in.
+            let most = scopes
+                .into_iter()
+                .max_by(|left, right| left.1.cmp(&right.1).then(right.0.cmp(&left.0)))
+                .map(|(scope, _)| scope);
+            if let Some(row) = rows.get_mut(&memory) {
+                row.most_under = most;
+            }
+        }
 
+        let (tool_clause, mut tool_values) = filter.tool_call_clause();
+        let joiner = match tool_clause.is_empty() {
+            true => " WHERE ",
+            false => " AND ",
+        };
+        tool_values.push(rusqlite::types::Value::Text(MEMORY_GET_TOOL.to_string()));
         let fetches = self.rows(
-            "SELECT memory, count(*) FROM tool_calls
-             WHERE tool = ?1 AND memory IS NOT NULL
-             GROUP BY memory",
-            params![MEMORY_GET_TOOL],
+            &format!(
+                "SELECT tool_calls.memory, count(*) FROM tool_calls{tool_clause}{joiner}
+                 tool_calls.tool = ? AND tool_calls.memory IS NOT NULL
+                 GROUP BY tool_calls.memory"
+            ),
+            &queries::parameters(&tool_values),
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )?;
         // A memory the model only ever fetched itself was never delivered, so it
@@ -463,59 +554,64 @@ impl StatsReader {
     /// skipped this memory, so an order and a repeat are visible where the
     /// counts of [`StatsReader::memory_stats`] are not.
     pub fn deliveries_of(&self, memory: &str) -> Result<Vec<MemoryDeliveryRow>, StatsError> {
-        let rows = self.rows(
+        let memory = rusqlite::types::Value::Text(memory.to_string());
+        self.rows(
             "SELECT hook_events.ts, hook_events.machine, hook_events.session_id,
                     hook_events.agent, hook_events.event,
-                    deliveries.kind, deliveries.form, deliveries.reason, deliveries.bytes
+                    deliveries.kind, deliveries.form, deliveries.reason,
+                    deliveries.scope, coalesce(deliveries.chars, 0), deliveries.bytes
              FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id
-             WHERE deliveries.memory = ?1
+             WHERE deliveries.memory = ?
              ORDER BY deliveries.rowid",
-            params![memory],
+            &queries::parameters(std::slice::from_ref(&memory)),
             |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
+                Ok(MemoryDeliveryRow {
+                    ts: row.get(0)?,
+                    // The constructor prints the agent only when there is a
+                    // subagent to name, which is the form the MCP tools take.
+                    session_key: ContextKey::subagent(
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    )
+                    .to_string(),
+                    event: row.get(4)?,
+                    kind: row.get(5)?,
+                    form: row.get(6)?,
+                    reason: row.get(7)?,
+                    scope: row.get(8)?,
+                    chars: row.get::<_, i64>(9)?.max(0) as u64,
+                    bytes: row.get::<_, i64>(10)?.max(0) as u64,
+                })
             },
-        )?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(ts, machine, session_id, agent, event, kind, form, reason, bytes)| {
-                    MemoryDeliveryRow {
-                        ts,
-                        // The constructor prints the agent only when there is a
-                        // subagent to name, which is the form the MCP tools take.
-                        session_key: ContextKey::subagent(machine, session_id, agent).to_string(),
-                        event,
-                        kind,
-                        form,
-                        reason,
-                        bytes: bytes.max(0) as u64,
-                    }
-                },
-            )
-            .collect())
+        )
     }
 
-    /// What each trigger pattern did, sorted by scope, field and pattern.
-    pub fn trigger_stats(&self) -> Result<Vec<TriggerStatsRow>, StatsError> {
+    /// What each trigger pattern did in the window, sorted by scope, field and
+    /// pattern.
+    pub fn trigger_stats(&self, filter: &Filter) -> Result<Vec<TriggerStatsRow>, StatsError> {
+        let (clause, mut values) = filter.clause(false);
+        let mut clause = clause;
+        if let Some(scope) = &filter.scope {
+            let joiner = match clause.is_empty() {
+                true => " WHERE ",
+                false => " AND ",
+            };
+            clause = format!("{clause}{joiner}trigger_fires.scope_id = ?");
+            values.push(rusqlite::types::Value::Text(scope.clone()));
+        }
         self.rows(
-            "SELECT trigger_fires.scope_id, trigger_fires.field, trigger_fires.pattern,
-                    count(*),
-                    sum(trigger_fires.activated_new),
-                    sum(CASE WHEN hook_events.decision = 'deny' THEN 1 ELSE 0 END)
-             FROM trigger_fires JOIN hook_events ON hook_events.id = trigger_fires.event_id
-             GROUP BY trigger_fires.scope_id, trigger_fires.field, trigger_fires.pattern
-             ORDER BY trigger_fires.scope_id, trigger_fires.field, trigger_fires.pattern",
-            params![],
+            &format!(
+                "SELECT trigger_fires.scope_id, trigger_fires.field, trigger_fires.pattern,
+                        count(*),
+                        sum(trigger_fires.activated_new),
+                        sum(CASE WHEN hook_events.decision = 'deny' THEN 1 ELSE 0 END)
+                 FROM trigger_fires
+                 JOIN hook_events ON hook_events.id = trigger_fires.event_id{clause}
+                 GROUP BY trigger_fires.scope_id, trigger_fires.field, trigger_fires.pattern
+                 ORDER BY trigger_fires.scope_id, trigger_fires.field, trigger_fires.pattern"
+            ),
+            &queries::parameters(&values),
             |row| {
                 let fires = row.get::<_, i64>(3)?.max(0) as u64;
                 let denies = row.get::<_, i64>(5)?.max(0) as u64;
@@ -536,12 +632,14 @@ impl StatsReader {
         )
     }
 
-    /// What each scope did, and how many live contexts work in it.
+    /// What each scope did in the window, what its sections cost, and how many
+    /// live contexts work in it.
     ///
     /// `active_sets` is the active scope set of every live context, which only a
     /// running server knows: it is the registry's state, not the log's.
     pub fn scope_stats(
         &self,
+        filter: &Filter,
         active_sets: &[BTreeSet<ScopeId>],
     ) -> Result<Vec<ScopeStatsRow>, StatsError> {
         /// The row of one scope, added with nothing counted yet if absent.
@@ -554,28 +652,67 @@ impl StatsReader {
                     scope_id: scope_id.to_string(),
                     activations: 0,
                     forgettings: 0,
+                    chars: 0,
+                    deliveries: 0,
                     live_contexts: 0,
                 })
         }
 
         let mut rows: BTreeMap<String, ScopeStatsRow> = BTreeMap::new();
+        let (clause, values) = filter.clause(false);
+        let joiner = match clause.is_empty() {
+            true => " WHERE ",
+            false => " AND ",
+        };
         let activations = self.rows(
-            "SELECT scope_id, count(*) FROM trigger_fires
-             WHERE activated_new = 1
-             GROUP BY scope_id",
-            params![],
+            &format!(
+                "SELECT trigger_fires.scope_id, count(*) FROM trigger_fires
+                 JOIN hook_events ON hook_events.id = trigger_fires.event_id{clause}{joiner}
+                 trigger_fires.activated_new = 1
+                 GROUP BY trigger_fires.scope_id"
+            ),
+            &queries::parameters(&values),
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )?;
         for (scope_id, count) in activations {
             row_for(&mut rows, &scope_id).activations = count.max(0) as u64;
         }
         let forgettings = self.rows(
-            "SELECT scope_id, count(*) FROM scope_forgettings GROUP BY scope_id",
-            params![],
+            &format!(
+                "SELECT scope_forgettings.scope_id, count(*) FROM scope_forgettings
+                 JOIN hook_events ON hook_events.id = scope_forgettings.event_id{clause}
+                 GROUP BY scope_forgettings.scope_id"
+            ),
+            &queries::parameters(&values),
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )?;
         for (scope_id, count) in forgettings {
             row_for(&mut rows, &scope_id).forgettings = count.max(0) as u64;
+        }
+        // What a scope cost is the length of its own sections: a memory printed
+        // under another scope is that scope's, however many scopes hold it.
+        let delivered = self.rows(
+            &format!(
+                "SELECT deliveries.scope,
+                        coalesce(sum(deliveries.chars), 0),
+                        count(DISTINCT deliveries.event_id)
+                 FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id{clause}\
+                 {joiner}deliveries.scope IS NOT NULL AND deliveries.scope != ''
+                 GROUP BY deliveries.scope"
+            ),
+            &queries::parameters(&values),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        for (scope_id, chars, events) in delivered {
+            let row = row_for(&mut rows, &scope_id);
+            row.chars = chars.max(0) as u64;
+            row.deliveries = events.max(0) as u64;
         }
         // A scope can be live without ever having been activated by a trigger:
         // the implicit scopes are, and so is one a scope implies.
@@ -583,6 +720,9 @@ impl StatsReader {
             for scope in active {
                 row_for(&mut rows, scope.as_str()).live_contexts += 1;
             }
+        }
+        if let Some(scope) = &filter.scope {
+            rows.retain(|scope_id, _| scope_id == scope);
         }
         Ok(rows.into_values().collect())
     }
@@ -598,7 +738,7 @@ impl StatsReader {
              FROM hook_events
              GROUP BY day
              ORDER BY day",
-            params![],
+            &[],
             |row| {
                 Ok(DenyDayRow {
                     day: row.get(0)?,
@@ -615,11 +755,9 @@ impl StatsReader {
     /// here rather than in sqlite: the log is small enough to sort, and
     /// nearest-rank is then the same arithmetic wherever it is reported.
     pub fn latency(&self) -> Result<Vec<LatencyRow>, StatsError> {
-        let measurements = self.rows(
-            "SELECT event, latency_us FROM hook_events",
-            params![],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )?;
+        let measurements = self.rows("SELECT event, latency_us FROM hook_events", &[], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut by_event: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         for (event, latency) in measurements {
             by_event
@@ -651,41 +789,60 @@ impl StatsReader {
     pub fn machines(&self) -> Result<Vec<String>, StatsError> {
         self.rows(
             "SELECT DISTINCT machine FROM hook_events ORDER BY machine",
-            params![],
+            &[],
             |row| row.get::<_, String>(0),
         )
     }
 
-    /// Delivered bytes per session, with full bodies and index lines apart,
-    /// sorted by session key.
-    pub fn session_bytes(&self) -> Result<Vec<SessionBytesRow>, StatsError> {
+    /// What each context was delivered in the window and the context size its
+    /// last event there reported, sorted by session key.
+    ///
+    /// Every context the window holds an event of has a row, whether or not
+    /// anything was delivered into it: a session that was answered with nothing
+    /// still has a context size worth seeing beside the zero.
+    pub fn session_stats(&self, filter: &Filter) -> Result<Vec<SessionStatsRow>, StatsError> {
+        let mut rows: BTreeMap<String, SessionStatsRow> = BTreeMap::new();
+        let row_for = |rows: &mut BTreeMap<String, SessionStatsRow>, key: String| {
+            rows.entry(key.clone()).or_insert(SessionStatsRow {
+                session_key: key,
+                bytes_full: 0,
+                bytes_index: 0,
+                chars: 0,
+                last_context_tokens: None,
+            });
+        };
+
+        let (clause, values) = filter.clause(true);
         let groups = self.rows(
-            "SELECT hook_events.machine, hook_events.session_id, hook_events.agent,
-                    deliveries.form, sum(deliveries.bytes)
-             FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id
-             GROUP BY hook_events.machine, hook_events.session_id, hook_events.agent,
-                      deliveries.form",
-            params![],
+            &format!(
+                "SELECT hook_events.machine, hook_events.session_id, hook_events.agent,
+                        deliveries.form, sum(deliveries.bytes),
+                        coalesce(sum(deliveries.chars), 0)
+                 FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id{clause}
+                 GROUP BY hook_events.machine, hook_events.session_id, hook_events.agent,
+                          deliveries.form"
+            ),
+            &queries::parameters(&values),
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    // The constructor prints the agent only when there is a
+                    // subagent to name, which is the form the MCP tools take.
+                    ContextKey::subagent(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    )
+                    .to_string(),
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             },
         )?;
-        let mut rows: BTreeMap<String, SessionBytesRow> = BTreeMap::new();
-        for (machine, session_id, agent, form, bytes) in groups {
-            // The constructor prints the agent only when there is a subagent to
-            // name, which is the form the MCP tools take.
-            let session_key = ContextKey::subagent(machine, session_id, agent).to_string();
-            let row = rows.entry(session_key.clone()).or_insert(SessionBytesRow {
-                session_key,
-                bytes_full: 0,
-                bytes_index: 0,
-            });
+        for (session_key, form, bytes, chars) in groups {
+            row_for(&mut rows, session_key.clone());
+            let row = rows.get_mut(&session_key).expect("the row was just added");
+            row.chars += chars.max(0) as u64;
             let bytes = bytes.max(0) as u64;
             match form.as_str() {
                 "full" => row.bytes_full += bytes,
@@ -694,35 +851,38 @@ impl StatsReader {
                 _ => {}
             }
         }
+
+        let (clause, values) = filter.clause(false);
+        let sizes = self.rows(
+            &format!(
+                "SELECT hook_events.machine, hook_events.session_id, hook_events.agent,
+                        hook_events.context_tokens
+                 FROM hook_events{clause}
+                 ORDER BY hook_events.id"
+            ),
+            &queries::parameters(&values),
+            |row| {
+                Ok((
+                    ContextKey::subagent(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    )
+                    .to_string(),
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )?;
+        // Oldest first, so the last event that carried a size is the one left.
+        for (session_key, tokens) in sizes {
+            row_for(&mut rows, session_key.clone());
+            if let Some(tokens) = tokens {
+                rows.get_mut(&session_key)
+                    .expect("the row was just added")
+                    .last_context_tokens = Some(tokens.max(0) as u64);
+            }
+        }
         Ok(rows.into_values().collect())
-    }
-
-    /// Every row of `query`, read with `read`.
-    fn rows<T>(
-        &self,
-        query: &str,
-        parameters: &[&dyn rusqlite::ToSql],
-        read: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
-    ) -> Result<Vec<T>, StatsError> {
-        let mut statement = self
-            .connection
-            .prepare(query)
-            .map_err(|source| self.failed(source))?;
-        let mapped = statement
-            .query_map(parameters, |row| read(row))
-            .map_err(|source| self.failed(source))?;
-        let mut collected = Vec::new();
-        for row in mapped {
-            collected.push(row.map_err(|source| self.failed(source))?);
-        }
-        Ok(collected)
-    }
-
-    fn failed(&self, source: rusqlite::Error) -> StatsError {
-        StatsError::Sqlite {
-            path: self.path.clone(),
-            source,
-        }
     }
 }
 
@@ -839,7 +999,8 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
                  event TEXT NOT NULL,
                  context_tokens INTEGER,
                  latency_us INTEGER NOT NULL,
-                 decision TEXT NOT NULL
+                 decision TEXT NOT NULL,
+                 answer_chars INTEGER
              );
              CREATE TABLE IF NOT EXISTS trigger_fires (
                  event_id INTEGER NOT NULL,
@@ -860,7 +1021,9 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
                  kind TEXT NOT NULL,
                  form TEXT NOT NULL,
                  reason TEXT NOT NULL,
-                 bytes INTEGER NOT NULL
+                 bytes INTEGER NOT NULL,
+                 scope TEXT,
+                 chars INTEGER
              );
              CREATE TABLE IF NOT EXISTS tool_calls (
                  id INTEGER PRIMARY KEY,
@@ -883,7 +1046,39 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
                  ON tool_calls (tool, memory);",
         )
         .map_err(to_error)?;
+    // A log written before these columns existed is opened and read rather than
+    // replaced: its rows keep null, which is what "recorded before this was
+    // recorded" means, and everything written from now on carries them.
+    for (table, column, definition) in [
+        ("deliveries", "scope", "TEXT"),
+        ("deliveries", "chars", "INTEGER"),
+        ("hook_events", "answer_chars", "INTEGER"),
+    ] {
+        add_column_if_absent(&connection, table, column, definition).map_err(to_error)?;
+    }
     Ok(connection)
+}
+
+/// Add `column` to `table` unless the database already has it.
+///
+/// sqlite has no `ADD COLUMN IF NOT EXISTS`, and adding a column that is there
+/// is an error, so the table is asked what it holds first.
+fn add_column_if_absent(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), rusqlite::Error> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    if columns.any(|name| name.as_deref() == Ok(column)) {
+        return Ok(());
+    }
+    drop(columns);
+    drop(statement);
+    connection.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+    ))
 }
 
 /// Insert records in the order they were queued, each group in one transaction
@@ -915,8 +1110,9 @@ fn insert_hook_event(
     let transaction = connection.transaction()?;
     transaction.execute(
         "INSERT INTO hook_events
-             (ts, machine, session_id, agent, event, context_tokens, latency_us, decision)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (ts, machine, session_id, agent, event, context_tokens, answer_chars,
+              latency_us, decision)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             record.ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             record.machine,
@@ -924,6 +1120,7 @@ fn insert_hook_event(
             record.agent,
             record.event,
             record.context_tokens.map(|tokens| tokens as i64),
+            record.answer_chars as i64,
             record.latency_us as i64,
             record.decision.as_str(),
         ],
@@ -957,15 +1154,17 @@ fn insert_hook_event(
     }
     for delivery in &record.deliveries {
         transaction.execute(
-            "INSERT INTO deliveries (event_id, memory, kind, form, reason, bytes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO deliveries (event_id, memory, kind, form, reason, bytes, scope, chars)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 event_id,
                 delivery.memory,
                 delivery.kind,
                 delivery.form,
                 delivery.reason,
-                delivery.bytes as i64
+                delivery.bytes as i64,
+                delivery.scope,
+                delivery.chars as i64
             ],
         )?;
     }
@@ -995,6 +1194,7 @@ fn insert_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::{Clock, FixedClock};
 
     /// One hook event with the deliveries given, written into `connection`.
     fn record(
@@ -1012,6 +1212,7 @@ mod tests {
                 agent: key.agent.clone(),
                 event: event.to_string(),
                 context_tokens: Some(10_000),
+                answer_chars: 100 * deliveries.len() as u64,
                 latency_us: 1,
                 decision: Decision::Context,
                 triggers: Vec::new(),
@@ -1023,12 +1224,176 @@ mod tests {
                         kind: "critical".to_string(),
                         form: "full".to_string(),
                         reason: reason.to_string(),
+                        scope: "global".to_string(),
+                        chars: 100,
                         bytes: 100,
                     })
                     .collect(),
             },
         )
         .expect("the event is written");
+    }
+
+    /// One hook event at `ts` with the deliveries given as memory, section and
+    /// length, written into `connection`.
+    fn record_at(
+        connection: &mut Connection,
+        ts: DateTime<Utc>,
+        key: &ContextKey,
+        deliveries: Vec<(&str, &str, u64)>,
+    ) {
+        insert_hook_event(
+            connection,
+            &HookEventRecord {
+                ts,
+                machine: key.machine.clone(),
+                session_id: key.session_id.clone(),
+                agent: key.agent.clone(),
+                event: "UserPromptSubmit".to_string(),
+                context_tokens: Some(10_000),
+                answer_chars: deliveries.iter().map(|(_, _, chars)| chars).sum(),
+                latency_us: 1,
+                decision: Decision::Context,
+                triggers: Vec::new(),
+                forgotten: Vec::new(),
+                deliveries: deliveries
+                    .into_iter()
+                    .map(|(memory, scope, chars)| Delivery {
+                        memory: memory.to_string(),
+                        kind: "critical".to_string(),
+                        form: "full".to_string(),
+                        reason: "new".to_string(),
+                        scope: scope.to_string(),
+                        chars,
+                        bytes: chars,
+                    })
+                    .collect(),
+            },
+        )
+        .expect("the event is written");
+    }
+
+    /// An instant this many seconds after the fixture's first event.
+    fn at(seconds: i64) -> DateTime<Utc> {
+        FixedClock::at_epoch_day().now() + chrono::Duration::seconds(seconds)
+    }
+
+    /// Detects a scope charged for text printed under another scope, and a
+    /// memory whose cost is summed from the catalog rather than from the rows:
+    /// the whole point of the section accounting is that a scope's cost is the
+    /// text its own sections carried.
+    ///
+    /// Expectation source: the rows written here. `bench-power` is printed under
+    /// `global` twice, 100 and 120 characters, and under `workshop` once, 90; so
+    /// `global` cost 220 over two events and the memory cost 310 and was printed
+    /// under `global` most.
+    #[test]
+    fn a_scopes_cost_is_the_length_of_the_sections_printed_under_it() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("stats.sqlite3");
+        let mut connection = open_connection(&path).expect("the database opens");
+        let key = ContextKey::main("alpha", "session-1");
+        record_at(
+            &mut connection,
+            at(0),
+            &key,
+            vec![("bench-power", "global", 100)],
+        );
+        record_at(
+            &mut connection,
+            at(60),
+            &key,
+            vec![
+                ("bench-power", "global", 120),
+                ("widget-naming", "widgets", 70),
+            ],
+        );
+        record_at(
+            &mut connection,
+            at(120),
+            &key,
+            vec![("bench-power", "workshop", 90)],
+        );
+        drop(connection);
+        let reader = StatsReader::open(&path).expect("the database is readable");
+
+        let scopes = reader
+            .scope_stats(&Filter::all(), &[])
+            .expect("the scopes are readable");
+        assert_eq!(
+            scopes
+                .iter()
+                .map(|row| (row.scope_id.as_str(), row.chars, row.deliveries))
+                .collect::<Vec<_>>(),
+            vec![("global", 220, 2), ("widgets", 70, 1), ("workshop", 90, 1)],
+            "each scope must be charged its own sections and the events that printed them"
+        );
+
+        let memories = reader
+            .memory_stats(&Filter::all())
+            .expect("the memories are readable");
+        let bench = memories
+            .iter()
+            .find(|row| row.memory == "bench-power")
+            .expect("the memory was delivered");
+        assert_eq!(
+            (bench.chars, bench.most_under.as_deref()),
+            (310, Some("global")),
+            "a memory costs the sum of its rows and is reported under the scope it was printed \
+             under most, got {bench:?}"
+        );
+    }
+
+    /// Detects a window that reads the whole log, or one that excludes the
+    /// events at its own edges: every figure of the statistics page is read over
+    /// a window, so a window that is not honoured reports the wrong period.
+    ///
+    /// Expectation source: the three events above, one minute apart, against a
+    /// window from the second to the third.
+    #[test]
+    fn a_window_reads_the_events_inside_it_and_the_ones_at_its_edges() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("stats.sqlite3");
+        let mut connection = open_connection(&path).expect("the database opens");
+        let key = ContextKey::main("alpha", "session-1");
+        record_at(
+            &mut connection,
+            at(0),
+            &key,
+            vec![("bench-power", "global", 100)],
+        );
+        record_at(
+            &mut connection,
+            at(60),
+            &key,
+            vec![("bench-power", "global", 120)],
+        );
+        record_at(
+            &mut connection,
+            at(120),
+            &key,
+            vec![("bench-power", "global", 90)],
+        );
+        drop(connection);
+        let reader = StatsReader::open(&path).expect("the database is readable");
+
+        let inside = reader
+            .memory_stats(&Filter::over(Window::between(at(60), at(120))))
+            .expect("the memories are readable");
+        assert_eq!(
+            inside.first().map(|row| (row.chars, row.shown_full_new)),
+            Some((210, 2)),
+            "the window must hold the events at both its edges and nothing before it, got \
+             {inside:?}"
+        );
+
+        let before = reader
+            .memory_stats(&Filter::over(Window::between(at(-120), at(-60))))
+            .expect("the memories are readable");
+        assert!(
+            before.is_empty(),
+            "a window before every event must read nothing, got {before:?}"
+        );
     }
 
     /// Detects a delivery log that answers for the wrong memory, loses a

@@ -31,6 +31,14 @@ pub const DEFAULT_TOOL_RESULT_MATCH_LIMIT: u64 = 256 * 1024;
 /// is why the store can set it rather than the server fixing it.
 pub const DEFAULT_ANSWER_FILE_THRESHOLD: u64 = 10_000;
 
+/// Characters of delivered text per token unless the store says otherwise.
+/// Anthropic's published figure for Claude.
+pub const DEFAULT_CHARACTERS_PER_TOKEN: f64 = 3.5;
+
+/// The smallest divisor a store may set. A token is at least a character, and a
+/// divisor at or below zero would make every token figure infinite or negative.
+pub const SMALLEST_CHARACTERS_PER_TOKEN: f64 = 0.1;
+
 /// The type one setting takes, as the schema reports it and as a write is
 /// checked against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +47,9 @@ pub enum SettingType {
     IntegerOrNull,
     /// A whole number of at least zero.
     Integer,
+    /// A number, whole or fractional, of at least
+    /// [`SMALLEST_CHARACTERS_PER_TOKEN`].
+    Number,
     Boolean,
     StringList,
 }
@@ -49,6 +60,7 @@ impl SettingType {
         match self {
             SettingType::IntegerOrNull => "integer or null",
             SettingType::Integer => "integer",
+            SettingType::Number => "number",
             SettingType::Boolean => "bool",
             SettingType::StringList => "list of strings",
         }
@@ -73,10 +85,11 @@ pub enum SettingKey {
     ToolResultMatchLimit,
     AnswerFileThreshold,
     AnnounceEmptyScopes,
+    CharactersPerToken,
 }
 
 /// Every key the settings file may carry, in the order the schema lists them.
-pub const KEYS: [SettingKey; 9] = [
+pub const KEYS: [SettingKey; 10] = [
     SettingKey::ReminderTokens,
     SettingKey::InterruptOnCritical,
     SettingKey::InterruptExemptTools,
@@ -86,6 +99,7 @@ pub const KEYS: [SettingKey; 9] = [
     SettingKey::ToolResultMatchLimit,
     SettingKey::AnswerFileThreshold,
     SettingKey::AnnounceEmptyScopes,
+    SettingKey::CharactersPerToken,
 ];
 
 impl SettingKey {
@@ -101,6 +115,7 @@ impl SettingKey {
             SettingKey::ToolResultMatchLimit => "tool_result_match_limit",
             SettingKey::AnswerFileThreshold => "answer_file_threshold",
             SettingKey::AnnounceEmptyScopes => "announce_empty_scopes",
+            SettingKey::CharactersPerToken => "characters_per_token",
         }
     }
 
@@ -122,6 +137,7 @@ impl SettingKey {
                 SettingType::StringList
             }
             SettingKey::ToolResultMatchLimit => SettingType::Integer,
+            SettingKey::CharactersPerToken => SettingType::Number,
         }
     }
 
@@ -165,6 +181,10 @@ impl SettingKey {
                 "Name a scope in the rendered context when it becomes active but delivers \
                  nothing; off, nothing is said about it"
             }
+            SettingKey::CharactersPerToken => {
+                "Characters of delivered text per token, for every token figure the server \
+                 reports; 3.5 is Anthropic's published figure for Claude"
+            }
         }
     }
 }
@@ -176,7 +196,11 @@ impl std::fmt::Display for SettingKey {
 }
 
 /// The settings in force, which is the file's keys over the defaults.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: `characters_per_token` is a fractional number, and two settings are
+/// compared for equality only in tests, where the values are the ones the test
+/// wrote.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Context growth after which anything already delivered is delivered
     /// again, each in the form its kind gets; `None` turns reminders off.
@@ -201,6 +225,9 @@ pub struct Settings {
     /// Whether a scope that becomes active with nothing to deliver is named to
     /// the agent.
     pub announce_empty_scopes: bool,
+    /// Characters of delivered text per token, the divisor of every token figure
+    /// the server reports.
+    pub characters_per_token: f64,
 }
 
 impl Default for Settings {
@@ -215,6 +242,7 @@ impl Default for Settings {
             tool_result_match_limit: DEFAULT_TOOL_RESULT_MATCH_LIMIT,
             answer_file_threshold: Some(DEFAULT_ANSWER_FILE_THRESHOLD),
             announce_empty_scopes: false,
+            characters_per_token: DEFAULT_CHARACTERS_PER_TOKEN,
         }
     }
 }
@@ -238,6 +266,7 @@ impl Settings {
                 None => Json::Null,
             },
             SettingKey::AnnounceEmptyScopes => Json::from(self.announce_empty_scopes),
+            SettingKey::CharactersPerToken => Json::from(self.characters_per_token),
         }
     }
 
@@ -290,6 +319,13 @@ impl Settings {
             }
             SettingKey::AnnounceEmptyScopes => {
                 self.announce_empty_scopes = value.as_bool().ok_or_else(mismatch)?;
+            }
+            SettingKey::CharactersPerToken => {
+                let characters = value.as_f64().ok_or_else(mismatch)?;
+                if !characters.is_finite() || characters < SMALLEST_CHARACTERS_PER_TOKEN {
+                    return Err(mismatch());
+                }
+                self.characters_per_token = characters;
             }
         }
         Ok(())
@@ -577,6 +613,21 @@ mod tests {
                 "tool_result_match_limit",
                 SettingType::Integer,
             ),
+            (
+                "characters_per_token: 0\n",
+                "characters_per_token",
+                SettingType::Number,
+            ),
+            (
+                "characters_per_token: -3.5\n",
+                "characters_per_token",
+                SettingType::Number,
+            ),
+            (
+                "characters_per_token: '3.5'\n",
+                "characters_per_token",
+                SettingType::Number,
+            ),
         ] {
             let (file, problems) = parse(text.as_bytes()).expect("the file parses");
             assert!(
@@ -614,6 +665,31 @@ mod tests {
         assert_eq!(written.settings.reminder_tokens, Some(1_000));
         assert!(!written.settings.deliver_knowledge_index);
         assert!(!written.settings.interrupt_on_critical);
+    }
+
+    /// Detects a fractional divisor truncated to a whole number, or refused for
+    /// not being one: a token is a fraction of a text, and the documented
+    /// default is itself fractional.
+    ///
+    /// Source: the setting's documented meaning, characters of delivered text
+    /// per token, whose default is 3.5.
+    #[test]
+    fn the_characters_per_token_a_file_sets_is_kept_as_the_fraction_it_was_written_as() {
+        let (file, problems) = parse(b"characters_per_token: 3.25\n").expect("the file parses");
+
+        assert_eq!(problems, Vec::new(), "a fractional divisor is valid");
+        assert_eq!(file.settings.characters_per_token, 3.25);
+        assert_eq!(
+            Settings::default().characters_per_token,
+            3.5,
+            "a store that sets nothing divides by Anthropic's published figure"
+        );
+        let written = render(&file.entries).expect("the entries render");
+        let (again, _) = parse(written.as_bytes()).expect("the rendered file parses");
+        assert_eq!(
+            again.settings.characters_per_token, 3.25,
+            "the fraction must survive being written back to the file"
+        );
     }
 
     /// Detects an exemption list that is not matched exactly: a prefix or a

@@ -378,7 +378,7 @@ fn a_memory_fetched_through_mcp_is_recorded_as_one_tool_call_against_the_memory_
         "the fetch must be recorded as exactly one tool call"
     );
     let rows = statistics
-        .memory_stats()
+        .memory_stats(&forgetmenot_server::stats::Filter::all())
         .expect("the statistics are readable");
     let fetched = rows
         .iter()

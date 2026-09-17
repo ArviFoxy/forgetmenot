@@ -30,7 +30,7 @@ use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance, Regi
 use crate::context::{ContextKey, ContextState, PreviousTexts, compute_needs};
 use crate::render::{self, Delivery};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
-use crate::stats::{StatsError, ToolCallRecord};
+use crate::stats::{StatsError, ToolCallRecord, tokens_of};
 use crate::store::branch::{BranchName, BranchNameError};
 use crate::store::catalog::{Catalog, MemoryEntry, ScopeEntry};
 use crate::store::frontmatter::FrontmatterError;
@@ -445,9 +445,9 @@ pub struct ContextPrompt {
     /// The rendered text, empty when the mode has nothing to deliver.
     pub text: String,
     pub bytes: u64,
-    /// The tokens the text is expected to cost, as [`tokens_estimate`] counts
-    /// them.
-    pub tokens_estimate: u64,
+    /// What the text costs the model, as [`tokens_of`] counts it from the
+    /// store's `characters_per_token`.
+    pub tokens: u64,
 }
 
 /// What the review page reports.
@@ -1993,26 +1993,23 @@ pub async fn context_prompt(
     // is part of an answer and not an answer of its own.
     let text = match needs.is_empty() {
         true => String::new(),
-        false => render::render(&delivery),
+        false => render::render(&delivery).text,
     };
 
+    // The same conversion every token figure the server reports goes through,
+    // over the same length the renderer accounts in.
+    let tokens = tokens_of(
+        text.encode_utf16().count() as u64,
+        catalog.settings().characters_per_token,
+    );
     Ok(ContextPrompt {
         key: key.to_string(),
         name,
         mode,
         bytes: text.len() as u64,
-        tokens_estimate: tokens_estimate(&text),
+        tokens,
         text,
     })
-}
-
-/// Roughly how many tokens a text costs: one per four bytes, rounded up.
-///
-/// A rule of thumb for English text and not a tokenizer: no model's vocabulary
-/// is consulted, and text that is not prose, such as a table or another script,
-/// can cost considerably more.
-fn tokens_estimate(text: &str) -> u64 {
-    (text.len() as u64).div_ceil(4)
 }
 
 /// How much of a task or a first prompt a name keeps. It is one cell of a

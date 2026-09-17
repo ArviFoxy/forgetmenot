@@ -421,6 +421,19 @@ fn delivered_bytes_are_reported_per_session_with_the_two_forms_apart() {
         row["bytes_index"].as_u64().unwrap_or(0) > 0,
         "five index lines were delivered: {row}"
     );
+    assert_eq!(
+        row["last_context_tokens"],
+        json!(10_000),
+        "every event of the sequence reported the same context size: {row}"
+    );
+    let chars = row["chars"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("a session reports the characters delivered into it: {row}"));
+    assert_eq!(
+        row["tokens"].as_u64(),
+        Some((chars as f64 / 3.5).ceil() as u64),
+        "the tokens must be the characters over the store's divisor of 3.5, rounded up: {row}"
+    );
 }
 
 /// Detects latency reported for the wrong number of measurements, or
@@ -463,6 +476,10 @@ fn latency_covers_every_event_of_one_name_with_ordered_percentiles() {
 
 /// Detects a command that reports different numbers from the API for the same
 /// log, which would make the two disagree about what happened.
+///
+/// The command prints the raw character counts the log holds and the API turns
+/// them into tokens, so the API's rows carry a field the command's do not; every
+/// field the command does report has to be the API's value for it.
 #[test]
 fn the_command_reports_the_numbers_the_api_reports_for_the_same_log() {
     let server = run_sequence();
@@ -476,10 +493,29 @@ fn the_command_reports_the_numbers_the_api_reports_for_the_same_log() {
     let from_command = run_command(&server, &["--json"]);
 
     for (aggregate, rows) in from_api {
+        let printed = from_command[aggregate]
+            .as_array()
+            .unwrap_or_else(|| panic!("the command must report the {aggregate}: {from_command}"));
+        let answered = rows
+            .as_array()
+            .unwrap_or_else(|| panic!("the API must report the {aggregate}: {rows}"));
         assert_eq!(
-            from_command[aggregate], rows,
-            "the command and the API must report the same {aggregate}"
+            printed.len(),
+            answered.len(),
+            "the command and the API must report the same {aggregate} rows"
         );
+        for (printed, answered) in printed.iter().zip(answered) {
+            for (field, value) in printed
+                .as_object()
+                .unwrap_or_else(|| panic!("a row is an object, got {printed}"))
+            {
+                assert_eq!(
+                    &answered[field], value,
+                    "the command and the API must agree on the {field} of this {aggregate} row: \
+                     {printed} against {answered}"
+                );
+            }
+        }
     }
 }
 
