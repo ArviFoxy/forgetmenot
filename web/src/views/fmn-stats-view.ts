@@ -1,209 +1,347 @@
-import { html, type TemplateResult } from 'lit';
+import { html, type PropertyDeclarations, type TemplateResult } from 'lit';
 import { api } from '../api/client';
 import type {
+  ContextRow,
   DenyDayRow,
   LatencyRow,
   MemoryStatsRow,
   ScopeStatsRow,
-  SessionBytesRow,
+  Series,
+  SessionStatsRow,
+  StatsQuery,
+  Summary,
   TriggerStatsRow,
 } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
-import { formatBytes } from '../model/units';
+import {
+  cellText,
+  memoryColumns,
+  scopeColumns,
+  sessionColumns,
+  sessionRows,
+  statsAddress,
+  statsFilterFromSearch,
+  statsQueryOf,
+  statsRanges,
+  statsSearch,
+  summaryHeld,
+  summaryTokens,
+  tokenPoints,
+  triggerColumns,
+  type SessionRow,
+  type StatsFilter,
+  type StatsRange,
+} from '../model/stats';
+import { formatTokens } from '../model/units';
+import { navigate, onLocationChange } from '../navigation';
 import { paths } from '../routes';
+import '../components/fmn-data-table';
+import '../components/fmn-session-series';
+import '../components/fmn-token-series';
+import type { RowClick } from '../components/fmn-data-table';
+
+const openStorage = 'fmn-stats-open';
+
+/** The sections of the page, in the order they are drawn. */
+const sections = [
+  { id: 'summary', label: 'Summary' },
+  { id: 'series', label: 'Tokens delivered over time' },
+  { id: 'scopes', label: 'Per scope' },
+  { id: 'memories', label: 'Per memory' },
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'health', label: 'Hook health' },
+] as const;
+
+type SectionId = (typeof sections)[number]['id'];
+
+/** Every section is open on a first visit but the one that is reference material. */
+const openByDefault: Record<SectionId, boolean> = {
+  summary: true,
+  series: true,
+  scopes: true,
+  memories: true,
+  sessions: true,
+  health: false,
+};
+
+function readOpen(): Record<SectionId, boolean> {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(openStorage) ?? 'null');
+    if (stored === null || typeof stored !== 'object') return { ...openByDefault };
+    const kept = { ...openByDefault };
+    for (const section of sections) {
+      const value = (stored as Record<string, unknown>)[section.id];
+      if (typeof value === 'boolean') kept[section.id] = value;
+    }
+    return kept;
+  } catch {
+    return { ...openByDefault };
+  }
+}
+
+/** The five figures of the summary row, in the order they are read. */
+interface Card {
+  label: string;
+  value: string;
+}
+
+function summaryCards(summary: Summary): Card[] {
+  return [
+    { label: 'Tokens, last hour', value: formatTokens(summaryTokens(summary, '1h')) },
+    { label: 'Tokens, last day', value: formatTokens(summaryTokens(summary, '1d')) },
+    { label: 'Tokens, last week', value: formatTokens(summaryTokens(summary, '7d')) },
+    { label: 'Held calls today', value: String(summaryHeld(summary, '1d')) },
+    { label: 'Live contexts', value: String(summary.live_contexts) },
+  ];
+}
 
 /**
- * The recorded statistics. Index-line deliveries and full deliveries are separate
- * counts in their own columns, because they cost different amounts of context and
- * adding them together would hide which of the two happened.
+ * The recorded statistics over one window, for one session and one scope. The
+ * range and the two filters are in the address, so a reload shows what is on
+ * screen and a link to it shows the same, and every section reads the same window.
  */
 export class FmnStatsView extends PageElement {
-  private readonly memories = new Resource<MemoryStatsRow[]>(() => this.requestUpdate());
-  private readonly triggers = new Resource<TriggerStatsRow[]>(() => this.requestUpdate());
+  static override properties: PropertyDeclarations = {
+    filter: { state: true },
+    open: { state: true },
+  };
+
+  private filter: StatsFilter = statsFilterFromSearch();
+  private open: Record<SectionId, boolean> = readOpen();
+
+  private readonly summary = new Resource<Summary>(() => this.requestUpdate());
+  private readonly series = new Resource<Series>(() => this.requestUpdate());
   private readonly scopes = new Resource<ScopeStatsRow[]>(() => this.requestUpdate());
+  private readonly memories = new Resource<MemoryStatsRow[]>(() => this.requestUpdate());
+  private readonly sessions = new Resource<SessionRow[]>(() => this.requestUpdate());
+  private readonly triggers = new Resource<TriggerStatsRow[]>(() => this.requestUpdate());
   private readonly denies = new Resource<DenyDayRow[]>(() => this.requestUpdate());
   private readonly latency = new Resource<LatencyRow[]>(() => this.requestUpdate());
-  private readonly sessions = new Resource<SessionBytesRow[]>(() => this.requestUpdate());
-  private started = false;
+  /** Every session and every scope the log knows, which is what the selects offer. */
+  private readonly sessionNames = new Resource<SessionStatsRow[]>(() => this.requestUpdate());
+  private readonly scopeNames = new Resource<ScopeStatsRow[]>(() => this.requestUpdate());
+
+  /** The window the sections were read over, which the per-session chart shares. */
+  private window: StatsQuery = {};
+  private loaded: string | null = null;
+  private loadedNames = false;
+  private stopListening: (() => void) | null = null;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.stopListening = onLocationChange(() => {
+      this.filter = statsFilterFromSearch();
+    });
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.stopListening?.();
+    this.stopListening = null;
+  }
 
   override updated(): void {
-    if (this.started) return;
-    this.started = true;
-    void this.memories.load(() => api.memoryStats());
-    void this.triggers.load(() => api.triggerStats());
-    void this.scopes.load(() => api.scopeStats());
-    void this.denies.load(() => api.denyStats());
-    void this.latency.load(() => api.latencyStats());
-    void this.sessions.load(() => api.sessionStats());
+    if (!this.loadedNames) {
+      this.loadedNames = true;
+      void this.sessionNames.load(() => api.sessionStats());
+      void this.scopeNames.load(() => api.scopeStats());
+      void this.denies.load(() => api.denyStats());
+      void this.latency.load(() => api.latencyStats());
+    }
+    const wanted = statsSearch(this.filter);
+    if (this.loaded === wanted) return;
+    this.loaded = wanted;
+    this.reload();
   }
 
-  /** Rows in a fixed order: the server is free to answer in any. */
-  private static sorted<Row>(rows: Row[], key: (row: Row) => string): Row[] {
-    return [...rows].sort((left, right) => key(left).localeCompare(key(right)));
+  /** Every section again, over the window the range names as it stands now. */
+  private reload(): void {
+    const query = statsQueryOf(this.filter, new Date());
+    this.window = query;
+    void this.summary.load(() => api.summaryStats());
+    void this.series.load(() => api.seriesStats(query));
+    void this.scopes.load(() => api.scopeStats(query));
+    void this.memories.load(() => api.memoryStats(query));
+    void this.triggers.load(() => api.triggerStats(query));
+    void this.sessions.load(async () => {
+      const [rows, contexts] = await Promise.all([
+        api.sessionStats(query),
+        api.contexts().catch((): ContextRow[] => []),
+      ]);
+      return sessionRows(rows, new Map(contexts.map((row) => [row.key, row.last_seen])));
+    });
   }
 
-  private renderMemories(rows: MemoryStatsRow[]): TemplateResult {
-    return html`<div class="table-wrap">
-      <table class="data stats">
-        <thead>
-          <tr>
-            <th scope="col">Memory</th>
-            <th scope="col">Shown as index line</th>
-            <th scope="col">Shown in full, new</th>
-            <th scope="col">Shown in full, changed</th>
-            <th scope="col">Shown in full, stale</th>
-            <th scope="col">Fetched in full by the model</th>
-            <th scope="col">Retracted</th>
-            <th scope="col">Last shown</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${FmnStatsView.sorted(rows, (row) => row.memory).map(
-            (row) => html`<tr>
-              <td><a href=${paths.memory(row.memory)}>${row.memory}</a></td>
-              <td class="number">${row.shown_index}</td>
-              <td class="number">${row.shown_full_new}</td>
-              <td class="number">${row.shown_full_changed}</td>
-              <td class="number">${row.shown_full_stale}</td>
-              <td class="number">${row.fetched_full}</td>
-              <td class="number">${row.retracted}</td>
-              <td class="nowrap moment">${row.last_shown ?? ''}</td>
-            </tr>`,
-          )}
-        </tbody>
-      </table>
+  private show(over: Partial<StatsFilter>): void {
+    const next = { ...this.filter, ...over };
+    if (statsSearch(next) === statsSearch(this.filter)) return;
+    this.filter = next;
+    navigate(statsAddress(next));
+  }
+
+  private toggleSection(id: SectionId, open: boolean): void {
+    if (this.open[id] === open) return;
+    this.open = { ...this.open, [id]: open };
+    window.localStorage.setItem(openStorage, JSON.stringify(this.open));
+  }
+
+  private section(id: SectionId, label: string, body: TemplateResult): TemplateResult {
+    return html`<sl-details
+      class="stats-section"
+      data-section=${id}
+      ?open=${this.open[id]}
+      @sl-show=${(event: Event) => {
+        if (event.target === event.currentTarget) this.toggleSection(id, true);
+      }}
+      @sl-hide=${(event: Event) => {
+        if (event.target === event.currentTarget) this.toggleSection(id, false);
+      }}
+    >
+      <h2 slot="summary">${label}</h2>
+      ${body}
+    </sl-details>`;
+  }
+
+  private renderControls(): TemplateResult {
+    const sessions = this.sessionNames.value ?? [];
+    const scopes = this.scopeNames.value ?? [];
+    return html`<div class="actions series-controls">
+      <sl-radio-group
+        size="small"
+        value=${this.filter.range}
+        @sl-change=${(event: Event) =>
+          this.show({ range: (event.target as HTMLInputElement).value as StatsRange })}
+      >
+        ${statsRanges.map(
+          (range) => html`<sl-radio-button value=${range}>${range}</sl-radio-button>`,
+        )}
+      </sl-radio-group>
+      <sl-select
+        class="series-filter"
+        size="small"
+        placeholder="All sessions"
+        value=${this.filter.session}
+        @sl-change=${(event: Event) =>
+          this.show({ session: (event.target as HTMLInputElement).value })}
+      >
+        <sl-option value="">All sessions</sl-option>
+        ${sessions.map(
+          (row) => html`<sl-option value=${row.session_key}>${row.session_key}</sl-option>`,
+        )}
+      </sl-select>
+      <sl-select
+        class="series-filter"
+        size="small"
+        placeholder="All scopes"
+        value=${this.filter.scope}
+        @sl-change=${(event: Event) =>
+          this.show({ scope: (event.target as HTMLInputElement).value })}
+      >
+        <sl-option value="">All scopes</sl-option>
+        ${scopes.map((row) => html`<sl-option value=${row.scope_id}>${row.scope_id}</sl-option>`)}
+      </sl-select>
     </div>`;
   }
 
-  private renderTriggers(rows: TriggerStatsRow[]): TemplateResult {
-    return html`<div class="table-wrap">
-      <table class="data stats">
-        <thead>
-          <tr>
-            <th scope="col">Scope</th>
-            <th scope="col">Field</th>
-            <th scope="col">Pattern</th>
-            <th scope="col">Fires</th>
-            <th scope="col">New activations</th>
-            <th scope="col">Share of fires that stopped a call</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${FmnStatsView.sorted(rows, (row) => `${row.scope_id} ${row.field} ${row.pattern}`).map(
-            (row) => html`<tr>
-              <td><a href=${paths.scope(row.scope_id)}>${row.scope_id}</a></td>
-              <td>${row.field}</td>
-              <td><code>${row.pattern}</code></td>
-              <td class="number">${row.fires}</td>
-              <td class="number">${row.new_activations}</td>
-              <td class="number">${row.deny_share.toFixed(2)}</td>
-            </tr>`,
-          )}
-        </tbody>
-      </table>
-    </div>`;
+  private renderSeries(series: Series): TemplateResult {
+    if (series.points.length === 0) return html`<p class="empty">Nothing in this range</p>`;
+    return html`<fmn-token-series
+      .points=${tokenPoints(series.points)}
+      .from=${this.window.from === undefined ? null : new Date(this.window.from)}
+      .to=${this.window.to === undefined ? null : new Date(this.window.to)}
+    ></fmn-token-series>`;
   }
 
-  private renderScopes(rows: ScopeStatsRow[]): TemplateResult {
-    return html`<div class="table-wrap">
-      <table class="data stats">
-        <thead>
-          <tr>
-            <th scope="col">Scope</th>
-            <th scope="col">Activations</th>
-            <th scope="col">Forgettings</th>
-            <th scope="col">Live contexts</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${FmnStatsView.sorted(rows, (row) => row.scope_id).map(
-            (row) => html`<tr>
-              <td><a href=${paths.scope(row.scope_id)}>${row.scope_id}</a></td>
-              <td class="number">${row.activations}</td>
-              <td class="number">${row.forgettings}</td>
-              <td class="number">${row.live_contexts}</td>
-            </tr>`,
+  /** The triggers of one scope, as a plain table under the row that opened it. */
+  private renderScopeTriggers(scope: string): TemplateResult {
+    const rows = (this.triggers.value ?? []).filter((row) => row.scope_id === scope);
+    if (rows.length === 0) return html`<p class="empty">Nothing in this range</p>`;
+    return html`<table class="data stats sub">
+      <thead>
+        <tr>
+          ${triggerColumns.map(
+            (column) =>
+              html`<th scope="col" class=${column.numeric === true ? 'number' : ''}>
+                ${column.header}
+              </th>`,
           )}
-        </tbody>
-      </table>
-    </div>`;
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(
+          (row) => html`<tr>
+            ${triggerColumns.map(
+              (column) =>
+                html`<td class=${column.numeric === true ? 'number' : ''}>
+                  ${column.mono === true
+                    ? html`<code>${cellText(column, row)}</code>`
+                    : cellText(column, row)}
+                </td>`,
+            )}
+          </tr>`,
+        )}
+      </tbody>
+    </table>`;
   }
 
-  private renderDenies(rows: DenyDayRow[]): TemplateResult {
-    return html`<div class="table-wrap">
-      <table class="data stats">
-        <thead>
-          <tr>
-            <th scope="col">Day (UTC)</th>
-            <th scope="col">Stopped calls</th>
-            <th scope="col">Events</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${FmnStatsView.sorted(rows, (row) => row.day).map(
-            (row) => html`<tr>
-              <td class="moment">${row.day}</td>
-              <td class="number">${row.denies}</td>
-              <td class="number">${row.events}</td>
-            </tr>`,
-          )}
-        </tbody>
-      </table>
-    </div>`;
-  }
-
-  private renderLatency(rows: LatencyRow[]): TemplateResult {
-    return html`<div class="table-wrap">
-      <table class="data stats latency">
-        <thead>
-          <tr>
-            <th scope="col">Event</th>
-            <th scope="col">Count</th>
-            <th scope="col">p50 (µs)</th>
-            <th scope="col">p90 (µs)</th>
-            <th scope="col">p99 (µs)</th>
-            <th scope="col">Max (µs)</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${FmnStatsView.sorted(rows, (row) => row.event).map(
-            (row) => html`<tr>
-              <td>${row.event}</td>
-              <td class="number">${row.count}</td>
-              <td class="number">${row.p50_us}</td>
-              <td class="number">${row.p90_us}</td>
-              <td class="number">${row.p99_us}</td>
-              <td class="number">${row.max_us}</td>
-            </tr>`,
-          )}
-        </tbody>
-      </table>
-    </div>`;
-  }
-
-  /** The byte counts in the unit that fits, with the exact count in a `title`. */
-  private renderSessions(rows: SessionBytesRow[]): TemplateResult {
-    return html`<div class="table-wrap">
-      <table class="data stats">
-        <thead>
-          <tr>
-            <th scope="col">Session</th>
-            <th scope="col">Bytes shown in full</th>
-            <th scope="col">Bytes shown as index lines</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${FmnStatsView.sorted(rows, (row) => row.session_key).map(
-            (row) => html`<tr>
-              <td><code>${row.session_key}</code></td>
-              <td class="number" title=${row.bytes_full}>${formatBytes(row.bytes_full)}</td>
-              <td class="number" title=${row.bytes_index}>${formatBytes(row.bytes_index)}</td>
-            </tr>`,
-          )}
-        </tbody>
-      </table>
-    </div>`;
+  private renderHealth(): TemplateResult {
+    return html`
+      <h3>Hook latency</h3>
+      ${gate(
+        this.latency.state,
+        (rows) => html`<div class="table-wrap">
+          <table class="data stats latency">
+            <thead>
+              <tr>
+                <th scope="col">Event</th>
+                <th scope="col" class="number">Count</th>
+                <th scope="col" class="number">p50 (µs)</th>
+                <th scope="col" class="number">p90 (µs)</th>
+                <th scope="col" class="number">p99 (µs)</th>
+                <th scope="col" class="number">Max (µs)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(
+                (row) => html`<tr>
+                  <td>${row.event}</td>
+                  <td class="number">${row.count}</td>
+                  <td class="number">${row.p50_us}</td>
+                  <td class="number">${row.p90_us}</td>
+                  <td class="number">${row.p99_us}</td>
+                  <td class="number">${row.max_us}</td>
+                </tr>`,
+              )}
+            </tbody>
+          </table>
+        </div>`,
+      )}
+      <h3>Stopped calls per day</h3>
+      ${gate(
+        this.denies.state,
+        (rows) => html`<div class="table-wrap">
+          <table class="data stats">
+            <thead>
+              <tr>
+                <th scope="col">Day (UTC)</th>
+                <th scope="col" class="number">Stopped calls</th>
+                <th scope="col" class="number">Events</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(
+                (row) => html`<tr>
+                  <td class="moment nowrap">${row.day}</td>
+                  <td class="number">${row.denies}</td>
+                  <td class="number">${row.events}</td>
+                </tr>`,
+              )}
+            </tbody>
+          </table>
+        </div>`,
+      )}
+    `;
   }
 
   override render(): TemplateResult {
@@ -212,18 +350,84 @@ export class FmnStatsView extends PageElement {
         <div class="page-name"><sl-icon name="chart-bar"></sl-icon><span>statistics</span></div>
         <h1>Statistics</h1>
       </header>
-      <h2>Per memory</h2>
-      ${gate(this.memories.state, (rows) => this.renderMemories(rows))}
-      <h2>Per trigger</h2>
-      ${gate(this.triggers.state, (rows) => this.renderTriggers(rows))}
-      <h2>Per scope</h2>
-      ${gate(this.scopes.state, (rows) => this.renderScopes(rows))}
-      <h2>Stopped calls per day</h2>
-      ${gate(this.denies.state, (rows) => this.renderDenies(rows))}
-      <h2>Hook latency</h2>
-      ${gate(this.latency.state, (rows) => this.renderLatency(rows))}
-      <h2>Delivered bytes per session</h2>
-      ${gate(this.sessions.state, (rows) => this.renderSessions(rows))}
+      ${this.section(
+        'summary',
+        'Summary',
+        gate(
+          this.summary.state,
+          (summary) => html`<div class="summary-row">
+            ${summaryCards(summary).map(
+              (card) => html`<div class="summary-card">
+                <span class="summary-value">${card.value}</span>
+                <span class="summary-label">${card.label}</span>
+              </div>`,
+            )}
+          </div>`,
+        ),
+      )}
+      ${this.section(
+        'series',
+        'Tokens delivered over time',
+        html`${this.renderControls()}${gate(this.series.state, (series) =>
+          this.renderSeries(series),
+        )}`,
+      )}
+      ${this.section(
+        'scopes',
+        'Per scope',
+        gate(
+          this.scopes.state,
+          (rows) => html`
+            <fmn-data-table
+              class="stats-scopes"
+              .columns=${scopeColumns}
+              .rows=${rows}
+              .rowKey=${(row: ScopeStatsRow) => row.scope_id}
+              .expand=${(row: ScopeStatsRow) => this.renderScopeTriggers(row.scope_id)}
+              filterLabel="Filter scopes"
+              @fmn-row-click=${(event: CustomEvent<RowClick<ScopeStatsRow>>) =>
+                this.show({ scope: event.detail.row.scope_id })}
+            ></fmn-data-table>
+            <p class="muted">A memory in several scopes is counted under the one it was printed in.</p>
+          `,
+        ),
+      )}
+      ${this.section(
+        'memories',
+        'Per memory',
+        gate(
+          this.memories.state,
+          (rows) => html`<fmn-data-table
+            class="stats-memories"
+            .columns=${memoryColumns}
+            .rows=${rows}
+            .rowKey=${(row: MemoryStatsRow) => row.memory}
+            filterLabel="Filter memories"
+            @fmn-row-click=${(event: CustomEvent<RowClick<MemoryStatsRow>>) =>
+              navigate(paths.memory(event.detail.row.memory))}
+          ></fmn-data-table>`,
+        ),
+      )}
+      ${this.section(
+        'sessions',
+        'Sessions',
+        gate(
+          this.sessions.state,
+          (rows) => html`<fmn-data-table
+            class="stats-sessions"
+            .columns=${sessionColumns}
+            .rows=${rows}
+            .rowKey=${(row: SessionRow) => row.session_key}
+            .expand=${(row: SessionRow) =>
+              html`<fmn-session-series
+                .sessionKey=${row.session_key}
+                .window=${this.window}
+              ></fmn-session-series>`}
+            filterLabel="Filter sessions"
+          ></fmn-data-table>`,
+        ),
+      )}
+      ${this.section('health', 'Hook health', this.renderHealth())}
     `;
   }
 }

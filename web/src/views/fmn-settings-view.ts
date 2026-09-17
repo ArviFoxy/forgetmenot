@@ -125,7 +125,7 @@ export class FmnSettingsView extends PageElement {
           placeholder="off"
           value=${value === null ? '' : String(value)}
           @sl-input=${(event: Event) =>
-            this.set(row.key, parseNumberOrOff((event.target as HTMLInputElement).value))}
+            this.set(row.key, parseNumberOrOff((event.target as HTMLInputElement).value, row.type))}
         ></sl-input>`;
       case 'number':
         return html`<sl-input
@@ -133,9 +133,13 @@ export class FmnSettingsView extends PageElement {
           size="small"
           type="number"
           min="0"
+          step=${row.type === 'number' ? 'any' : '1'}
           value=${value === null ? '' : String(value)}
           @sl-input=${(event: Event) =>
-            this.set(row.key, parseNumberOrOff((event.target as HTMLInputElement).value) ?? 0)}
+            this.set(
+              row.key,
+              parseNumberOrOff((event.target as HTMLInputElement).value, row.type) ?? 0,
+            )}
         ></sl-input>`;
       case 'tags':
         return html`<fmn-tag-field

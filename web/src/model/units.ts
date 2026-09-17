@@ -21,3 +21,32 @@ export function formatBytes(bytes: number): string {
   }
   return `${Math.floor(tenths / 10)}.${tenths % 10} ${unitsAboveBytes[unit]}`;
 }
+
+// 1000-based units, the way a count of tokens is read aloud. Tokens are the unit
+// below the first of these.
+const unitsAboveTokens = ['k', 'M', 'G'];
+
+/**
+ * A token count as a figure of at most three digits: the plain count below 1000,
+ * then one decimal while the scaled figure is under ten (`1.2k`, `1.5M`) and a
+ * whole number above it (`34k`). A figure that rounds to 1000 of a unit moves up
+ * to the next one, so far as G.
+ */
+export function formatTokens(tokens: number): string {
+  if (tokens < 1000) return String(tokens);
+  let scaled = tokens / 1000;
+  let unit = 0;
+  while (scaled >= 1000 && unit + 1 < unitsAboveTokens.length) {
+    scaled /= 1000;
+    unit += 1;
+  }
+  // 9.95 and up would print as `10.0`, which is the whole-number form with a
+  // decimal stuck on it, so the change of form happens there rather than at 10.
+  if (scaled < 9.95) {
+    const tenths = Math.round(scaled * 10);
+    return `${Math.floor(tenths / 10)}.${tenths % 10}${unitsAboveTokens[unit]}`;
+  }
+  const whole = Math.round(scaled);
+  if (whole >= 1000 && unit + 1 < unitsAboveTokens.length) return `1.0${unitsAboveTokens[unit + 1]}`;
+  return `${whole}${unitsAboveTokens[unit]}`;
+}

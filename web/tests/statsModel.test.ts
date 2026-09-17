@@ -1,0 +1,237 @@
+import { expect, test } from 'vitest';
+import type {
+  MemoryStatsRow,
+  ScopeStatsRow,
+  SeriesPoint,
+  SessionEventPoint,
+  SessionStatsRow,
+  Summary,
+} from '../src/api/types';
+import {
+  defaultStatsFilter,
+  measuredSizes,
+  memoryColumns,
+  scopeColumns,
+  sessionColumns,
+  sessionPoints,
+  sessionRows,
+  statsAddress,
+  statsFilterFromSearch,
+  statsQueryOf,
+  statsSearch,
+  statsWindow,
+  summaryHeld,
+  summaryTokens,
+  tokenPoints,
+  type StatsFilter,
+  type TableColumn,
+} from '../src/model/stats';
+
+// The source of these expectations is what the statistics page promises: the range
+// names a window ending now, the address carries the range and the two filters so a
+// reload and a shared link show the same thing, a chart reads instants and figures
+// rather than text, and a column sorts by the figure it shows.
+
+const now = new Date('2026-09-17T12:00:00.000Z');
+
+test('a range measures its window from somewhere other than now, or gets the wrong length', () => {
+  expect(statsWindow('24h', now)).toEqual({
+    from: '2026-09-16T12:00:00.000Z',
+    to: '2026-09-17T12:00:00.000Z',
+  });
+  expect(statsWindow('7d', now)).toEqual({
+    from: '2026-09-10T12:00:00.000Z',
+    to: '2026-09-17T12:00:00.000Z',
+  });
+  expect(statsWindow('30d', now)).toEqual({
+    from: '2026-08-18T12:00:00.000Z',
+    to: '2026-09-17T12:00:00.000Z',
+  });
+});
+
+test('the whole log is asked for with a window, which would cut it off at one end', () => {
+  expect(statsWindow('all', now)).toEqual({});
+  expect(statsQueryOf({ range: 'all', session: '', scope: '' }, now)).toEqual({});
+});
+
+test('an empty session or scope is sent as a filter, which narrows the log to nothing', () => {
+  expect(statsQueryOf({ range: 'all', session: '', scope: '' }, now)).toEqual({});
+  expect(statsQueryOf({ range: 'all', session: 'alpha/session-1', scope: 'widgets' }, now)).toEqual({
+    session: 'alpha/session-1',
+    scope: 'widgets',
+  });
+});
+
+test('a filter read back from the address is not the one written to it', () => {
+  const filters: StatsFilter[] = [
+    { range: '24h', session: '', scope: '' },
+    { range: '7d', session: '', scope: 'widgets' },
+    { range: '30d', session: 'alpha/session-1', scope: '' },
+    { range: 'all', session: 'alpha/session-1/agent-7f3a', scope: 'session:alpha/session-1' },
+  ];
+  for (const filter of filters) {
+    expect(statsFilterFromSearch(statsSearch(filter)), JSON.stringify(filter)).toEqual(filter);
+  }
+});
+
+test('the address carries what the page would show anyway, so a plain link is not the default view', () => {
+  expect(statsSearch(defaultStatsFilter)).toBe('');
+  expect(statsAddress(defaultStatsFilter)).toBe('/stats');
+  expect(statsAddress({ range: '7d', session: '', scope: 'widgets' })).toBe(
+    '/stats?range=7d&scope=widgets',
+  );
+});
+
+test('an address naming a range nobody offers is taken as that range instead of the default', () => {
+  expect(statsFilterFromSearch('?range=12h').range).toBe('24h');
+  expect(statsFilterFromSearch('').range).toBe('24h');
+  expect(statsFilterFromSearch('?scope=widgets')).toEqual({
+    range: '24h',
+    session: '',
+    scope: 'widgets',
+  });
+});
+
+const seriesPoints: SeriesPoint[] = [
+  { t: '2026-09-17T10:00:00Z', tokens: 1200, deliveries: 3 },
+  { t: '2026-09-17T11:00:00Z', tokens: 340, deliveries: 1 },
+];
+
+test('the series keeps its bucket start as text, so the chart draws one band per bucket', () => {
+  const points = tokenPoints(seriesPoints);
+  expect(points.map((point) => point.at instanceof Date)).toEqual([true, true]);
+  expect(points.map((point) => point.at.toISOString())).toEqual([
+    '2026-09-17T10:00:00.000Z',
+    '2026-09-17T11:00:00.000Z',
+  ]);
+  expect(points.map((point) => point.tokens)).toEqual([1200, 340]);
+});
+
+const events: SessionEventPoint[] = [
+  { t: '2026-09-17T10:00:00Z', event: 'session_start', context_tokens: 0, tokens: 900 },
+  { t: '2026-09-17T10:01:00Z', event: 'pre_tool_use', context_tokens: null, tokens: 40 },
+  { t: '2026-09-17T10:02:00Z', event: 'stop', context_tokens: 4800, tokens: 0 },
+];
+
+test('an event that reported no context size is drawn as a size of zero', () => {
+  const points = sessionPoints(events);
+  expect(points.map((point) => point.contextTokens)).toEqual([0, null, 4800]);
+  // The line is drawn through the events that carry a measurement, so a gap is a
+  // gap rather than a dip to zero.
+  expect(measuredSizes(points).map((point) => point.contextTokens)).toEqual([0, 4800]);
+  expect(measuredSizes(points).map((point) => point.at.toISOString())).toEqual([
+    '2026-09-17T10:00:00.000Z',
+    '2026-09-17T10:02:00.000Z',
+  ]);
+});
+
+const summary: Summary = {
+  windows: [
+    { name: '5m', chars: 10, tokens: 3, events: 1, held: 0, forgettings: 0 },
+    { name: '1h', chars: 3500, tokens: 1000, events: 8, held: 2, forgettings: 1 },
+    { name: '1d', chars: 35000, tokens: 10000, events: 40, held: 7, forgettings: 2 },
+  ],
+  live_contexts: 3,
+};
+
+test('a window the answer does not carry reads as the figure of another window', () => {
+  expect(summaryTokens(summary, '1h')).toBe(1000);
+  expect(summaryTokens(summary, '7d')).toBe(0);
+  expect(summaryHeld(summary, '1d')).toBe(7);
+  expect(summaryHeld(summary, '7d')).toBe(0);
+});
+
+const scopeRow: ScopeStatsRow = {
+  scope_id: 'widgets',
+  activations: 2,
+  forgettings: 1,
+  chars: 42000,
+  deliveries: 4,
+  live_contexts: 1,
+  tokens: 12000,
+  tokens_per_delivery: 3000.4,
+  memories: 5,
+};
+
+const memoryRow: MemoryStatsRow = {
+  memory: 'widget-naming',
+  shown_index: 1,
+  shown_full_new: 2,
+  shown_full_changed: 3,
+  shown_full_stale: 4,
+  fetched_full: 5,
+  shrunk: 6,
+  retracted: 7,
+  chars: 3500,
+  tokens: 1000,
+  most_under: 'widgets',
+  last_shown: null,
+};
+
+function column<Row>(columns: TableColumn<Row>[], id: string): TableColumn<Row> {
+  const found = columns.find((each) => each.id === id);
+  if (found === undefined) throw new Error(`no column ${id}`);
+  return found;
+}
+
+test('a formatted figure sorts and filters by its text, so 9 comes after 10000', () => {
+  const tokens = column(scopeColumns, 'tokens');
+  expect(tokens.value(scopeRow)).toBe(12000);
+  expect(tokens.text?.(scopeRow)).toBe('12k');
+  const perDelivery = column(scopeColumns, 'per-delivery');
+  expect(perDelivery.value(scopeRow)).toBe(3000.4);
+  expect(perDelivery.text?.(scopeRow)).toBe('3000');
+});
+
+test('a missing time or scope is shown as the word null rather than as an empty cell', () => {
+  expect(column(memoryColumns, 'last-shown').value(memoryRow)).toBe('');
+  expect(column(memoryColumns, 'most-under').value({ ...memoryRow, most_under: null })).toBe('');
+  expect(column(memoryColumns, 'most-under').value(memoryRow)).toBe('widgets');
+});
+
+test('a column leads somewhere other than the page of the thing it names', () => {
+  expect(column(scopeColumns, 'scope').link?.(scopeRow)).toBe('/scopes/widgets');
+  expect(column(memoryColumns, 'memory').link?.(memoryRow)).toBe('/memories/widget-naming');
+  expect(
+    column(sessionColumns, 'session').link?.({
+      session_key: 'alpha/session-1',
+      bytes_full: 0,
+      bytes_index: 0,
+      chars: 0,
+      tokens: 0,
+      last_context_tokens: null,
+      last_seen: '',
+    }),
+  ).toBe('/contexts/alpha/session-1/prompt');
+});
+
+const sessionStats: SessionStatsRow[] = [
+  {
+    session_key: 'alpha/session-1',
+    bytes_full: 100,
+    bytes_index: 20,
+    chars: 3500,
+    tokens: 1000,
+    last_context_tokens: 4800,
+  },
+  {
+    session_key: 'beta/session-1',
+    bytes_full: 10,
+    bytes_index: 0,
+    chars: 70,
+    tokens: 20,
+    last_context_tokens: null,
+  },
+];
+
+test('a session the registry no longer holds takes another session row time as its own', () => {
+  const rows = sessionRows(
+    sessionStats,
+    new Map([['alpha/session-1', '2026-09-17T11:59:00+00:00']]),
+  );
+  expect(rows.map((row) => row.last_seen)).toEqual(['2026-09-17T11:59:00+00:00', '']);
+  // A context size nobody reported is left blank rather than shown as no tokens.
+  const size = column(sessionColumns, 'context');
+  expect(size.text?.(rows[0]!)).toBe('4.8k');
+  expect(size.text?.(rows[1]!)).toBe('');
+});

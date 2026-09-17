@@ -289,6 +289,19 @@ for (const scheme of ['light', 'dark'] as const) {
       });
     });
 
+    test('an opened session row in the statistics looks as reviewed', async ({ page }) => {
+      // The chart of one context, which is drawn only for the row that is open.
+      await page.goto('/stats');
+      await expect(page.locator('table.stats').first()).toBeVisible();
+      const sessions = page.locator('sl-details[data-section="sessions"]');
+      await sessions.locator('tbody tr.data-row td.expander sl-icon-button').first().click();
+      await expect(sessions.locator('fmn-session-series .chart-plot svg').first()).toBeVisible();
+      await settle(page);
+      await expect(sessions).toHaveScreenshot(`stats-session-laptop-${scheme}.png`, {
+        mask: clockValues(page),
+      });
+    });
+
     test('the contexts look as reviewed', async ({ page }) => {
       await page.goto('/contexts');
       await expect(page.locator('table.data')).toBeVisible();

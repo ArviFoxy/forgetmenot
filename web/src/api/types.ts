@@ -227,6 +227,23 @@ export interface ReviewReport {
 }
 
 /**
+ * The window and the filters every statistics report takes. An absent or empty
+ * field narrows nothing, so an empty filter reads the whole log.
+ */
+export interface StatsQuery {
+  /** The start of the window, as RFC 3339. */
+  from?: string;
+  to?: string;
+  /** One context, by the key the MCP tools take. */
+  session?: string;
+  /** One scope, matched against the section a memory was printed under. */
+  scope?: string;
+}
+
+/** How long one bucket of the delivered-tokens series is. */
+export type SeriesBucket = 'auto' | 'minute' | 'hour' | 'day';
+
+/**
  * What was delivered for one memory. Index lines and full bodies are separate
  * counts and are never added together: they cost different amounts of context.
  */
@@ -238,7 +255,15 @@ export interface MemoryStatsRow {
   shown_full_stale: number;
   /** Times the model fetched the whole body itself, through the tool. */
   fetched_full: number;
+  /** Times a new version removed lines only, so nothing was sent. */
+  shrunk: number;
   retracted: number;
+  /** UTF-16 units of the text delivered for this memory over the window. */
+  chars: number;
+  /** Tokens for those characters, as the server converted them. */
+  tokens: number;
+  /** The scope this memory was printed under most often; null when never printed. */
+  most_under: string | null;
   last_shown: string | null;
 }
 
@@ -257,7 +282,16 @@ export interface ScopeStatsRow {
   activations: number;
   /** Times the scope turned itself off because its forget rule was reached. */
   forgettings: number;
+  /** UTF-16 units printed in this scope's sections over the window. */
+  chars: number;
+  /** Events that printed a section for this scope. */
+  deliveries: number;
   live_contexts: number;
+  tokens: number;
+  /** The tokens one delivery of this scope's section cost on average. */
+  tokens_per_delivery: number;
+  /** Memories the catalog gives this scope now, which the log cannot answer. */
+  memories: number;
 }
 
 export interface DenyDayRow {
@@ -277,11 +311,57 @@ export interface LatencyRow {
   max_us: number;
 }
 
-/** Delivered bytes for one session, with the two forms apart. */
-export interface SessionBytesRow {
+/** What one session was delivered, with the two forms' bytes apart. */
+export interface SessionStatsRow {
   session_key: string;
   bytes_full: number;
   bytes_index: number;
+  /** UTF-16 units delivered into this context over the window, both forms together. */
+  chars: number;
+  tokens: number;
+  /** The context size Claude Code reported at the last event in the window. */
+  last_context_tokens: number | null;
+}
+
+/** What happened in one window of the summary, named by its length. */
+export interface SummaryWindow {
+  /** `5m`, `1h`, `1d` or `7d`. */
+  name: string;
+  chars: number;
+  tokens: number;
+  events: number;
+  /** Tool calls the server stopped so a critical memory could be read first. */
+  held: number;
+  forgettings: number;
+}
+
+export interface Summary {
+  windows: SummaryWindow[];
+  live_contexts: number;
+}
+
+/** One bucket of the delivered-tokens series. */
+export interface SeriesPoint {
+  /** The bucket's start, as RFC 3339 in UTC. */
+  t: string;
+  tokens: number;
+  deliveries: number;
+}
+
+export interface Series {
+  /** The bucket the points are in, which is the one `auto` chose when asked. */
+  bucket: string;
+  points: SeriesPoint[];
+}
+
+/** One hook event of one context, as the per-session chart reads it. */
+export interface SessionEventPoint {
+  t: string;
+  event: string;
+  /** The context size Claude Code reported; null when the event carried none. */
+  context_tokens: number | null;
+  /** Tokens the answer to this event carried. */
+  tokens: number;
 }
 
 export interface MemoryIndexFilter {

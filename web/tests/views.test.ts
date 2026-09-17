@@ -7,7 +7,11 @@ import type {
   MemoryDoc,
   MemoryStatsRow,
   ScopeRow,
+  ScopeStatsRow,
+  Series,
+  SessionStatsRow,
   StoreHistory,
+  Summary,
 } from '../src/api/types';
 import type { TreeNode } from '../src/model/tree';
 
@@ -65,8 +69,52 @@ const memoryRow: MemoryStatsRow = {
   shown_full_changed: 3,
   shown_full_stale: 4,
   fetched_full: 5,
-  retracted: 6,
+  shrunk: 6,
+  retracted: 7,
+  chars: 3500,
+  tokens: 1000,
+  most_under: 'widgets',
   last_shown: '2026-01-02T03:04:05+00:00',
+};
+
+const scopeStatsRow: ScopeStatsRow = {
+  scope_id: 'widgets',
+  activations: 2,
+  forgettings: 1,
+  chars: 42000,
+  deliveries: 4,
+  live_contexts: 1,
+  tokens: 12000,
+  tokens_per_delivery: 3000,
+  memories: 5,
+};
+
+const sessionStatsRow: SessionStatsRow = {
+  session_key: 'alpha/session-1',
+  bytes_full: 100,
+  bytes_index: 20,
+  chars: 3500,
+  tokens: 1000,
+  last_context_tokens: 4800,
+};
+
+/** The summary the page turns into its five cards. */
+const summary: Summary = {
+  windows: [
+    { name: '5m', chars: 10, tokens: 3, events: 1, held: 0, forgettings: 0 },
+    { name: '1h', chars: 4200, tokens: 1200, events: 8, held: 2, forgettings: 1 },
+    { name: '1d', chars: 119000, tokens: 34000, events: 40, held: 7, forgettings: 2 },
+    { name: '7d', chars: 5250000, tokens: 1500000, events: 300, held: 19, forgettings: 9 },
+  ],
+  live_contexts: 3,
+};
+
+const series: Series = {
+  bucket: 'hour',
+  points: [
+    { t: '2026-01-02T02:00:00Z', tokens: 800, deliveries: 2 },
+    { t: '2026-01-02T03:00:00Z', tokens: 400, deliveries: 1 },
+  ],
 };
 
 /**
@@ -89,6 +137,8 @@ const contextPrompt: ContextPrompt = {
  * because the mock factory below runs before anything else in this file.
  */
 const answers = vi.hoisted(() => ({
+  /** Whether the statistics answers carry rows, so an empty range can be shown. */
+  statsRows: true,
   contexts: [] as unknown[],
   contextPrompt: null as unknown,
   scopeWrites: [] as { scope_message: string | null; forget: { tokens_since_trigger: number } | null }[],
@@ -146,12 +196,15 @@ vi.mock('../src/api/client', () => ({
     contexts: () => Promise.resolve(answers.contexts),
     contextPrompt: () => Promise.resolve(answers.contextPrompt),
     review: () => Promise.resolve({ errors: [], global_only_critical: [] }),
-    memoryStats: () => Promise.resolve([memoryRow]),
+    memoryStats: () => Promise.resolve(answers.statsRows ? [memoryRow] : []),
     triggerStats: () => Promise.resolve([]),
-    scopeStats: () => Promise.resolve([]),
+    scopeStats: () => Promise.resolve(answers.statsRows ? [scopeStatsRow] : []),
     denyStats: () => Promise.resolve([]),
     latencyStats: () => Promise.resolve([]),
-    sessionStats: () => Promise.resolve([]),
+    sessionStats: () => Promise.resolve(answers.statsRows ? [sessionStatsRow] : []),
+    summaryStats: () => Promise.resolve(summary),
+    seriesStats: () => Promise.resolve(answers.statsRows ? series : { bucket: 'hour', points: [] }),
+    sessionSeries: () => Promise.resolve([]),
   },
 }));
 
@@ -170,6 +223,9 @@ async function settle(element: HTMLElement & { updateComplete?: Promise<unknown>
 
 beforeEach(() => {
   document.body.innerHTML = '';
+  answers.statsRows = true;
+  window.history.replaceState(null, '', '/stats');
+  window.localStorage.clear();
   answers.contexts = [];
   answers.contextPrompt = contextPrompt;
   answers.scopeWrites = [];
@@ -301,18 +357,57 @@ test('an address the app links to has no element registered to show it', () => {
   }
 });
 
-test('the statistics add the delivery counts together instead of showing each', async () => {
+// The source of these four expectations is what the statistics page promises: five
+// figures across the top, a window with nothing in it said to be empty rather than
+// drawn as an empty table, a click on a scope row narrowing every section to that
+// scope through the address, and every memory row a way to that memory's page.
+
+/** The statistics page, rendered and settled. */
+async function renderStats(): Promise<HTMLElement> {
   const element = document.createElement('fmn-stats-view');
   document.body.append(element);
   await settle(element);
+  return element;
+}
 
-  const cells = [...document.querySelectorAll('table.stats td')].map((cell) =>
-    cell.textContent?.trim(),
-  );
-  for (const count of ['1', '2', '3', '4', '5', '6']) {
-    expect(cells).toContain(count);
-  }
-  expect(cells).toContain('2026-01-02T03:04:05+00:00');
+test('the summary shows some other number of figures, or reports raw characters', async () => {
+  const element = await renderStats();
+
+  const cards = [...element.querySelectorAll('.summary-card')];
+  expect(cards).toHaveLength(5);
+  const values = cards.map((card) => card.querySelector('.summary-value')?.textContent?.trim());
+  // The tokens of the hour, the day and the week, then the calls held today and
+  // the contexts working now.
+  expect(values).toEqual(['1.2k', '34k', '1.5M', '7', '3']);
+});
+
+test('a range with nothing in it is drawn as an empty chart and empty tables', async () => {
+  answers.statsRows = false;
+  const element = await renderStats();
+
+  const empties = [...element.querySelectorAll('.empty')].map((node) => node.textContent?.trim());
+  expect(empties.length).toBeGreaterThanOrEqual(4);
+  for (const text of empties) expect(text).toBe('Nothing in this range');
+  expect(element.querySelector('fmn-token-series')).toBeNull();
+});
+
+test('a click on a scope row leaves the address alone, so the other sections keep their window', async () => {
+  const element = await renderStats();
+
+  const row = element.querySelector('.stats-scopes tr.data-row');
+  expect(row, 'the scope table must have a row to click').not.toBeNull();
+  (row as HTMLElement).click();
+  await settle(element);
+
+  expect(window.location.search).toBe('?scope=widgets');
+});
+
+test('a memory row has no way to the memory it names', async () => {
+  const element = await renderStats();
+
+  const link = element.querySelector('.stats-memories tr.data-row a');
+  expect(link?.getAttribute('href')).toBe(paths.memory(memoryRow.memory));
+  expect(link?.textContent?.trim()).toBe(memoryRow.memory);
 });
 
 // The source of these three expectations is the decision about what the contexts

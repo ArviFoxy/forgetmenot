@@ -49,12 +49,20 @@ export function settingRows(doc: SettingsDoc): SettingRow[] {
   });
 }
 
-/** A number typed into a field, or null for a field left empty, which is "off". */
-export function parseNumberOrOff(text: string): number | null {
+/**
+ * A number typed into a field, or null for a field left empty, which is "off".
+ *
+ * The type decides whether the fraction survives: a setting typed `number` is a
+ * fraction, such as the characters a token is worth, and every other numeric type
+ * counts whole things, so a fraction typed into one is cut off rather than sent to
+ * be refused.
+ */
+export function parseNumberOrOff(text: string, type: SettingType = 'integer'): number | null {
   const trimmed = text.trim();
   if (trimmed === '') return null;
   const value = Number(trimmed);
-  return Number.isFinite(value) ? Math.trunc(value) : null;
+  if (!Number.isFinite(value)) return null;
+  return type === 'number' ? value : Math.trunc(value);
 }
 
 /** A value as a line of text, for a field and for the two sides of a conflict. */

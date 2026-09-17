@@ -1290,6 +1290,171 @@ pre.diff code.diff-changed {
   white-space: nowrap;
 }
 
+/* ---------- Statistics ---------- */
+
+/* The charts are laid out at the width of their element, which an inline element
+   does not have. */
+fmn-data-table,
+fmn-session-series,
+fmn-token-series {
+  display: block;
+}
+
+/* A section of the page is a disclosure whose summary is its heading, so the
+   heading carries the margins it has everywhere else. */
+.stats-section h2 {
+  margin: 0;
+}
+
+.stats-section::part(header) {
+  padding: var(--sl-spacing-small) 0 var(--sl-spacing-2x-small);
+}
+
+.stats-section::part(content) {
+  padding: 0 0 var(--sl-spacing-medium);
+}
+
+.summary-row {
+  display: grid;
+  gap: var(--sl-spacing-small);
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  margin-bottom: var(--sl-spacing-small);
+}
+
+.summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sl-spacing-small);
+  border: 1px solid var(--fmn-border);
+  border-radius: var(--sl-border-radius-medium);
+}
+
+.summary-value {
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.summary-label {
+  color: var(--fmn-fg-muted);
+  font-size: 0.73rem;
+  font-weight: var(--sl-font-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.series-controls {
+  margin-bottom: var(--sl-spacing-small);
+}
+
+.series-filter {
+  min-width: 13rem;
+  max-width: 20rem;
+}
+
+/* The plot is laid out at the width of this box, so the box carries no padding of
+   its own: a pixel across it is the same pixel across the plot, which is what the
+   drag that narrows the range is read against. */
+.chart {
+  position: relative;
+  margin-bottom: var(--sl-spacing-small);
+  padding: 0;
+  touch-action: none;
+  user-select: none;
+}
+
+.chart-plot svg {
+  display: block;
+  color: var(--fmn-fg-muted);
+  font-family: var(--sl-font-sans);
+}
+
+.chart-plot svg g[aria-label='line'],
+.chart-plot svg g[aria-label='dot'] {
+  color: var(--sl-color-primary-600);
+}
+
+.chart-plot svg g[aria-label='bar'] {
+  color: var(--sl-color-primary-400);
+}
+
+.chart-plot svg g[aria-label='rule'] {
+  color: var(--fmn-border);
+}
+
+/* What the pointer has dragged over so far. */
+.chart-drag {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: var(--fmn-hover);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.chart-panels {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Sorted and filtered tables ---------- */
+
+.table-filter {
+  margin-bottom: var(--sl-spacing-x-small);
+  max-width: 20rem;
+}
+
+/* The header is the button that sorts by the column, so it looks like the header
+   text it replaces and shows its arrow beside it. */
+table.data th button.sort {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+table.data th.number button.sort {
+  flex-direction: row-reverse;
+}
+
+table.data th button.sort sl-icon {
+  color: var(--fmn-fg-icon);
+  font-size: 0.85em;
+}
+
+table.data th.expander,
+table.data td.expander {
+  width: 1.8rem;
+  padding-inline: 2px;
+}
+
+table.data td.expander sl-icon-button::part(base) {
+  padding: 0;
+}
+
+table.data tr.data-row {
+  cursor: pointer;
+}
+
+table.data tr.sub-row > td {
+  padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+  background-color: var(--fmn-raised);
+}
+
+table.data table.data.sub {
+  width: auto;
+  min-width: 24rem;
+  background-color: var(--fmn-bg);
+}
+
 /* ---------- Phone and tablet ---------- */
 
 @media (max-width: 900px) {

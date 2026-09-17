@@ -23,10 +23,15 @@ import type {
   ScopeRow,
   ScopeStatsRow,
   ScopeWriteRequest,
+  Series,
+  SeriesBucket,
+  SessionEventPoint,
   SettingsDoc,
   SettingsWriteRequest,
-  SessionBytesRow,
+  SessionStatsRow,
+  StatsQuery,
   StoreHistory,
+  Summary,
   TriggerStatsRow,
   TriggerTestRequest,
   TriggerTestResult,
@@ -68,6 +73,16 @@ function encodedPath(id: string): string {
   return id.split('/').map(encodeURIComponent).join('/');
 }
 
+/** The window and the filters as query parameters; an empty field is left out. */
+function statsQuery(filter: StatsQuery | undefined, extra: Record<string, string> = {}): string {
+  const query = new URLSearchParams();
+  for (const [name, value] of Object.entries({ ...(filter ?? {}), ...extra })) {
+    if (value !== undefined && value !== '') query.set(name, value);
+  }
+  const text = query.toString();
+  return text === '' ? '' : `?${text}`;
+}
+
 function indexQuery(filter: MemoryIndexFilter | undefined): string {
   if (!filter) return '';
   const query = new URLSearchParams();
@@ -107,12 +122,18 @@ export interface ApiClient {
   /** The text one context would be given next, or the whole of its scopes. */
   contextPrompt(key: string, mode: PromptMode): Promise<ContextPrompt>;
   review(): Promise<ReviewReport>;
-  memoryStats(): Promise<MemoryStatsRow[]>;
-  triggerStats(): Promise<TriggerStatsRow[]>;
-  scopeStats(): Promise<ScopeStatsRow[]>;
+  memoryStats(filter?: StatsQuery): Promise<MemoryStatsRow[]>;
+  triggerStats(filter?: StatsQuery): Promise<TriggerStatsRow[]>;
+  scopeStats(filter?: StatsQuery): Promise<ScopeStatsRow[]>;
   denyStats(): Promise<DenyDayRow[]>;
   latencyStats(): Promise<LatencyRow[]>;
-  sessionStats(): Promise<SessionBytesRow[]>;
+  sessionStats(filter?: StatsQuery): Promise<SessionStatsRow[]>;
+  /** Delivered tokens and events over the last five minutes, hour, day and week. */
+  summaryStats(): Promise<Summary>;
+  /** Delivered tokens per bucket over the window, oldest bucket first. */
+  seriesStats(filter?: StatsQuery, bucket?: SeriesBucket): Promise<Series>;
+  /** Every hook event of one context, with its context size and its answer's tokens. */
+  sessionSeries(key: string, filter?: StatsQuery): Promise<SessionEventPoint[]>;
 }
 
 export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): ApiClient {
@@ -245,12 +266,24 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     contextPrompt: (key, mode) =>
       read<ContextPrompt>(`/api/contexts/${encodedPath(key)}/prompt?mode=${mode}`),
     review: () => read<ReviewReport>('/api/review'),
-    memoryStats: () => read<MemoryStatsRow[]>('/api/stats/memories'),
-    triggerStats: () => read<TriggerStatsRow[]>('/api/stats/triggers'),
-    scopeStats: () => read<ScopeStatsRow[]>('/api/stats/scopes'),
+    memoryStats: (filter) => read<MemoryStatsRow[]>(`/api/stats/memories${statsQuery(filter)}`),
+    triggerStats: (filter) => read<TriggerStatsRow[]>(`/api/stats/triggers${statsQuery(filter)}`),
+    scopeStats: (filter) => read<ScopeStatsRow[]>(`/api/stats/scopes${statsQuery(filter)}`),
     denyStats: () => read<DenyDayRow[]>('/api/stats/denies'),
     latencyStats: () => read<LatencyRow[]>('/api/stats/latency'),
-    sessionStats: () => read<SessionBytesRow[]>('/api/stats/sessions'),
+    sessionStats: (filter) => read<SessionStatsRow[]>(`/api/stats/sessions${statsQuery(filter)}`),
+    summaryStats: () => read<Summary>('/api/stats/summary'),
+    seriesStats: (filter, bucket) =>
+      read<Series>(`/api/stats/series${statsQuery(filter, { bucket: bucket ?? '' })}`),
+    // The session and scope filters are the key's own by definition, so only the
+    // window is sent.
+    sessionSeries: (key, filter) =>
+      read<SessionEventPoint[]>(
+        `/api/stats/session/${encodedPath(key)}/series${statsQuery({
+          from: filter?.from,
+          to: filter?.to,
+        })}`,
+      ),
   };
 }
 
