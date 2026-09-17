@@ -82,28 +82,35 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     let deny = plan.may_deny
         && settings.interrupts(plan.tool_name.as_deref())
         && outcome.needs.has_critical_arrival(&catalog);
-    let response = if outcome.needs.is_empty() {
-        HookResponse::empty()
-    } else {
-        let text = render::render(&Delivery {
-            key: &plan.key,
-            catalog: &catalog,
-            needs: &outcome.needs,
-            active: &outcome.active,
-            session_start: plan.session_start,
-            answer_file_threshold: settings.answer_file_threshold,
-        });
+    let delivery = Delivery {
+        key: &plan.key,
+        catalog: &catalog,
+        needs: &outcome.needs,
+        active: &outcome.active,
+        activated: &outcome.activated,
+        announce_empty_scopes: settings.announce_empty_scopes,
+        session_start: plan.session_start,
+        answer_file_threshold: settings.answer_file_threshold,
+    };
+    // A scope named because it delivered nothing is text and nothing else, so it
+    // is a reason to answer at all but not a delivery: nothing is recorded
+    // against the context and no call is held for it.
+    let answered = !outcome.needs.is_empty() || !delivery.announced_scopes().is_empty();
+    let response = if answered {
+        let text = render::render(&delivery);
         if deny {
             HookResponse::deny(plan.event_name, DENY_REASON, text)
         } else {
             HookResponse::with_context(plan.event_name, text)
         }
+    } else {
+        HookResponse::empty()
     };
 
-    let decision = match (deny, outcome.needs.is_empty()) {
+    let decision = match (deny, answered) {
         (true, _) => Decision::Deny,
-        (false, false) => Decision::Context,
-        (false, true) => Decision::None,
+        (false, true) => Decision::Context,
+        (false, false) => Decision::None,
     };
     state
         .stats
@@ -129,6 +136,9 @@ struct Outcome {
     needs: Needs,
     /// The context's scopes after this event's triggers were applied.
     active: BTreeSet<ScopeId>,
+    /// The scopes this event added to that set, the ones its triggers named and
+    /// the ones those imply alike.
+    activated: Vec<ScopeId>,
     fires: Vec<TriggerFire>,
 }
 
@@ -207,6 +217,10 @@ fn apply(
         texts.push((TriggerField::SessionDirectory, started_in.clone()));
     }
 
+    // The scopes this event finds the context in, against which the scopes it
+    // turns on are counted below.
+    let active_before = context.active.clone();
+
     // `fire` rather than `fire_closed` because the statistics record which
     // pattern fired; the implies closure is applied to the whole active set
     // afterwards, which has the same effect.
@@ -224,6 +238,7 @@ fn apply(
         }
     }
     context.active = catalog.closure(&context.active);
+    let activated: Vec<ScopeId> = context.active.difference(&active_before).cloned().collect();
 
     let needs = compute_needs(catalog, context, tokens_now);
     record_delivery(context, &needs, catalog, tokens_now);
@@ -232,6 +247,7 @@ fn apply(
     Outcome {
         needs,
         active: context.active.clone(),
+        activated,
         fires,
     }
 }

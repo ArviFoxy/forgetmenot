@@ -975,6 +975,55 @@ fn a_scope_write_with_a_machine_on_a_tool_name_trigger_is_accepted_and_kept() {
     );
 }
 
+/// Detects a scope's message dropped anywhere between the write and the reader:
+/// the page that edits a scope reads it back from the index row as well as from
+/// the scope itself, and a message the store keeps but the API hides cannot be
+/// edited or even seen.
+///
+/// Source: issue #7, where a scope file may carry a short message.
+#[test]
+fn a_scope_written_with_a_message_reads_back_with_it_in_the_scope_and_in_the_index() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let read = scope(&server, "widgets");
+    let message = "Part numbers are never renumbered.";
+
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/scopes/widgets",
+        Some(&json!({
+            "implies": read["implies"],
+            "triggers": read["triggers"],
+            "scope_message": message,
+            "base_version": read["version"],
+            "author": AUTHOR,
+            "message": "give the widgets scope a message",
+        })),
+    );
+    assert_eq!(
+        status, 200,
+        "a write with a message must be taken, got {answer}"
+    );
+
+    assert_eq!(
+        scope(&server, "widgets")["message"],
+        json!(message),
+        "the scope must read back with the message it was written with"
+    );
+    assert_eq!(
+        index_row(&scope_index(&server), "widgets")["file"]["message"],
+        json!(message),
+        "the index row's file must carry the message"
+    );
+    assert!(
+        server
+            .store()
+            .file_text("scopes/widgets.yaml")
+            .contains(message),
+        "the message must be in the scope file, got {:?}",
+        server.store().file_text("scopes/widgets.yaml")
+    );
+}
+
 /// Detects a reader that rejects the `type` label scope files used to carry,
 /// which would make every scope of a store written before the label was dropped
 /// unreadable, and a writer that puts the label back into the file it saves.
@@ -1502,6 +1551,7 @@ fn the_settings_of_a_store_without_a_file_are_the_defaults_at_no_version() {
             "deliver_knowledge_index": true,
             "tool_result_match_limit": 262_144,
             "answer_file_threshold": 10_000,
+            "announce_empty_scopes": false,
         }),
         "the defaults must be the documented ones, got {answer}"
     );

@@ -29,7 +29,7 @@ One server serves every machine on a network, and subagents receive the same mem
 
 **Memory.** A markdown note with a one-line description, stored as a file in a git repository. There are two kinds. A *critical* memory holds a rule the agent must follow; whenever it applies, its full text is placed in the agent's context. A *knowledge* memory holds facts the agent may need; the agent sees only its description and reads the full text when it wants it. Memories can link to each other with `[[name]]`.
 
-**Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers. A scope with a file exists by its file, and `global` exists always. A `machine:` or `session:` scope exists once the server has seen that machine or that session, or a store file names it; naming a scope in a memory, in another scope's `implies` or in a session's active set does not by itself make that scope exist.
+**Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers. A scope file may also carry a short `message`, which is delivered in full whenever the scope is active, under the same rules as a critical memory of that scope: a scope with one rule needs no memory file for it. A scope with a file exists by its file, and `global` exists always. A `machine:` or `session:` scope exists once the server has seen that machine or that session, or a store file names it; naming a scope in a memory, in another scope's `implies` or in a session's active set does not by itself make that scope exist.
 
 **Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its directories; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. The inputs and results of the store's own MCP tools, and of any tool named in `trigger_exempt_tools`, are not matched, because they carry the memory system's own scope ids, memory ids and bodies rather than anything about the work. Triggers only turn scopes on; the agent can turn a scope off with a tool call.
 
@@ -55,6 +55,7 @@ A scope file names the scopes it implies and its triggers:
 ```yaml
 # scopes/widgets.yaml
 id: widgets
+message: A widget part number is never reused or renumbered once it has shipped.
 implies: [rocketry]
 triggers:
   - pattern: '\bwidgets?\b'
@@ -62,6 +63,8 @@ triggers:
     pattern: '/widgets(/|$)'
     machine: alpha
 ```
+
+`message` is optional: the text is delivered in full when the scope becomes active, again when it changes and again at the reminder interval, and a tool call is held for it like for a critical memory the context has not seen. It is printed as the scope and the text, with no memory id to fetch it by.
 
 A trigger with no `on` is matched against every text of the session; `on` is one of `any`, `user_message`, `assistant_message`, `tool_name`, `tool_input`, `tool_result`, `shell_directory` or `session_directory`. Both directories come from the `cwd` value Claude Code sends with every hook event. `session_directory` is the directory `claude` was started in: the `cwd` of the session's first event, remembered for the whole session and never moved. `shell_directory` is the working directory of the session's shell: the same directory at first, and after the agent runs `cd` in its shell, wherever it went. Both are matched when the session starts, before every tool call, and when the shell directory changes. `machine` restricts a trigger to one machine: the trigger fires only when the session runs on that machine and the pattern matches.
 
@@ -98,6 +101,7 @@ Everything that changes what the agent experiences lives in `config.yml` at the 
 | `deliver_knowledge_index` | bool | `true` | Deliver the description of each knowledge memory that applies, so the agent knows it exists and can ask for the full text; `false` delivers nothing about knowledge memories, the agent has to list them itself |
 | `tool_result_match_limit` | integer | `262144` | Bytes of a tool result matched against triggers |
 | `answer_file_threshold` | integer or null | `10000` | Characters of a hook answer above which Claude Code saves it to a file and shows the model a preview; an answer past this opens with a notice to read the file; `null` sends no notice |
+| `announce_empty_scopes` | bool | `false` | Name a scope in the rendered context when it becomes active but delivers nothing; off, nothing is said about it |
 
 An unknown key, or a value of the wrong type, is a validation error: `forgetmenot check` reports it and a write is refused. The settings are part of the store, so a branch may change them and land like any other change.
 

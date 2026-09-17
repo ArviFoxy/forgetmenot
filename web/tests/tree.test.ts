@@ -25,7 +25,7 @@ function memory(id: string, scopes: string[], over: Partial<MemorySummary> = {})
 
 /** The index row of a scope with a file. */
 function fileRow(id: string): ScopeRow {
-  return { id, kind: 'file', name: null, file: { id, implies: [], triggers: [], version: 'v' } };
+  return { id, kind: 'file', name: null, file: { id, message: null, implies: [], triggers: [], version: 'v' } };
 }
 
 const globalRow: ScopeRow = { id: 'global', kind: 'global', name: null, file: null };

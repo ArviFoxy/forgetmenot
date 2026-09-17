@@ -12,7 +12,7 @@ use git2::Oid;
 
 use super::frontmatter::FrontmatterError;
 use super::git::{GitError, GitRepo};
-use super::memory::{MemoryDocument, MemoryKind};
+use super::memory::{MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata};
 use super::scope::ScopeDocument;
 use super::settings::{SETTINGS_PATH, SettingProblem, Settings, SettingsFile};
 use super::validate::{ValidationError, ValidationWarning};
@@ -73,6 +73,10 @@ pub struct Catalog {
     settings_version: Option<Oid>,
     scopes: BTreeMap<ScopeId, ScopeEntry>,
     memories: BTreeMap<MemoryId, MemoryEntry>,
+    /// The message of each scope that carries one, as the critical memory it is
+    /// delivered as. Kept apart from the file memories so that everything that
+    /// reads the store's files reads those alone.
+    scope_messages: BTreeMap<MemoryId, MemoryEntry>,
     implied: BTreeMap<ScopeId, BTreeSet<ScopeId>>,
     triggers: TriggerIndex,
     load_errors: Vec<ValidationError>,
@@ -172,6 +176,7 @@ impl Catalog {
 
         let implied = implies_closures(&scopes);
         let triggers = compile_triggers(&scopes, &implied, &mut load_errors)?;
+        let scope_messages = scope_message_entries(&scopes, &memories, &mut load_errors);
 
         Ok(Self {
             head,
@@ -179,6 +184,7 @@ impl Catalog {
             settings_version,
             scopes,
             memories,
+            scope_messages,
             implied,
             triggers,
             load_errors,
@@ -202,12 +208,25 @@ impl Catalog {
         self.settings_version
     }
 
-    /// The memory with this id.
+    /// The memory with this id, whether a file holds it or a scope's message is
+    /// delivered as it.
     pub fn memory(&self, id: &MemoryId) -> Option<&MemoryEntry> {
+        self.memories
+            .get(id)
+            .or_else(|| self.scope_messages.get(id))
+    }
+
+    /// The memory with this id, only if a file in the store holds it.
+    ///
+    /// What the version of a path and the target of a `[[link]]` are answered
+    /// from: a scope's message has no file of its own and nothing links to it.
+    pub fn file_memory(&self, id: &MemoryId) -> Option<&MemoryEntry> {
         self.memories.get(id)
     }
 
-    /// Every memory, ordered by id.
+    /// Every memory a file holds, ordered by id. The message a scope carries is
+    /// not one of them: it is delivered from the scope file and has no file of
+    /// its own, so nothing that reads, writes or lists memory files sees it.
     pub fn memories(&self) -> impl ExactSizeIterator<Item = &MemoryEntry> {
         self.memories.values()
     }
@@ -246,6 +265,7 @@ impl Catalog {
         let mut due: Vec<&MemoryEntry> = self
             .memories
             .values()
+            .chain(self.scope_messages.values())
             .filter(|memory| memory.scopes().iter().any(|scope| active.contains(scope)))
             .collect();
         due.sort_by(|left, right| left.kind().cmp(&right.kind()).then(left.id.cmp(&right.id)));
@@ -278,6 +298,66 @@ fn settings_error(path: &str, problem: &SettingProblem) -> ValidationError {
             found: mismatch.found.clone(),
         },
     }
+}
+
+/// The message of each scope that carries one, as the critical memory it is
+/// delivered as: its scope alone, its first line as the description a reader
+/// sees in the index, and the scope file's blob as the version that says the
+/// message changed.
+///
+/// An id a memory file already has is left to that file and reported, so that
+/// the two maps never hold the same id and nothing is delivered twice.
+fn scope_message_entries(
+    scopes: &BTreeMap<ScopeId, ScopeEntry>,
+    memories: &BTreeMap<MemoryId, MemoryEntry>,
+    load_errors: &mut Vec<ValidationError>,
+) -> BTreeMap<MemoryId, MemoryEntry> {
+    let mut messages = BTreeMap::new();
+    for entry in scopes.values() {
+        let Some(message) = &entry.document.message else {
+            continue;
+        };
+        let id = MemoryId::for_scope_message(&entry.id);
+        if memories.contains_key(&id) {
+            load_errors.push(ValidationError::DuplicateMemoryId {
+                path: entry.path.clone(),
+                id,
+            });
+            continue;
+        }
+        let document = MemoryDocument {
+            id: id.clone(),
+            frontmatter: MemoryFrontmatter {
+                name: entry.id.as_str().to_string(),
+                description: Some(first_line(message).to_string()),
+                modified: None,
+                extra: yaml_serde::Mapping::new(),
+                metadata: MemoryMetadata {
+                    kind: Some(MemoryKind::Critical),
+                    scopes: Some(vec![entry.id.clone()]),
+                    ..MemoryMetadata::default()
+                },
+            },
+            body: message.clone(),
+        };
+        messages.insert(
+            id.clone(),
+            MemoryEntry {
+                id,
+                path: entry.path.clone(),
+                version: entry.version,
+                document,
+                // A message is one short text, not a document that links out.
+                links: Vec::new(),
+            },
+        );
+    }
+    messages
+}
+
+/// The first line of `text`, trimmed.
+fn first_line(text: &str) -> &str {
+    text.trim_start().lines().next().unwrap_or_default().trim()
 }
 
 /// The transitive `implies` closure of every scope with a file.

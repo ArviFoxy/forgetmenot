@@ -757,9 +757,21 @@ h3 {
 }
 
 .inline-edit sl-input,
-.inline-edit sl-select {
+.inline-edit sl-select,
+.inline-edit sl-textarea {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* In the fact box the row already carries the label, so the field hides its own. */
+.inline-edit sl-textarea::part(form-control-label) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* Editing the description keeps the header's shape: the control sits on the same

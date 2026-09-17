@@ -26,6 +26,9 @@ const serverDoc: MemoryDoc = {
   last_commit: null,
 };
 
+/** The message the scope on the server carries. */
+const scopeMessage = 'A widget part number is never renumbered.';
+
 /** The scopes the index lists: one with a file, one without. */
 const scopeRows: ScopeRow[] = [
   { id: 'global', kind: 'global', name: null, file: null },
@@ -33,7 +36,7 @@ const scopeRows: ScopeRow[] = [
     id: 'widgets',
     kind: 'file',
     name: null,
-    file: { id: 'widgets', implies: [], triggers: [], version: 'v' },
+    file: { id: 'widgets', message: scopeMessage, implies: [], triggers: [], version: 'v' },
   },
 ];
 
@@ -52,7 +55,10 @@ const memoryRow: MemoryStatsRow = {
  * What the mocked API answers with, which a test sets before it renders. Hoisted
  * because the mock factory below runs before anything else in this file.
  */
-const answers = vi.hoisted(() => ({ contexts: [] as unknown[] }));
+const answers = vi.hoisted(() => ({
+  contexts: [] as unknown[],
+  scopeWrites: [] as { scope_message: string | null }[],
+}));
 
 vi.mock('../src/api/client', () => ({
   RequestFailed: class RequestFailed extends Error {
@@ -76,8 +82,11 @@ vi.mock('../src/api/client', () => ({
     memoryHistoryEntry: () => Promise.resolve({ commit: {}, content: '', diff: '' }),
     scopeIndex: () => Promise.resolve(scopeRows),
     scope: () =>
-      Promise.resolve({ id: 'widgets', implies: [], triggers: [], version: 'v' }),
-    putScope: () => Promise.resolve({ kind: 'written' }),
+      Promise.resolve({ id: 'widgets', message: null, implies: [], triggers: [], version: 'v' }),
+    putScope: (_id: string, request: { scope_message: string | null }) => {
+      answers.scopeWrites.push(request);
+      return Promise.resolve({ kind: 'written' });
+    },
     deleteScope: () => Promise.resolve({ kind: 'written' }),
     createScope: () => Promise.resolve({ kind: 'written' }),
     scopeHistory: () => Promise.resolve([]),
@@ -112,6 +121,7 @@ async function settle(element: HTMLElement & { updateComplete?: Promise<unknown>
 beforeEach(() => {
   document.body.innerHTML = '';
   answers.contexts = [];
+  answers.scopeWrites = [];
 });
 
 /** One live context, with everything the contexts page reads. */
@@ -241,6 +251,42 @@ test('a session whose subagent was seen last is listed under a session seen earl
     otherSession.name,
   ]);
   expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
+});
+
+// The source of this expectation is issue #7: a scope file may carry a message, so
+// the page that edits a scope has to show the one on the server and send the one the
+// reader typed.
+
+test('the scope page hides the message the scope carries, or writes back another text', async () => {
+  const page = document.createElement('fmn-scope-page') as HTMLElement & {
+    scopeId: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.scopeId = 'widgets';
+  document.body.append(page);
+  await settle(page);
+
+  expect(page.textContent).toContain(scopeMessage);
+
+  page.querySelector<HTMLElement>('sl-icon-button[label="Edit Message"]')?.click();
+  await settle(page);
+  const field = page.querySelector('sl-textarea');
+  expect(field, 'the Message field must be editable').not.toBeNull();
+  expect(field?.getAttribute('value')).toBe(scopeMessage);
+
+  const edited = 'Renumbering a shipped part number is a release blocker.';
+  field!.value = edited;
+  field!.dispatchEvent(new CustomEvent('sl-input'));
+  await settle(page);
+  const bar = page.querySelector('fmn-commit-bar');
+  expect(bar, 'an edited message must offer to be saved').not.toBeNull();
+  bar?.dispatchEvent(
+    new CustomEvent('fmn-message-change', { detail: { message: 'reword it' }, bubbles: true }),
+  );
+  bar?.dispatchEvent(new CustomEvent('fmn-save', { bubbles: true }));
+  await settle(page);
+
+  expect(answers.scopeWrites.map((request) => request.scope_message)).toEqual([edited]);
 });
 
 // The source of these two expectations is what the tree menu can act on: the file is

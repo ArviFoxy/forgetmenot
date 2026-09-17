@@ -19,7 +19,7 @@ import type { TagsChange } from '../components/fmn-tag-field';
 
 /** A scope that is being written and has no file yet. */
 export function blankScope(): ScopeDoc {
-  return { id: '', implies: [], triggers: [], version: '' };
+  return { id: '', message: null, implies: [], triggers: [], version: '' };
 }
 
 /** The row of the scope being created: a file scope whose file is still empty. */
@@ -31,6 +31,9 @@ interface ScopeDraft {
   baseVersion: string;
   impliesText: string;
   triggers: Trigger[];
+  /** The scope's message; empty means the scope carries none. */
+  scopeMessage: string;
+  /** The commit message of the write. */
   message: string;
   saving: boolean;
   errors: ValidationError[];
@@ -43,6 +46,7 @@ function draftOf(scope: ScopeDoc): ScopeDraft {
     baseVersion: scope.version,
     impliesText: scope.implies.join(', '),
     triggers: scope.triggers,
+    scopeMessage: scope.message ?? '',
     message: '',
     saving: false,
     errors: [],
@@ -51,9 +55,14 @@ function draftOf(scope: ScopeDoc): ScopeDraft {
   };
 }
 
+/** The message a write sends: what the field holds, or null when it is blank. */
+function messageToSave(draft: { scopeMessage: string }): string | null {
+  return draft.scopeMessage.trim() === '' ? null : draft.scopeMessage;
+}
+
 /** The scope fields as one text, so the two sides of a conflict can be compared. */
-function scopeText(scope: { implies: string[]; triggers: Trigger[] }): string {
-  const lines = [`implies: ${scope.implies.join(', ')}`];
+function scopeText(scope: { message: string | null; implies: string[]; triggers: Trigger[] }): string {
+  const lines = [`message: ${scope.message ?? ''}`, `implies: ${scope.implies.join(', ')}`];
   for (const trigger of scope.triggers) {
     lines.push(
       `trigger: ${fieldOf(trigger)} ${trigger.pattern}${trigger.machine ? ` @${trigger.machine}` : ''}`,
@@ -217,6 +226,7 @@ export class FmnScopePage extends PageElement {
     // saved is the whole of it, including an id that is still empty.
     if (this.creating) return true;
     if (parseIdList(draft.impliesText).join(',') !== scope.implies.join(',')) return true;
+    if (messageToSave(draft) !== scope.message) return true;
     return !triggersEqual(draft.triggers, scope.triggers);
   }
 
@@ -230,12 +240,14 @@ export class FmnScopePage extends PageElement {
             id: this.newId,
             implies: parseIdList(draft.impliesText),
             triggers: draft.triggers,
+            scope_message: messageToSave(draft),
             author: frontendAuthor,
             message: draft.message,
           })
         : await api.putScope(this.scopeId, {
             implies: parseIdList(draft.impliesText),
             triggers: draft.triggers,
+            scope_message: messageToSave(draft),
             base_version: draft.baseVersion,
             author: frontendAuthor,
             message: draft.message,
@@ -355,6 +367,7 @@ export class FmnScopePage extends PageElement {
             <fmn-side-by-side
               leftLabel="Your text"
               .leftText=${scopeText({
+                message: messageToSave(draft),
                 implies: parseIdList(draft.impliesText),
                 triggers: draft.triggers,
               })}
@@ -392,6 +405,22 @@ export class FmnScopePage extends PageElement {
               ></sl-input>
             </div>`
           : nothing}
+        ${this.renderField(
+          'message',
+          'Message',
+          draft.scopeMessage.trim() === ''
+            ? html`<span class="empty">none</span>`
+            : html`<span class="value-text">${draft.scopeMessage}</span>`,
+          () => html`<sl-textarea
+            size="small"
+            label="Message"
+            rows="3"
+            value=${draft.scopeMessage}
+            @sl-input=${(event: Event) => {
+              this.change({ scopeMessage: (event.target as HTMLInputElement).value });
+            }}
+          ></sl-textarea>`,
+        )}
         ${this.renderField(
           'implies',
           'Implies',

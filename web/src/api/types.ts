@@ -116,6 +116,8 @@ export interface SettingsWriteRequest {
 
 export interface ScopeDoc {
   id: string;
+  /** The text the scope delivers whenever it is active; null when it delivers none. */
+  message: string | null;
   implies: string[];
   triggers: Trigger[];
   version: string;
@@ -258,6 +260,8 @@ export interface DeleteRequest {
 export interface ScopeWriteRequest {
   implies: string[];
   triggers: Trigger[];
+  /** The scope's own message, apart from `message`, which is the commit title. */
+  scope_message: string | null;
   base_version?: string;
   author: string;
   message: string;

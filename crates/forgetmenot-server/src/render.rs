@@ -9,9 +9,9 @@
 use std::collections::BTreeSet;
 
 use crate::context::{ContextKey, Needs};
-use crate::store::MemoryId;
 use crate::store::catalog::{Catalog, MemoryEntry};
 use crate::store::memory::MemoryKind;
+use crate::store::{MemoryId, ScopeId};
 
 /// What to render for one event.
 pub struct Delivery<'a> {
@@ -19,7 +19,13 @@ pub struct Delivery<'a> {
     pub catalog: &'a Catalog,
     pub needs: &'a Needs,
     /// The context's scopes after this event's triggers were applied.
-    pub active: &'a BTreeSet<crate::store::ScopeId>,
+    pub active: &'a BTreeSet<ScopeId>,
+    /// The scopes this event turned on, ordered by id: the ones its triggers
+    /// named and the ones those imply alike.
+    pub activated: &'a [ScopeId],
+    /// Whether the store asks for a scope that became active with nothing to
+    /// deliver to be named to the agent.
+    pub announce_empty_scopes: bool,
     /// At a session start the model is also told which scopes it can turn on
     /// and which session key to pass to the MCP tools.
     pub session_start: bool,
@@ -50,6 +56,28 @@ impl Delivery<'_> {
             .collect();
         entries.sort_by(|left, right| left.id.cmp(&right.id));
         entries
+    }
+
+    /// The scopes this event turned on that nothing it delivers belongs to,
+    /// ordered by id, or nothing at all when the store does not ask for them.
+    ///
+    /// The one place this list is worked out: the text names exactly the scopes
+    /// the answer exists for, and an event whose whole content is this list is
+    /// answered because it is not empty.
+    pub fn announced_scopes(&self) -> Vec<&ScopeId> {
+        if !self.announce_empty_scopes {
+            return Vec::new();
+        }
+        let delivering: BTreeSet<&ScopeId> = self
+            .needs
+            .delivered_ids()
+            .filter_map(|id| self.catalog.memory(id))
+            .flat_map(|memory| memory.scopes())
+            .collect();
+        self.activated
+            .iter()
+            .filter(|scope| !delivering.contains(scope))
+            .collect()
     }
 }
 
@@ -95,16 +123,24 @@ fn render_body(delivery: &Delivery<'_>) -> String {
     let mut text = format!("[forgetmenot] context {}\n", delivery.key);
 
     for memory in delivery.critical() {
-        let scopes = memory
-            .scopes()
-            .iter()
-            .map(|scope| scope.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        text.push_str(&format!(
-            "== critical: {} (scopes: {scopes}) ==\n",
-            memory.id
-        ));
+        // A message has no file of its own: there is no id to fetch it by, and
+        // the only scope it can belong to is the one whose file carries it, so
+        // its heading names that scope and nothing else.
+        match memory.id.scope_message_of() {
+            Some(scope) => text.push_str(&format!("== scope: {scope} ==\n")),
+            None => {
+                let scopes = memory
+                    .scopes()
+                    .iter()
+                    .map(|scope| scope.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                text.push_str(&format!(
+                    "== critical: {} (scopes: {scopes}) ==\n",
+                    memory.id
+                ));
+            }
+        }
         text.push_str(memory.document.body.trim_end());
         text.push_str("\n\n");
     }
@@ -125,6 +161,15 @@ fn render_body(delivery: &Delivery<'_>) -> String {
         text.push_str("== retracted ==\n");
         for (id, reason) in &delivery.needs.retracted {
             text.push_str(&format!("- {id} ({})\n", reason.as_str()));
+        }
+    }
+
+    let announced = delivery.announced_scopes();
+    if !announced.is_empty() {
+        text.push_str("== scopes activated ==\n");
+        for scope in announced {
+            text.push_str(scope.as_str());
+            text.push('\n');
         }
     }
 

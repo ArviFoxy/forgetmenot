@@ -679,6 +679,56 @@ fn a_trigger_pattern_that_does_not_compile_is_reported_with_its_error() {
     );
 }
 
+/// Detects a blank `message` being accepted: a scope that carries one activates
+/// with a critical memory whose text is nothing, which is neither a message nor
+/// the silence of a scope that has none.
+///
+/// Source: issue #7, where a message is a short text delivered to the agent.
+#[test]
+fn a_scope_message_that_is_blank_is_reported() {
+    let store = store_with(&[("scopes/widgets.yaml", b"id: widgets\nmessage: '  '\n")]);
+    assert_reports(
+        &validate(&store.catalog()),
+        "blank scope message",
+        |error| {
+            matches!(
+                error,
+                ValidationError::EmptyScopeMessage { scope, .. } if scope.as_str() == "widgets"
+            )
+        },
+    );
+}
+
+/// Detects a `[[link]]` resolving against the message of a scope: the message is
+/// delivered with its scope and has no page or file to open, so a memory naming
+/// one is a link that goes nowhere and must be reported as such.
+///
+/// Source: issue #7, where a message is derived from the scope file and no
+/// memory file can have its id.
+#[test]
+fn a_link_to_a_scope_message_is_reported_as_missing() {
+    let store = store_with(&[
+        (
+            "scopes/widgets.yaml",
+            b"id: widgets\nmessage: mind the gap\n",
+        ),
+        (
+            "memories/bench-power.md",
+            &global_memory("bench-power", "# One\n\nSee [[scopes/widgets]].\n"),
+        ),
+    ]);
+    assert_reports(
+        &validate(&store.catalog()),
+        "link to a scope message",
+        |error| {
+            matches!(
+                error,
+                ValidationError::MissingLinkTarget { target, .. } if target == "scopes/widgets"
+            )
+        },
+    );
+}
+
 /// Detects a validation rule that refuses `machine` on some trigger fields:
 /// `machine` is a plain conjunct, so a trigger on any field carrying one is a
 /// scope that turns on where the pattern matches on that machine. A rule that

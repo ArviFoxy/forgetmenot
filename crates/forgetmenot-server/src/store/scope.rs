@@ -108,6 +108,11 @@ impl Trigger {
 pub struct ScopeDocument {
     /// Must equal the file stem.
     pub id: ScopeId,
+    /// A short text delivered to a context in full whenever this scope becomes
+    /// active, like a critical memory of the scope; absent when the scope
+    /// delivers nothing of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     /// Scopes that are on whenever this one is.
     #[serde(default)]
     pub implies: Vec<ScopeId>,

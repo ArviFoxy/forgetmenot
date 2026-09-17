@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use forgetmenot_server::context::{
     ContextKey, ContextState, Form, RetractReason, Shown, compute_needs, initial_active,
 };
+use forgetmenot_server::stats::Table;
 use forgetmenot_server::store::{MemoryId, ScopeId};
 use serde_json::{Value, json};
 
@@ -1510,6 +1511,267 @@ fn a_body_that_is_not_a_hook_request_is_rejected() {
     assert_eq!(
         incomplete, 400,
         "a body without the hook event must be rejected"
+    );
+}
+
+// ------------------------------------------- what a scope itself delivers
+//
+// The expectations of this section come from the two tickets: a scope may carry
+// a `message`, delivered under the rules of a critical memory but printed as the
+// scope and its text (issue #7); and whether a scope that activates with nothing
+// to deliver is named at all is the store's `announce_empty_scopes` (issue #18).
+
+/// The message the scope of the issue carries, and one that replaces it.
+const BROAD_EXCEPT_MESSAGE: &str =
+    "Do not catch Exception broadly; catch the exception type the code can handle.";
+const BROAD_EXCEPT_REVISED: &str =
+    "Catch the exception type the code can handle, and log the rest.";
+
+/// A scope whose only content is a message, fired by a tool input.
+fn scope_with_message(message: &str) -> (String, Option<Vec<u8>>) {
+    (
+        "scopes/broad-except.yaml".to_string(),
+        Some(
+            format!(
+                "id: broad-except\nmessage: '{message}'\ntriggers:\n- on: tool_input\n  \
+                 pattern: 'except Exception as \\w+'\n"
+            )
+            .into_bytes(),
+        ),
+    )
+}
+
+/// A scope with a trigger and nothing to deliver: no message, and no memory of
+/// the example store names it.
+fn scope_with_nothing_to_deliver() -> (String, Option<Vec<u8>>) {
+    (
+        "scopes/paperwork.yaml".to_string(),
+        Some(
+            "id: paperwork\ntriggers:\n- on: tool_input\n  pattern: '\\binvoices?\\b'\n"
+                .to_string()
+                .into_bytes(),
+        ),
+    )
+}
+
+/// The example store with one more scope file, and `config.yml` as given.
+fn example_store_plus(
+    scope: (String, Option<Vec<u8>>),
+    settings: Option<&str>,
+) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = match settings {
+        Some(text) => example_store_with_settings(text),
+        None => example_store_files(),
+    };
+    files.push(scope);
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// A `PreToolUse` writing python that catches `Exception`, which the message
+/// scope's trigger matches and no trigger of the example store does.
+fn broad_except_call() -> Value {
+    event_with(
+        "pre_tool_use_bash",
+        &[
+            ("tool_name", json!("Edit")),
+            (
+                "tool_input",
+                json!({
+                    "file_path": "/home/dev/parser/read.py",
+                    "new_string": "except Exception as error:\n    return None\n",
+                }),
+            ),
+        ],
+    )
+}
+
+/// A `PreToolUse` that turns the scope with nothing to deliver on.
+fn invoice_call() -> Value {
+    event_with(
+        "pre_tool_use_bash",
+        &[
+            ("tool_name", json!("Edit")),
+            (
+                "tool_input",
+                json!({ "file_path": "/home/dev/books/invoices.md", "new_string": "paid\n" }),
+            ),
+        ],
+    )
+}
+
+/// Detects a scope message that is not delivered, is delivered as an ordinary
+/// critical memory with its id and scope list, does not hold the call it arrived
+/// at, or is delivered a second time once the context has it.
+#[test]
+fn a_scope_message_arrives_headed_by_its_scope_and_holds_the_call_once() {
+    let server = TestServer::start(
+        example_store_plus(scope_with_message(BROAD_EXCEPT_MESSAGE), None),
+        |_| {},
+    );
+    // The session start takes the memories of the implicit scopes, so what the
+    // tool call is answered with is the message alone.
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let (status, held) = server.hook("alpha", SOME_TOKENS, &broad_except_call());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    let text = context_of(&held);
+    assert!(
+        has_line(text, "== scope: broad-except =="),
+        "the message must be headed by its scope, got {text:?}"
+    );
+    assert!(
+        text.contains(BROAD_EXCEPT_MESSAGE),
+        "the message must arrive in full, got {text:?}"
+    );
+    assert!(
+        !text.contains("critical: scopes/broad-except"),
+        "a message must not be printed as a memory to fetch by id, got {text:?}"
+    );
+    assert_eq!(
+        permission_decision(&held),
+        Some("deny"),
+        "a message the context has not seen must hold the call, got {held}"
+    );
+
+    let (_, reissued) = server.hook("alpha", SOME_TOKENS, &broad_except_call());
+    assert_eq!(
+        permission_decision(&reissued),
+        None,
+        "the reissued call must be allowed, got {reissued}"
+    );
+    assert!(
+        !context_of(&reissued).contains(BROAD_EXCEPT_MESSAGE),
+        "a message the context holds must not be delivered again, got {reissued}"
+    );
+}
+
+/// Detects a message whose new text never reaches a context that was given the
+/// old one: the agent would keep following a rule the store has changed.
+#[test]
+fn an_edited_scope_message_is_delivered_again_and_holds_the_next_call() {
+    let server = TestServer::start(
+        example_store_plus(scope_with_message(BROAD_EXCEPT_MESSAGE), None),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    server.hook("alpha", SOME_TOKENS, &broad_except_call());
+
+    server.commit(
+        "revise the exception message",
+        vec![scope_with_message(BROAD_EXCEPT_REVISED)],
+    );
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &broad_except_call());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    let text = context_of(&answer);
+    assert!(
+        text.contains(BROAD_EXCEPT_REVISED),
+        "the new text must be delivered, got {text:?}"
+    );
+    assert_eq!(
+        permission_decision(&answer),
+        Some("deny"),
+        "a changed message must hold the call like a changed critical memory, got {answer}"
+    );
+}
+
+/// Detects a scope that activates with nothing to deliver being announced when
+/// the store has not asked for it: the answer would carry a scope id at every
+/// trigger that fires and would report context where there is none.
+#[test]
+fn an_activation_that_delivers_nothing_is_answered_with_the_empty_object_by_default() {
+    let server = TestServer::start(
+        example_store_plus(scope_with_nothing_to_deliver(), None),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &invoice_call());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert_eq!(
+        answer,
+        json!({}),
+        "an activation with nothing to deliver must ask for nothing, got {answer}"
+    );
+    let (_, next) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+    assert_eq!(
+        permission_decision(&next),
+        None,
+        "nothing was delivered, so no call may be held, got {next}"
+    );
+}
+
+/// Detects an announced scope treated as a delivery: it must not carry memory
+/// text, must not hold the call, and must not be counted among what the store
+/// has delivered to the session.
+#[test]
+fn an_announced_scope_is_named_alone_and_counted_as_no_delivery() {
+    let server = TestServer::start(
+        example_store_plus(
+            scope_with_nothing_to_deliver(),
+            Some("announce_empty_scopes: true\n"),
+        ),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+    let delivered_at_start = server.stats().count_rows(Table::Deliveries);
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &invoice_call());
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    let text = context_of(&answer);
+    assert!(
+        has_line(text, "== scopes activated ==") && has_line(text, "paperwork"),
+        "the scope that activated must be named under the activation heading, got {text:?}"
+    );
+    assert!(
+        !text.contains(BENCH_POWER_BODY) && !text.contains(READING_LIST_DESCRIPTION),
+        "naming a scope must deliver no memory again, got {text:?}"
+    );
+    assert_eq!(
+        permission_decision(&answer),
+        None,
+        "nothing was delivered, so the call must not be held, got {answer}"
+    );
+    assert_eq!(
+        server.stats().count_rows(Table::Deliveries),
+        delivered_at_start,
+        "naming a scope is not a delivery and must add no delivery row"
+    );
+
+    let (_, next) = server.hook("alpha", SOME_TOKENS, &neutral_pre_tool_use());
+    assert_eq!(
+        permission_decision(&next),
+        None,
+        "the call after an announcement must be allowed, got {next}"
+    );
+}
+
+/// Detects a scope listed as delivering nothing when it just delivered a
+/// memory, which would name every scope of every event the memories already
+/// speak for.
+#[test]
+fn a_scope_that_delivers_a_memory_is_not_also_named_as_activated() {
+    let server = TestServer::start(
+        example_store_with_settings("announce_empty_scopes: true\n"),
+        |_| {},
+    );
+    server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
+
+    let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("pre_tool_use_bash"));
+
+    assert_eq!(status, 200, "the tool call must be answered");
+    let text = context_of(&answer);
+    assert!(
+        text.contains(WIDGET_NAMING_BODY),
+        "the scope's critical memory must arrive, got {text:?}"
+    );
+    assert!(
+        !text.contains("== scopes activated =="),
+        "every scope this event turned on delivered something, so none may be named, got {text:?}"
     );
 }
 

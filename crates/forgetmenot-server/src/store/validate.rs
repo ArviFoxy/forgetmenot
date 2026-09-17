@@ -37,6 +37,9 @@ pub enum ValidationError {
         target: ScopeId,
     },
 
+    #[error("carries a blank `message`; a scope with nothing to say carries no message key")]
+    EmptyScopeMessage { path: String, scope: ScopeId },
+
     #[error("trigger on {field} has a pattern that does not compile: {message}")]
     InvalidTriggerPattern {
         path: String,
@@ -108,6 +111,7 @@ impl ValidationError {
             | ValidationError::ScopeIdMismatch { path, .. }
             | ValidationError::InvalidScopeId { path, .. }
             | ValidationError::UnknownImpliesTarget { path, .. }
+            | ValidationError::EmptyScopeMessage { path, .. }
             | ValidationError::InvalidTriggerPattern { path, .. }
             | ValidationError::MemoryNameMismatch { path, .. }
             | ValidationError::UnknownScope { path, .. }
@@ -328,6 +332,14 @@ fn validate_scope_document(
             expected: id.clone(),
         });
     }
+    if let Some(message) = &document.message
+        && message.trim().is_empty()
+    {
+        report.push(ValidationError::EmptyScopeMessage {
+            path: path.to_string(),
+            scope: id.clone(),
+        });
+    }
     for target in &document.implies {
         if cross_document.are_checked() && !is_known_scope(catalog, target) {
             report.push(ValidationError::UnknownImpliesTarget {
@@ -431,12 +443,12 @@ fn validate_memory_document(
 /// intends; otherwise the target is a memory id.
 pub fn resolve_link(catalog: &Catalog, from: &MemoryId, target: &str) -> Option<MemoryId> {
     if let Some(sibling) = from.sibling_in_silo(target)
-        && catalog.memory(&sibling).is_some()
+        && catalog.file_memory(&sibling).is_some()
     {
         return Some(sibling);
     }
     let direct = MemoryId::new(target);
-    catalog.memory(&direct).map(|entry| entry.id.clone())
+    catalog.file_memory(&direct).map(|entry| entry.id.clone())
 }
 
 /// Whether `scope` exists: implicit scopes always do, others need a file.

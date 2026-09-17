@@ -33,6 +33,8 @@ pub const SCOPE_PREFIX: &str = "scopes/";
 pub const SCOPE_SUFFIX: &str = ".yaml";
 /// Directory under `memories/` holding the per-session silos.
 pub const SESSION_DIRECTORY: &str = "sessions";
+/// Prefix of the memory id a scope's `message` is delivered as.
+pub const SCOPE_MESSAGE_PREFIX: &str = "scopes/";
 
 /// Identifier of a memory: its path under `memories/` without the `.md`
 /// suffix, so `git-rules` or `sessions/alpha/session-1/notes`.
@@ -110,6 +112,26 @@ impl MemoryId {
     pub fn sibling_in_silo(&self, name: &str) -> Option<Self> {
         let silo = self.session_silo()?;
         Some(Self(format!("{silo}/{name}")))
+    }
+
+    /// The id the message of `scope` is delivered under.
+    ///
+    /// The one place this id is built, so that the catalog, the renderer and the
+    /// statistics all name a scope's message the same way.
+    pub fn for_scope_message(scope: &ScopeId) -> Self {
+        Self(format!("{SCOPE_MESSAGE_PREFIX}{scope}"))
+    }
+
+    /// The scope whose message this id names, or `None` for any other id.
+    ///
+    /// A scope id has no slash in it, so an id with one after the prefix names
+    /// something deeper under `memories/scopes/` instead.
+    pub fn scope_message_of(&self) -> Option<ScopeId> {
+        let scope = self.0.strip_prefix(SCOPE_MESSAGE_PREFIX)?;
+        if scope.is_empty() || scope.contains('/') {
+            return None;
+        }
+        Some(ScopeId::new(scope))
     }
 }
 
@@ -279,6 +301,24 @@ mod tests {
                 Some(&id)
             );
         }
+    }
+
+    /// Detects a scope message id that does not round trip, and an id of a
+    /// memory deeper under `memories/scopes/` read as a scope's message: the
+    /// renderer prints a message without its memory id and would then print a
+    /// file memory that way too.
+    ///
+    /// Source: issue #7, where a scope's message is delivered as a critical
+    /// memory of the scope whose id no memory file can have.
+    #[test]
+    fn a_scope_message_id_names_its_scope_and_nothing_else_does() {
+        let scope = ScopeId::new("broad-except");
+        let id = MemoryId::for_scope_message(&scope);
+        assert_eq!(id.as_str(), "scopes/broad-except");
+        assert_eq!(id.scope_message_of(), Some(scope));
+        assert_eq!(MemoryId::new("scopes/alpha/notes").scope_message_of(), None);
+        assert_eq!(MemoryId::new("scopes").scope_message_of(), None);
+        assert_eq!(MemoryId::new("widget-naming").scope_message_of(), None);
     }
 
     /// Detects accepting a file-backed scope id that the id pattern forbids,

@@ -72,10 +72,11 @@ pub enum SettingKey {
     DeliverKnowledgeIndex,
     ToolResultMatchLimit,
     AnswerFileThreshold,
+    AnnounceEmptyScopes,
 }
 
 /// Every key the settings file may carry, in the order the schema lists them.
-pub const KEYS: [SettingKey; 8] = [
+pub const KEYS: [SettingKey; 9] = [
     SettingKey::ReminderTokens,
     SettingKey::InterruptOnCritical,
     SettingKey::InterruptExemptTools,
@@ -84,6 +85,7 @@ pub const KEYS: [SettingKey; 8] = [
     SettingKey::DeliverKnowledgeIndex,
     SettingKey::ToolResultMatchLimit,
     SettingKey::AnswerFileThreshold,
+    SettingKey::AnnounceEmptyScopes,
 ];
 
 impl SettingKey {
@@ -98,6 +100,7 @@ impl SettingKey {
             SettingKey::DeliverKnowledgeIndex => "deliver_knowledge_index",
             SettingKey::ToolResultMatchLimit => "tool_result_match_limit",
             SettingKey::AnswerFileThreshold => "answer_file_threshold",
+            SettingKey::AnnounceEmptyScopes => "announce_empty_scopes",
         }
     }
 
@@ -113,7 +116,8 @@ impl SettingKey {
             }
             SettingKey::InterruptOnCritical
             | SettingKey::SubagentsInheritScopes
-            | SettingKey::DeliverKnowledgeIndex => SettingType::Boolean,
+            | SettingKey::DeliverKnowledgeIndex
+            | SettingKey::AnnounceEmptyScopes => SettingType::Boolean,
             SettingKey::InterruptExemptTools | SettingKey::TriggerExemptTools => {
                 SettingType::StringList
             }
@@ -157,6 +161,10 @@ impl SettingKey {
                  shows the model a preview; an answer past this opens with a notice to read \
                  the file; null turns the notice off"
             }
+            SettingKey::AnnounceEmptyScopes => {
+                "Name a scope in the rendered context when it becomes active but delivers \
+                 nothing; off, nothing is said about it"
+            }
         }
     }
 }
@@ -190,6 +198,9 @@ pub struct Settings {
     /// preview and a file path instead of the answer, so the answer opens with
     /// a notice to read the file; `None` sends no notice.
     pub answer_file_threshold: Option<u64>,
+    /// Whether a scope that becomes active with nothing to deliver is named to
+    /// the agent.
+    pub announce_empty_scopes: bool,
 }
 
 impl Default for Settings {
@@ -203,6 +214,7 @@ impl Default for Settings {
             deliver_knowledge_index: true,
             tool_result_match_limit: DEFAULT_TOOL_RESULT_MATCH_LIMIT,
             answer_file_threshold: Some(DEFAULT_ANSWER_FILE_THRESHOLD),
+            announce_empty_scopes: false,
         }
     }
 }
@@ -225,6 +237,7 @@ impl Settings {
                 Some(characters) => Json::from(characters),
                 None => Json::Null,
             },
+            SettingKey::AnnounceEmptyScopes => Json::from(self.announce_empty_scopes),
         }
     }
 
@@ -274,6 +287,9 @@ impl Settings {
                     Json::Null => None,
                     _ => Some(value.as_u64().ok_or_else(mismatch)?),
                 };
+            }
+            SettingKey::AnnounceEmptyScopes => {
+                self.announce_empty_scopes = value.as_bool().ok_or_else(mismatch)?;
             }
         }
         Ok(())

@@ -267,6 +267,9 @@ pub struct MemoryDoc {
 #[derive(Clone, Debug, Serialize)]
 pub struct ScopeDoc {
     pub id: ScopeId,
+    /// The text this scope delivers whenever it is active, `null` when it
+    /// delivers none.
+    pub message: Option<String>,
     pub implies: Vec<ScopeId>,
     pub triggers: Vec<Trigger>,
     pub version: String,
@@ -276,6 +279,7 @@ impl ScopeDoc {
     fn of(entry: &ScopeEntry) -> Self {
         Self {
             id: entry.id.clone(),
+            message: entry.document.message.clone(),
             implies: entry.document.implies.clone(),
             triggers: entry.document.triggers.clone(),
             version: entry.version.to_string(),
@@ -595,6 +599,10 @@ pub struct DeleteRequest {
 pub struct ScopeWriteRequest {
     pub implies: Vec<ScopeId>,
     pub triggers: Vec<Trigger>,
+    /// The scope's own `message`, the text it delivers whenever it is active.
+    /// Named apart from `message`, which is this write's commit title.
+    #[serde(default)]
+    pub scope_message: Option<String>,
     #[serde(default)]
     pub base_version: Option<String>,
     pub author: String,
@@ -1440,6 +1448,7 @@ pub async fn scope_put(
 
     let document = ScopeDocument {
         id: id.clone(),
+        message: request.scope_message.clone(),
         implies: request.implies.clone(),
         triggers: request.triggers.clone(),
     };

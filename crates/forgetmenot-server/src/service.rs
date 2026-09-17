@@ -701,7 +701,7 @@ pub fn version_at(catalog: &Catalog, path: &str) -> Option<Oid> {
         return catalog.settings_version();
     }
     if let Some(id) = MemoryId::from_repository_path(path) {
-        return catalog.memory(&id).map(|memory| memory.version);
+        return catalog.file_memory(&id).map(|memory| memory.version);
     }
     if let Some(id) = ScopeId::from_repository_path(path) {
         return catalog.scope(&id).map(|scope| scope.version);

@@ -230,6 +230,7 @@ test('a scope write with a blank message reaches the server', async () => {
       client.putScope('rocketry', {
         implies: [],
         triggers: [{ on: 'user_message', pattern: 'rocket' }],
+        scope_message: null,
         base_version: 'a'.repeat(40),
         author: 'wiki',
         message: '',
