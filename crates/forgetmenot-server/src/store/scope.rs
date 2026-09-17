@@ -99,6 +99,18 @@ impl Trigger {
     }
 }
 
+/// When a scope turns itself off in a context.
+///
+/// One struct, so that a further criterion is another field of it and a scope
+/// that declares none carries no `forget` key at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Forget {
+    /// The context tokens since the scope was last activated after which it is
+    /// turned off. An activation is a trigger match, including one that fires
+    /// while the scope is already active, or a `session_scope_on` call.
+    pub tokens_since_trigger: u64,
+}
+
 /// A parsed scope file.
 ///
 /// A scope is a flag identified by its id. Keys the format no longer defines,
@@ -118,6 +130,10 @@ pub struct ScopeDocument {
     pub implies: Vec<ScopeId>,
     #[serde(default)]
     pub triggers: Vec<Trigger>,
+    /// When this scope turns itself off in a context; absent when it stays on
+    /// until the agent turns it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forget: Option<Forget>,
 }
 
 impl ScopeDocument {
@@ -223,5 +239,43 @@ mod tests {
         let scope = ScopeDocument::parse(b"id: widgets\n").unwrap();
         assert!(scope.implies.is_empty());
         assert!(scope.triggers.is_empty());
+        assert_eq!(
+            scope.forget, None,
+            "a scope that says nothing about forgetting keeps its scopes on"
+        );
+    }
+
+    /// Detects a `forget` rule that is not read from the file, or one that is
+    /// written back in another shape: the scope would keep a count the file does
+    /// not declare, and a write that changed a pattern would rewrite the rule.
+    /// Source: this ticket's scope file, `forget: tokens_since_trigger`.
+    #[test]
+    fn a_forget_rule_parses_and_is_written_back_under_the_same_keys() {
+        let text = "id: broad-except\nforget:\n  tokens_since_trigger: 50000\n";
+        let scope = ScopeDocument::parse(text.as_bytes()).expect("a scope may declare `forget`");
+
+        assert_eq!(
+            scope.forget.expect("the rule is read").tokens_since_trigger,
+            50_000
+        );
+
+        let rendered = scope.render().expect("the scope renders");
+        assert_eq!(
+            ScopeDocument::parse(rendered.as_bytes()).expect("the rendered scope parses"),
+            scope,
+            "rendering and parsing again must give the same scope, got {rendered:?}"
+        );
+    }
+
+    /// Detects a scope with no `forget` rule written back with an empty one,
+    /// which would put a key into every scope file the moment it is saved.
+    #[test]
+    fn a_scope_without_a_forget_rule_is_written_back_without_the_key() {
+        let scope = ScopeDocument::parse(b"id: widgets\n").expect("a bare scope parses");
+        let rendered = scope.render().expect("the scope renders");
+        assert!(
+            !rendered.contains("forget"),
+            "a scope that forgets nothing must carry no forget key, got {rendered:?}"
+        );
     }
 }

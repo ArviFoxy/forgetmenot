@@ -699,6 +699,27 @@ fn a_scope_message_that_is_blank_is_reported() {
     );
 }
 
+/// Detects a forget count of zero being accepted: the count is the tokens after
+/// which the scope turns itself off, so zero would turn it off at the very event
+/// that turned it on and the scope could deliver nothing at all. A scope that
+/// stays on until the agent turns it off carries no `forget` key.
+///
+/// Source: this ticket, where the count is a number of context tokens since the
+/// last activation.
+#[test]
+fn a_forget_count_of_zero_is_reported() {
+    let store = store_with(&[(
+        "scopes/widgets.yaml",
+        b"id: widgets\nforget:\n  tokens_since_trigger: 0\n",
+    )]);
+    assert_reports(&validate(&store.catalog()), "zero forget count", |error| {
+        matches!(
+            error,
+            ValidationError::ZeroForgetTokens { scope, .. } if scope.as_str() == "widgets"
+        )
+    });
+}
+
 /// Detects a `[[link]]` resolving against the message of a scope: the message is
 /// delivered with its scope and has no page or file to open, so a memory naming
 /// one is a link that goes nowhere and must be reported as such.

@@ -140,6 +140,10 @@ impl ContextRegistry {
     /// moment is either fully in or fully out, unless `inheritance` says the
     /// store wants subagents to start from nothing. It always takes its
     /// parent's session directory, whatever `inheritance` says about scopes.
+    ///
+    /// The scopes are copied and the activations behind them are not: a
+    /// forgetting count is per context, so an inherited scope is counted from
+    /// the child's own first event.
     pub async fn with_context<R>(
         &self,
         key: &ContextKey,

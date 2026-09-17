@@ -112,6 +112,7 @@ export class FmnStatsView extends PageElement {
           <tr>
             <th scope="col">Scope</th>
             <th scope="col">Activations</th>
+            <th scope="col">Forgettings</th>
             <th scope="col">Live contexts</th>
           </tr>
         </thead>
@@ -120,6 +121,7 @@ export class FmnStatsView extends PageElement {
             (row) => html`<tr>
               <td><a href=${paths.scope(row.scope_id)}>${row.scope_id}</a></td>
               <td class="number">${row.activations}</td>
+              <td class="number">${row.forgettings}</td>
               <td class="number">${row.live_contexts}</td>
             </tr>`,
           )}

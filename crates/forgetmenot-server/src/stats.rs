@@ -61,6 +61,17 @@ pub struct TriggerFire {
     pub activated_new: bool,
 }
 
+/// One scope turned off during an event because its `forget` rule was reached.
+#[derive(Clone, Debug)]
+pub struct ForgottenScope {
+    pub scope_id: String,
+    /// The rule that was reached: the context tokens since the last activation
+    /// the scope's file declares.
+    pub tokens_since_trigger: u64,
+    /// The context size the event reported, at which the count was reached.
+    pub tokens_at: u64,
+}
+
 /// One memory delivered during an event.
 #[derive(Clone, Debug)]
 pub struct Delivery {
@@ -86,6 +97,7 @@ pub struct HookEventRecord {
     pub latency_us: u64,
     pub decision: Decision,
     pub triggers: Vec<TriggerFire>,
+    pub forgotten: Vec<ForgottenScope>,
     pub deliveries: Vec<Delivery>,
 }
 
@@ -326,6 +338,8 @@ pub struct ScopeStatsRow {
     pub scope_id: String,
     /// Times a trigger turned this scope on in a context it was off in.
     pub activations: u64,
+    /// Times this scope turned itself off because its `forget` rule was reached.
+    pub forgettings: u64,
     /// Live contexts working in this scope; this is the registry's answer, not
     /// the log's.
     pub live_contexts: u64,
@@ -468,6 +482,7 @@ impl StatsReader {
                 .or_insert_with(|| ScopeStatsRow {
                     scope_id: scope_id.to_string(),
                     activations: 0,
+                    forgettings: 0,
                     live_contexts: 0,
                 })
         }
@@ -482,6 +497,14 @@ impl StatsReader {
         )?;
         for (scope_id, count) in activations {
             row_for(&mut rows, &scope_id).activations = count.max(0) as u64;
+        }
+        let forgettings = self.rows(
+            "SELECT scope_id, count(*) FROM scope_forgettings GROUP BY scope_id",
+            params![],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        for (scope_id, count) in forgettings {
+            row_for(&mut rows, &scope_id).forgettings = count.max(0) as u64;
         }
         // A scope can be live without ever having been activated by a trigger:
         // the implicit scopes are, and so is one a scope implies.
@@ -696,6 +719,7 @@ pub fn format_bytes(bytes: u64) -> String {
 pub enum Table {
     HookEvents,
     TriggerFires,
+    ScopeForgettings,
     Deliveries,
     ToolCalls,
 }
@@ -705,6 +729,7 @@ impl Table {
         match self {
             Table::HookEvents => "hook_events",
             Table::TriggerFires => "trigger_fires",
+            Table::ScopeForgettings => "scope_forgettings",
             Table::Deliveries => "deliveries",
             Table::ToolCalls => "tool_calls",
         }
@@ -752,6 +777,12 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
                  pattern TEXT NOT NULL,
                  activated_new INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS scope_forgettings (
+                 event_id INTEGER NOT NULL,
+                 scope_id TEXT NOT NULL,
+                 tokens_since_trigger INTEGER NOT NULL,
+                 tokens_at INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS deliveries (
                  event_id INTEGER NOT NULL,
                  memory TEXT NOT NULL,
@@ -771,6 +802,8 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
              );
              CREATE INDEX IF NOT EXISTS trigger_fires_event
                  ON trigger_fires (event_id);
+             CREATE INDEX IF NOT EXISTS scope_forgettings_event
+                 ON scope_forgettings (event_id);
              CREATE INDEX IF NOT EXISTS deliveries_event
                  ON deliveries (event_id);
              CREATE INDEX IF NOT EXISTS deliveries_memory
@@ -835,6 +868,19 @@ fn insert_hook_event(
                 fire.field,
                 fire.pattern,
                 i64::from(fire.activated_new)
+            ],
+        )?;
+    }
+    for forgotten in &record.forgotten {
+        transaction.execute(
+            "INSERT INTO scope_forgettings
+                 (event_id, scope_id, tokens_since_trigger, tokens_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                event_id,
+                forgotten.scope_id,
+                forgotten.tokens_since_trigger as i64,
+                forgotten.tokens_at as i64
             ],
         )?;
     }

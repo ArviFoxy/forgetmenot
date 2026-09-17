@@ -1024,6 +1024,71 @@ fn a_scope_written_with_a_message_reads_back_with_it_in_the_scope_and_in_the_ind
     );
 }
 
+/// Detects a scope's forget rule dropped between the write and the reader: the
+/// page that edits a scope reads it back from the index row as well as from the
+/// scope itself, and a rule the store keeps but the API hides cannot be edited or
+/// even seen.
+///
+/// Source: this ticket, where a scope file may declare when it turns itself off.
+#[test]
+fn a_scope_written_with_a_forget_rule_reads_back_with_it_in_the_scope_and_in_the_index() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let read = scope(&server, "widgets");
+
+    let (status, answer) = server.api(
+        "PUT",
+        "/api/scopes/widgets",
+        Some(&json!({
+            "implies": read["implies"],
+            "triggers": read["triggers"],
+            "forget": { "tokens_since_trigger": 50000 },
+            "base_version": read["version"],
+            "author": AUTHOR,
+            "message": "let the widgets scope forget itself",
+        })),
+    );
+    assert_eq!(
+        status, 200,
+        "a write with a forget rule must be taken, got {answer}"
+    );
+
+    assert_eq!(
+        scope(&server, "widgets")["forget"],
+        json!({ "tokens_since_trigger": 50000 }),
+        "the scope must read back with the rule it was written with"
+    );
+    assert_eq!(
+        index_row(&scope_index(&server), "widgets")["file"]["forget"],
+        json!({ "tokens_since_trigger": 50000 }),
+        "the index row's file must carry the rule"
+    );
+    assert!(
+        server
+            .store()
+            .file_text("scopes/widgets.yaml")
+            .contains("tokens_since_trigger: 50000"),
+        "the rule must be in the scope file, got {:?}",
+        server.store().file_text("scopes/widgets.yaml")
+    );
+
+    let (status, refused) = server.api(
+        "PUT",
+        "/api/scopes/widgets",
+        Some(&json!({
+            "implies": read["implies"],
+            "triggers": read["triggers"],
+            "forget": { "tokens_since_trigger": 0 },
+            "base_version": scope(&server, "widgets")["version"],
+            "author": AUTHOR,
+            "message": "forget the widgets scope at once",
+        })),
+    );
+    assert_eq!(
+        status, 422,
+        "a count of zero must be refused, got {refused}"
+    );
+}
+
 /// Detects a reader that rejects the `type` label scope files used to carry,
 /// which would make every scope of a store written before the label was dropped
 /// unreadable, and a writer that puts the label back into the file it saves.

@@ -14,6 +14,7 @@ use forgetmenot_server::context::{
     ContextKey, ContextState, Form, PreviousTexts, RetractReason, Shown, compute_needs,
     initial_active,
 };
+use forgetmenot_server::operations;
 use forgetmenot_server::stats::{MemoryStatsRow, Table};
 use forgetmenot_server::store::{MemoryId, ScopeId};
 use serde_json::{Value, json};
@@ -2039,6 +2040,227 @@ fn a_scope_that_delivers_a_memory_is_not_also_named_as_activated() {
     );
 }
 
+// ------------------------------------------- a scope that forgets itself
+//
+// The expectations of this section come from this ticket: a scope may declare a
+// number of context tokens since its last activation after which it turns itself
+// off, where an activation is a trigger match, including one that fires while
+// the scope is already on, or a `session_scope_on` call. The count is per
+// context.
+
+/// The context tokens after its last activation at which the scope of this
+/// section turns itself off.
+const FORGET_TOKENS: u64 = 1_000;
+
+/// The example store with `widgets` forgetting itself `FORGET_TOKENS` context
+/// tokens after its last activation. Everything else is the fixture's: the
+/// prompt that fires it, the critical memory it delivers and the scope it
+/// implies.
+fn store_forgetting_widgets() -> Vec<(String, Option<Vec<u8>>)> {
+    let mut files = example_store_files();
+    let scope = files
+        .iter_mut()
+        .find(|(path, _)| path == "scopes/widgets.yaml")
+        .expect("the example store has a widgets scope");
+    let mut text = String::from_utf8(scope.1.clone().expect("the scope is a file with content"))
+        .expect("a scope file is utf-8");
+    text.push_str(&format!(
+        "forget:\n  tokens_since_trigger: {FORGET_TOKENS}\n"
+    ));
+    scope.1 = Some(text.into_bytes());
+    files
+}
+
+/// The scopes one context has active, as `GET /api/contexts` reports them.
+fn active_scopes(server: &TestServer, key: &str) -> BTreeSet<String> {
+    let (status, answer) = server.api("GET", "/api/contexts", None);
+    assert_eq!(status, 200, "the contexts must be readable, got {answer}");
+    answer
+        .as_array()
+        .expect("the contexts are a list")
+        .iter()
+        .find(|row| row["key"] == json!(key))
+        .unwrap_or_else(|| panic!("{key} must be listed, got {answer}"))["active_scopes"]
+        .as_array()
+        .expect("the active scopes are a list")
+        .iter()
+        .map(|scope| scope.as_str().expect("a scope is text").to_string())
+        .collect()
+}
+
+/// Whether the answer says `widget-naming` was withdrawn because no active scope
+/// covers it, which is what a forgotten scope leaves behind.
+fn withdraws_the_widget_rule(answer: &Value) -> bool {
+    has_retracted_line(
+        context_of(answer),
+        "widget-naming",
+        RetractReason::NoActiveScope.as_str(),
+    )
+}
+
+/// Detects a `forget` rule that never fires, which would leave the scope on for
+/// the rest of the session, and one that fires early, which would withdraw a
+/// rule the agent is still meant to follow. The count is reached exactly at the
+/// declared number of tokens.
+#[test]
+fn a_scope_is_forgotten_at_the_declared_tokens_since_its_activation() {
+    let server = TestServer::start(store_forgetting_widgets(), |_| {});
+    let (_, activated) = server.hook("alpha", Some(1_000), &widget_prompt());
+    assert!(
+        context_of(&activated).contains(WIDGET_NAMING_BODY),
+        "the scope must deliver its memory when it is activated, got {activated}"
+    );
+
+    let (status, before) = server.hook("alpha", Some(1_900), &neutral_pre_tool_use());
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        !withdraws_the_widget_rule(&before),
+        "900 tokens after the activation the rule is still in force, got {before}"
+    );
+    assert!(
+        active_scopes(&server, "alpha/session-1").contains("widgets"),
+        "the scope must still be active before the count is reached"
+    );
+
+    let (status, after) = server.hook("alpha", Some(2_000), &neutral_pre_tool_use());
+    assert_eq!(status, 200, "the tool call must be answered");
+    assert!(
+        withdraws_the_widget_rule(&after),
+        "{FORGET_TOKENS} tokens after the activation the memory must be withdrawn, got {after}"
+    );
+    assert!(
+        !active_scopes(&server, "alpha/session-1").contains("widgets"),
+        "the forgotten scope must be gone from the context's active scopes"
+    );
+}
+
+/// Detects a count that runs from the first activation alone, and one that runs
+/// from any event that sees the scope on: a trigger that fires while the scope
+/// is already on is a fresh activation, so a scope kept alive by the work going
+/// on must outlive the schedule of the first match, and an event that fires
+/// nothing must not push the count out.
+///
+/// The event at 1500 tokens is what tells the two apart: the scope was activated
+/// at 1000 and re-triggered at 1800, so at 2500 tokens the count has 700 tokens
+/// to run, while a count taken from either the first match or the event between
+/// them would be over.
+#[test]
+fn a_trigger_that_fires_again_restarts_the_forget_count() {
+    let server = TestServer::start(store_forgetting_widgets(), |_| {});
+    server.hook("alpha", Some(1_000), &widget_prompt());
+    server.hook("alpha", Some(1_500), &neutral_pre_tool_use());
+    server.hook("alpha", Some(1_800), &widget_prompt());
+
+    let (_, before) = server.hook("alpha", Some(2_500), &neutral_pre_tool_use());
+    assert!(
+        !withdraws_the_widget_rule(&before),
+        "the count runs from the match at 1800, which was 700 tokens ago, got {before}"
+    );
+    assert!(
+        active_scopes(&server, "alpha/session-1").contains("widgets"),
+        "the re-triggered scope must still be active"
+    );
+
+    let (_, after) = server.hook("alpha", Some(2_800), &neutral_pre_tool_use());
+    assert!(
+        withdraws_the_widget_rule(&after),
+        "{FORGET_TOKENS} tokens after the match at 1800 the memory must be withdrawn, got {after}"
+    );
+}
+
+/// Detects a scope the agent turned on that is never forgotten, or is forgotten
+/// at once: the call carries no context size of its own, so the count runs from
+/// the size the last event of the context reported.
+#[test]
+fn a_scope_the_agent_turned_on_is_forgotten_from_the_last_events_tokens() {
+    let server = TestServer::start(store_forgetting_widgets(), |_| {});
+    let state = server.state();
+    let key = ContextKey::main("alpha", "session-1");
+    server.hook("alpha", Some(5_000), &hook_fixture("session_start"));
+
+    server
+        .run(operations::session_scope_on(
+            &state,
+            &key,
+            &[ScopeId::new("widgets")],
+        ))
+        .expect("widgets is a scope of this store");
+
+    let (_, before) = server.hook("alpha", Some(5_900), &neutral_pre_tool_use());
+    assert!(
+        context_of(&before).contains(WIDGET_NAMING_BODY),
+        "the scope turned on must deliver its memory, got {before}"
+    );
+    assert!(
+        !withdraws_the_widget_rule(&before),
+        "900 tokens after the call the rule is still in force, got {before}"
+    );
+
+    let (_, after) = server.hook("alpha", Some(6_000), &neutral_pre_tool_use());
+    assert!(
+        withdraws_the_widget_rule(&after),
+        "{FORGET_TOKENS} tokens after the call the memory must be withdrawn, got {after}"
+    );
+}
+
+/// Detects a subagent that inherits its parent's activation along with the
+/// scope: the two contexts have their own sizes, so a count taken over from the
+/// parent would drop a rule the subagent was given a moment ago. Here the
+/// parent's count is 1500 tokens past its rule at the subagent's first event,
+/// and the subagent's own count has 500 tokens to run at its second.
+#[test]
+fn a_subagent_counts_an_inherited_scope_from_its_own_first_event() {
+    let server = TestServer::start(store_forgetting_widgets(), |_| {});
+    server.hook("alpha", Some(1_000), &hook_fixture("session_start"));
+    server.hook("alpha", Some(1_000), &widget_prompt());
+
+    let (status, start) = server.hook("alpha", Some(2_500), &hook_fixture("subagent_start"));
+    assert_eq!(status, 200, "a subagent start must be answered");
+    assert!(
+        context_of(&start).contains(WIDGET_NAMING_BODY),
+        "the subagent must be given the inherited scope's memory, got {start}"
+    );
+
+    let in_subagent = event_with(
+        "pre_tool_use_in_subagent",
+        &[("tool_input", json!({ "pattern": "pub fn" }))],
+    );
+    let (_, next) = server.hook("alpha", Some(3_000), &in_subagent);
+    assert!(
+        !withdraws_the_widget_rule(&next),
+        "500 tokens into the subagent's own count the rule is still in force, got {next}"
+    );
+}
+
+/// Detects a forgetting the statistics do not record, and a scope turned on
+/// again after one that is not counted as an activation: a scope that is
+/// triggered again after every forgetting is what the report exists to show, and
+/// without both counts it looks like a scope that turned on once and stayed on.
+#[test]
+fn the_statistics_count_a_forgetting_and_the_activation_that_follows_it() {
+    let server = TestServer::start(store_forgetting_widgets(), |_| {});
+    server.hook("alpha", Some(1_000), &widget_prompt());
+    server.hook("alpha", Some(2_000), &neutral_pre_tool_use());
+    server.hook("alpha", Some(2_100), &widget_prompt());
+
+    let rows = server
+        .stats()
+        .scope_stats(&[])
+        .expect("the statistics are readable");
+    let row = rows
+        .iter()
+        .find(|row| row.scope_id == "widgets")
+        .expect("the scope that was activated must have a statistics row");
+    assert_eq!(
+        row.forgettings, 1,
+        "the forgetting must be counted for the scope, got {row:?}"
+    );
+    assert_eq!(
+        row.activations, 2,
+        "the match after the forgetting must be counted as an activation of its own, got {row:?}"
+    );
+}
+
 /// Tests of the state machine at its own interface, for the two reasons a
 /// delivery is withdrawn and for the condition staleness needs, none of which
 /// any single HTTP answer can distinguish yet.
@@ -2075,6 +2297,8 @@ mod state_machine {
             first_prompt: None,
             task: None,
             agent_type: None,
+            tokens,
+            activated_at: BTreeMap::new(),
             last_seen: chrono::Utc::now(),
         }
     }

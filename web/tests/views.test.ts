@@ -29,6 +29,9 @@ const serverDoc: MemoryDoc = {
 /** The message the scope on the server carries. */
 const scopeMessage = 'A widget part number is never renumbered.';
 
+/** The context tokens after which the scope on the server forgets itself. */
+const scopeForgetTokens = 50000;
+
 /** The scopes the index lists: one with a file, one without. */
 const scopeRows: ScopeRow[] = [
   { id: 'global', kind: 'global', name: null, file: null },
@@ -36,7 +39,14 @@ const scopeRows: ScopeRow[] = [
     id: 'widgets',
     kind: 'file',
     name: null,
-    file: { id: 'widgets', message: scopeMessage, implies: [], triggers: [], version: 'v' },
+    file: {
+      id: 'widgets',
+      message: scopeMessage,
+      implies: [],
+      triggers: [],
+      forget: { tokens_since_trigger: scopeForgetTokens },
+      version: 'v',
+    },
   },
 ];
 
@@ -57,7 +67,7 @@ const memoryRow: MemoryStatsRow = {
  */
 const answers = vi.hoisted(() => ({
   contexts: [] as unknown[],
-  scopeWrites: [] as { scope_message: string | null }[],
+  scopeWrites: [] as { scope_message: string | null; forget: { tokens_since_trigger: number } | null }[],
 }));
 
 vi.mock('../src/api/client', () => ({
@@ -82,8 +92,18 @@ vi.mock('../src/api/client', () => ({
     memoryHistoryEntry: () => Promise.resolve({ commit: {}, content: '', diff: '' }),
     scopeIndex: () => Promise.resolve(scopeRows),
     scope: () =>
-      Promise.resolve({ id: 'widgets', message: null, implies: [], triggers: [], version: 'v' }),
-    putScope: (_id: string, request: { scope_message: string | null }) => {
+      Promise.resolve({
+        id: 'widgets',
+        message: null,
+        implies: [],
+        triggers: [],
+        forget: null,
+        version: 'v',
+      }),
+    putScope: (
+      _id: string,
+      request: { scope_message: string | null; forget: { tokens_since_trigger: number } | null },
+    ) => {
       answers.scopeWrites.push(request);
       return Promise.resolve({ kind: 'written' });
     },
@@ -287,6 +307,44 @@ test('the scope page hides the message the scope carries, or writes back another
   await settle(page);
 
   expect(answers.scopeWrites.map((request) => request.scope_message)).toEqual([edited]);
+});
+
+// The source of this expectation is this ticket: a scope file may declare when it
+// forgets itself, so the page that edits a scope has to show the count on the server
+// and send the one the reader typed.
+
+test('the scope page shows the forget count the scope carries and writes back another', async () => {
+  const page = document.createElement('fmn-scope-page') as HTMLElement & {
+    scopeId: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.scopeId = 'widgets';
+  document.body.append(page);
+  await settle(page);
+
+  expect(page.textContent).toContain(String(scopeForgetTokens));
+
+  page.querySelector<HTMLElement>('sl-icon-button[label="Edit Forget after"]')?.click();
+  await settle(page);
+  const field = page.querySelector('sl-input[type="number"]');
+  expect(field, 'the Forget after field must be editable').not.toBeNull();
+  expect(field?.getAttribute('value')).toBe(String(scopeForgetTokens));
+
+  field!.setAttribute('value', '1200');
+  (field as HTMLInputElement).value = '1200';
+  field!.dispatchEvent(new CustomEvent('sl-input'));
+  await settle(page);
+  const bar = page.querySelector('fmn-commit-bar');
+  expect(bar, 'an edited forget count must offer to be saved').not.toBeNull();
+  bar?.dispatchEvent(
+    new CustomEvent('fmn-message-change', { detail: { message: 'forget it sooner' }, bubbles: true }),
+  );
+  bar?.dispatchEvent(new CustomEvent('fmn-save', { bubbles: true }));
+  await settle(page);
+
+  expect(answers.scopeWrites.map((request) => request.forget)).toEqual([
+    { tokens_since_trigger: 1200 },
+  ]);
 });
 
 // The source of these two expectations is what the tree menu can act on: the file is

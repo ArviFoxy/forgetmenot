@@ -231,6 +231,7 @@ test('a scope write with a blank message reaches the server', async () => {
         implies: [],
         triggers: [{ on: 'user_message', pattern: 'rocket' }],
         scope_message: null,
+        forget: null,
         base_version: 'a'.repeat(40),
         author: 'wiki',
         message: '',

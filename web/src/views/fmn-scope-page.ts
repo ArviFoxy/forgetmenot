@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { api } from '../api/client';
-import type { MemorySummary, ScopeDoc, ScopeRow, Trigger, ValidationError } from '../api/types';
+import type { Forget, MemorySummary, ScopeDoc, ScopeRow, Trigger, ValidationError } from '../api/types';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
 import { frontendAuthor } from '../model/author';
@@ -19,7 +19,7 @@ import type { TagsChange } from '../components/fmn-tag-field';
 
 /** A scope that is being written and has no file yet. */
 export function blankScope(): ScopeDoc {
-  return { id: '', message: null, implies: [], triggers: [], version: '' };
+  return { id: '', message: null, implies: [], triggers: [], forget: null, version: '' };
 }
 
 /** The row of the scope being created: a file scope whose file is still empty. */
@@ -33,6 +33,8 @@ interface ScopeDraft {
   triggers: Trigger[];
   /** The scope's message; empty means the scope carries none. */
   scopeMessage: string;
+  /** The context tokens the scope is forgotten after; empty means it is not. */
+  forgetTokens: string;
   /** The commit message of the write. */
   message: string;
   saving: boolean;
@@ -47,6 +49,7 @@ function draftOf(scope: ScopeDoc): ScopeDraft {
     impliesText: scope.implies.join(', '),
     triggers: scope.triggers,
     scopeMessage: scope.message ?? '',
+    forgetTokens: scope.forget === null ? '' : String(scope.forget.tokens_since_trigger),
     message: '',
     saving: false,
     errors: [],
@@ -60,9 +63,26 @@ function messageToSave(draft: { scopeMessage: string }): string | null {
   return draft.scopeMessage.trim() === '' ? null : draft.scopeMessage;
 }
 
+/** The forget rule a write sends: the count in the field, or null when it is blank. */
+function forgetToSave(draft: { forgetTokens: string }): Forget | null {
+  const text = draft.forgetTokens.trim();
+  if (text === '') return null;
+  const tokens = Number(text);
+  return Number.isFinite(tokens) ? { tokens_since_trigger: tokens } : null;
+}
+
 /** The scope fields as one text, so the two sides of a conflict can be compared. */
-function scopeText(scope: { message: string | null; implies: string[]; triggers: Trigger[] }): string {
-  const lines = [`message: ${scope.message ?? ''}`, `implies: ${scope.implies.join(', ')}`];
+function scopeText(scope: {
+  message: string | null;
+  implies: string[];
+  triggers: Trigger[];
+  forget: Forget | null;
+}): string {
+  const lines = [
+    `message: ${scope.message ?? ''}`,
+    `implies: ${scope.implies.join(', ')}`,
+    `forget after: ${scope.forget === null ? '' : scope.forget.tokens_since_trigger}`,
+  ];
   for (const trigger of scope.triggers) {
     lines.push(
       `trigger: ${fieldOf(trigger)} ${trigger.pattern}${trigger.machine ? ` @${trigger.machine}` : ''}`,
@@ -227,6 +247,7 @@ export class FmnScopePage extends PageElement {
     if (this.creating) return true;
     if (parseIdList(draft.impliesText).join(',') !== scope.implies.join(',')) return true;
     if (messageToSave(draft) !== scope.message) return true;
+    if (JSON.stringify(forgetToSave(draft)) !== JSON.stringify(scope.forget)) return true;
     return !triggersEqual(draft.triggers, scope.triggers);
   }
 
@@ -241,6 +262,7 @@ export class FmnScopePage extends PageElement {
             implies: parseIdList(draft.impliesText),
             triggers: draft.triggers,
             scope_message: messageToSave(draft),
+            forget: forgetToSave(draft),
             author: frontendAuthor,
             message: draft.message,
           })
@@ -248,6 +270,7 @@ export class FmnScopePage extends PageElement {
             implies: parseIdList(draft.impliesText),
             triggers: draft.triggers,
             scope_message: messageToSave(draft),
+            forget: forgetToSave(draft),
             base_version: draft.baseVersion,
             author: frontendAuthor,
             message: draft.message,
@@ -370,6 +393,7 @@ export class FmnScopePage extends PageElement {
                 message: messageToSave(draft),
                 implies: parseIdList(draft.impliesText),
                 triggers: draft.triggers,
+                forget: forgetToSave(draft),
               })}
               rightLabel="Current on server"
               .rightText=${scopeText(draft.conflict)}
@@ -442,6 +466,26 @@ export class FmnScopePage extends PageElement {
             @fmn-tags-change=${(event: CustomEvent<TagsChange>) =>
               this.change({ impliesText: event.detail.value.join(', ') })}
           ></fmn-tag-field>`,
+        )}
+        ${this.renderField(
+          'forget',
+          'Forget after',
+          forgetToSave(draft) === null
+            ? html`<span class="empty">none</span>`
+            : html`<span class="value-text"
+                >${forgetToSave(draft)?.tokens_since_trigger} tokens</span
+              >`,
+          () => html`<sl-input
+            size="small"
+            type="number"
+            min="1"
+            label="Forget after"
+            value=${draft.forgetTokens}
+            @sl-input=${(event: Event) => {
+              this.change({ forgetTokens: (event.target as HTMLInputElement).value });
+            }}
+            ><span slot="suffix">tokens</span></sl-input
+          >`,
         )}
         ${this.creating
           ? nothing

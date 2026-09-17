@@ -114,12 +114,20 @@ export interface SettingsWriteRequest {
   message: string;
 }
 
+/** When a scope turns itself off in a context. */
+export interface Forget {
+  /** Context tokens since the scope was last activated. */
+  tokens_since_trigger: number;
+}
+
 export interface ScopeDoc {
   id: string;
   /** The text the scope delivers whenever it is active; null when it delivers none. */
   message: string | null;
   implies: string[];
   triggers: Trigger[];
+  /** When the scope turns itself off; null when it stays on until the agent turns it off. */
+  forget: Forget | null;
   version: string;
 }
 
@@ -199,6 +207,8 @@ export interface TriggerStatsRow {
 export interface ScopeStatsRow {
   scope_id: string;
   activations: number;
+  /** Times the scope turned itself off because its forget rule was reached. */
+  forgettings: number;
   live_contexts: number;
 }
 
@@ -262,6 +272,8 @@ export interface ScopeWriteRequest {
   triggers: Trigger[];
   /** The scope's own message, apart from `message`, which is the commit title. */
   scope_message: string | null;
+  /** When the scope turns itself off; null when it stays on until the agent turns it off. */
+  forget: Forget | null;
   base_version?: string;
   author: string;
   message: string;

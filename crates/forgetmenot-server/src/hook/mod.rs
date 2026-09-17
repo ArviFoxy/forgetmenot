@@ -23,7 +23,7 @@ use crate::app::AppState;
 use crate::context::registry::Inheritance;
 use crate::context::{ContextState, Needs, PreviousTexts, compute_needs, record_delivery};
 use crate::render::{self, Delivery};
-use crate::stats::{Decision, HookEventRecord, SHRUNK_REASON, TriggerFire};
+use crate::stats::{Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, TriggerFire};
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
 use crate::store::scope::TriggerField;
@@ -126,6 +126,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
             latency_us: started.elapsed().as_micros() as u64,
             decision,
             triggers: outcome.fires,
+            forgotten: outcome.forgotten,
             deliveries: deliveries_of(&outcome.needs, &catalog),
         })
         .await;
@@ -212,6 +213,8 @@ struct Outcome {
     /// the ones those imply alike.
     activated: Vec<ScopeId>,
     fires: Vec<TriggerFire>,
+    /// The scopes this event turned off because their `forget` rule was reached.
+    forgotten: Vec<ForgottenScope>,
 }
 
 /// What this event's client read from the session's transcript about what the
@@ -280,6 +283,18 @@ fn apply(
         context.agent_type = Some(agent_type.clone());
     }
 
+    // The context size the last event reported, which an activation with no
+    // event of its own counts from.
+    if let Some(tokens) = tokens_now {
+        context.tokens = Some(tokens);
+    }
+
+    // Forgetting comes before the triggers are matched, so a trigger that fires
+    // at this very event restarts the count instead of being forgotten in the
+    // same pass. What it leaves is read by `compute_needs` below, which
+    // withdraws the memories no active scope covers any more.
+    let forgotten = forget_scopes(context, catalog, tokens_now);
+
     // The session directory is not in the plan's texts, because only the
     // context knows it; it joins them here for the events that match on a
     // directory at all.
@@ -302,6 +317,7 @@ fn apply(
         for hit in catalog.triggers().fire(*field, text, &plan.key.machine) {
             let activated_new = !context.active.contains(&hit.scope);
             context.active.insert(hit.scope.clone());
+            context.note_activation(&hit.scope, tokens_now, catalog);
             fires.push(TriggerFire {
                 scope_id: hit.scope.to_string(),
                 field: hit.field.to_string(),
@@ -322,7 +338,53 @@ fn apply(
         active: context.active.clone(),
         activated,
         fires,
+        forgotten,
     }
+}
+
+/// Turn off every scope of `context` whose `forget` rule is reached at
+/// `tokens_now`, and report each one.
+///
+/// The one place a scope is forgotten. An event that carries no context size
+/// forgets nothing: the rule counts tokens, and this event read none.
+///
+/// A scope with a rule and no activation recorded is given one at this event's
+/// tokens and stays on, so its count runs from here. Those are a scope a
+/// subagent inherited, whose count is its own, and a scope that was already on
+/// when the rule was written.
+///
+/// The scopes a forgotten scope implies stay on, as they do when a tool call
+/// turns a scope off: a scope is a flag, and the state does not record which
+/// implication turned it on.
+fn forget_scopes(
+    context: &mut ContextState,
+    catalog: &Catalog,
+    tokens_now: Option<u64>,
+) -> Vec<ForgottenScope> {
+    let Some(tokens_now) = tokens_now else {
+        return Vec::new();
+    };
+    let mut forgotten = Vec::new();
+    for scope in context.active.clone() {
+        let Some(forget) = catalog.forget_rule(&scope) else {
+            continue;
+        };
+        let Some(activated_at) = context.activated_at.get(&scope).copied() else {
+            context.activated_at.insert(scope, tokens_now);
+            continue;
+        };
+        if tokens_now.saturating_sub(activated_at) < forget.tokens_since_trigger {
+            continue;
+        }
+        context.active.remove(&scope);
+        context.activated_at.remove(&scope);
+        forgotten.push(ForgottenScope {
+            scope_id: scope.to_string(),
+            tokens_since_trigger: forget.tokens_since_trigger,
+            tokens_at: tokens_now,
+        });
+    }
+    forgotten
 }
 
 /// One statistics row per memory this event delivered, withdrew, or found had

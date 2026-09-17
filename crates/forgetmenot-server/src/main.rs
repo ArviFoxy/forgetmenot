@@ -221,6 +221,7 @@ struct StatsReport {
 struct ScopeActivationsRow {
     scope_id: String,
     activations: u64,
+    forgettings: u64,
 }
 
 /// Report the statistics at `--stats-path`.
@@ -243,6 +244,7 @@ fn stats(arguments: &StatsArgs) -> ExitCode {
                 .map(|row| ScopeActivationsRow {
                     scope_id: row.scope_id,
                     activations: row.activations,
+                    forgettings: row.forgettings,
                 })
                 .collect(),
             denies: reader.deny_days()?,
@@ -332,11 +334,17 @@ fn print_report(report: &StatsReport) {
     );
     print_table(
         "scopes",
-        &["scope_id", "activations"],
+        &["scope_id", "activations", "forgettings"],
         report
             .scopes
             .iter()
-            .map(|row| vec![row.scope_id.clone(), row.activations.to_string()])
+            .map(|row| {
+                vec![
+                    row.scope_id.clone(),
+                    row.activations.to_string(),
+                    row.forgettings.to_string(),
+                ]
+            })
             .collect(),
     );
     print_table(

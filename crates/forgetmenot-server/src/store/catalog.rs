@@ -13,7 +13,7 @@ use git2::Oid;
 use super::frontmatter::FrontmatterError;
 use super::git::{GitError, GitRepo};
 use super::memory::{MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata};
-use super::scope::ScopeDocument;
+use super::scope::{Forget, ScopeDocument};
 use super::settings::{SETTINGS_PATH, SettingProblem, Settings, SettingsFile};
 use super::validate::{ValidationError, ValidationWarning};
 use super::{MemoryId, ScopeId};
@@ -234,6 +234,12 @@ impl Catalog {
     /// The scope with this id, if it has a file.
     pub fn scope(&self, id: &ScopeId) -> Option<&ScopeEntry> {
         self.scopes.get(id)
+    }
+
+    /// When the scope with this id turns itself off, `None` when it has no file
+    /// or its file declares no rule.
+    pub fn forget_rule(&self, id: &ScopeId) -> Option<&Forget> {
+        self.scopes.get(id)?.document.forget.as_ref()
     }
 
     /// Every scope that has a file, ordered by id.

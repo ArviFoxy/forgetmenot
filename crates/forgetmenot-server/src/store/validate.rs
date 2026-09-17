@@ -40,6 +40,11 @@ pub enum ValidationError {
     #[error("carries a blank `message`; a scope with nothing to say carries no message key")]
     EmptyScopeMessage { path: String, scope: ScopeId },
 
+    #[error(
+        "sets `forget.tokens_since_trigger` to 0; a scope that forgets itself counts at least one token, and a scope that stays on until the agent turns it off carries no `forget` key"
+    )]
+    ZeroForgetTokens { path: String, scope: ScopeId },
+
     #[error("trigger on {field} has a pattern that does not compile: {message}")]
     InvalidTriggerPattern {
         path: String,
@@ -112,6 +117,7 @@ impl ValidationError {
             | ValidationError::InvalidScopeId { path, .. }
             | ValidationError::UnknownImpliesTarget { path, .. }
             | ValidationError::EmptyScopeMessage { path, .. }
+            | ValidationError::ZeroForgetTokens { path, .. }
             | ValidationError::InvalidTriggerPattern { path, .. }
             | ValidationError::MemoryNameMismatch { path, .. }
             | ValidationError::UnknownScope { path, .. }
@@ -336,6 +342,14 @@ fn validate_scope_document(
         && message.trim().is_empty()
     {
         report.push(ValidationError::EmptyScopeMessage {
+            path: path.to_string(),
+            scope: id.clone(),
+        });
+    }
+    if let Some(forget) = &document.forget
+        && forget.tokens_since_trigger == 0
+    {
+        report.push(ValidationError::ZeroForgetTokens {
             path: path.to_string(),
             scope: id.clone(),
         });

@@ -156,6 +156,17 @@ pub struct ContextState {
     /// subagent first seen at an event other than its start.
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// The context size the last event that carried one reported. `None` while
+    /// no event of this context has read one. Defaulted, so that a snapshot an
+    /// older build wrote loads.
+    #[serde(default)]
+    pub tokens: Option<u64>,
+    /// The context size at the last activation of each scope that has a
+    /// `forget` rule, which is what the count since that activation is measured
+    /// from. Only those scopes are in here: the count is the only thing the
+    /// record is read for.
+    #[serde(default)]
+    pub activated_at: BTreeMap<ScopeId, u64>,
     pub last_seen: DateTime<Utc>,
 }
 
@@ -175,8 +186,34 @@ impl ContextState {
             first_prompt: None,
             task: None,
             agent_type: None,
+            tokens: None,
+            activated_at: BTreeMap::new(),
             last_seen: now,
         }
+    }
+
+    /// Record that `scope` was activated in this context at `tokens` context
+    /// tokens: a trigger matched for it, or a tool call turned it on.
+    ///
+    /// This is the one place an activation is recorded, so that a trigger fire
+    /// and a `session_scope_on` start the same count. A scope the catalog gives
+    /// no `forget` rule is not recorded at all, because nothing reads the
+    /// activation of a scope that never turns itself off.
+    ///
+    /// `tokens` is the context size at the activation: for a trigger the size
+    /// the event carries, and for an activation with no event of its own the
+    /// size the last event of this context reported, which is what
+    /// [`ContextState::tokens`] holds. `None` records nothing and leaves an
+    /// earlier activation standing, because a count cannot run from a context
+    /// size nobody read.
+    pub fn note_activation(&mut self, scope: &ScopeId, tokens: Option<u64>, catalog: &Catalog) {
+        let Some(tokens) = tokens else {
+            return;
+        };
+        if catalog.forget_rule(scope).is_none() {
+            return;
+        }
+        self.activated_at.insert(scope.clone(), tokens);
     }
 
     /// Record that this context holds `memory` at its current version, in the

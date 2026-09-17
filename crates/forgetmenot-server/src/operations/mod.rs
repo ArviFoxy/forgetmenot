@@ -37,7 +37,7 @@ use crate::store::git::{CommitSummary, FileConflict, GitError, GitRepo};
 use crate::store::memory::{
     MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource, rewrite_links,
 };
-use crate::store::scope::{ScopeDocument, Trigger, TriggerField};
+use crate::store::scope::{Forget, ScopeDocument, Trigger, TriggerField};
 use crate::store::validate::{self, Candidate, CrossDocumentRules, ValidationError, WriteMode};
 use crate::store::{MemoryId, ScopeId, ScopeKind};
 
@@ -272,6 +272,9 @@ pub struct ScopeDoc {
     pub message: Option<String>,
     pub implies: Vec<ScopeId>,
     pub triggers: Vec<Trigger>,
+    /// When the scope turns itself off in a context, `null` when it stays on
+    /// until the agent turns it off.
+    pub forget: Option<Forget>,
     pub version: String,
 }
 
@@ -282,6 +285,7 @@ impl ScopeDoc {
             message: entry.document.message.clone(),
             implies: entry.document.implies.clone(),
             triggers: entry.document.triggers.clone(),
+            forget: entry.document.forget,
             version: entry.version.to_string(),
         }
     }
@@ -603,6 +607,10 @@ pub struct ScopeWriteRequest {
     /// Named apart from `message`, which is this write's commit title.
     #[serde(default)]
     pub scope_message: Option<String>,
+    /// When the scope turns itself off in a context; absent when it stays on
+    /// until the agent turns it off.
+    #[serde(default)]
+    pub forget: Option<Forget>,
     #[serde(default)]
     pub base_version: Option<String>,
     pub author: String,
@@ -1451,6 +1459,7 @@ pub async fn scope_put(
         message: request.scope_message.clone(),
         implies: request.implies.clone(),
         triggers: request.triggers.clone(),
+        forget: request.forget,
     };
     let report = validate::validate_write(
         &catalog,
@@ -1964,6 +1973,12 @@ pub async fn session_scope_on(
         .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
             context.active.extend(scopes.iter().cloned());
             context.active = catalog.closure(&context.active);
+            // The call has no hook event of its own, so the activation is
+            // counted from the context size the last event reported.
+            let tokens = context.tokens;
+            for scope in scopes {
+                context.note_activation(scope, tokens, &catalog);
+            }
             context.last_seen = now;
             context.active.clone()
         })
