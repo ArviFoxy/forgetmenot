@@ -339,19 +339,6 @@ test('a scope a memory still lists is deleted without saying what refers to it',
   expect(scopes.map((scope) => scope.id)).toContain('widgets');
 });
 
-test('the statistics page reports one figure per memory instead of one per delivery form', async ({
-  page,
-}) => {
-  await page.goto('/stats');
-  await expect(
-    page.getByRole('columnheader', { name: 'Shown as index line', exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole('columnheader', { name: 'Shown in full, new', exact: true }),
-  ).toBeVisible();
-  await expect(page.locator('table.stats').first().locator('tbody tr').first()).toBeVisible();
-});
-
 test('a trigger created in the UI is written with an on line it was never given', async ({ page }) => {
   const id = `any-scope-${Date.now()}`;
   await page.goto('/scopes/new');

@@ -199,7 +199,46 @@ On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the
 | Statistics | sqlite in write-ahead-log mode; each record committed as it is written | Durable once written; a crash can lose only records still in the queue |
 | MCP transport sessions | in memory | Lost; clients reconnect |
 
-## Runtime limits
+## Testing
+
+A guarantee is tested at the lowest level where its failure is visible, once, and a higher level tests only what emerges there.
+
+Paths below without a crate are under `crates/forgetmenot-server/`.
+
+| Level | What belongs there | Files |
+|---|---|---|
+| Units | Pure rules: id forms, frontmatter parsing and rendering, trigger compilation and matching, validation, settings parsing, which texts an event contributes, what a context is owed, how it is rendered | `#[cfg(test)]` beside the code, on the store fixture in `src/test_support.rs` |
+| Store | git behaviour: compare-and-swap commits, branches, landing and conflicts, history, blame, diffs, catalog loading, retention | `tests/store_test.rs`, `tests/branch_test.rs` |
+| Operations | Application rules over the store, the registry and the statistics, called in-process with no HTTP: write semantics, own-write marking, the scope index, the rendered prompt, the contexts order, history paging, the session operations | `tests/operations_test.rs` |
+| Interface contracts | One test per route and per tool: status codes, JSON shapes, parameter parsing, the tool list, the error texts the model reads | `tests/api_test.rs`, `tests/mcp_test.rs`, `tests/hook_test.rs` |
+| Hook client | Argument parsing, transcript and subagent-metadata reading, forwarding the answer unchanged, failure modes | `crates/forgetmenot-hook/tests` |
+| Scenarios | What emerges only when Claude Code drives the server over time: event order and harness semantics, cross-context effects, persistence across a restart, what the model was shown | `tests/scenario/`, `tests/scenarios_*.rs` |
+| Limits | The runtime limits below | `tests/limits_test.rs` |
+| Frontend units | Model logic (the tree, the tag field, addresses, settings, the memory draft, units) and the rendering decisions that are not model logic | `web/tests` |
+| Frontend flows | The page and the server acting together: a write that has to land in the store, a refusal that names what refers to the item | `web/e2e/edit-flow.spec.ts` |
+| Frontend look | Screenshots and contrast, as recorded judgments of the look | `web/e2e/visual.spec.ts` |
+
+The scenario library is `tests/scenario/`. A `World` is a running server on a store from a builder (`Store::example()` or `Store::empty()`, then `.memory(..)`, `.scope(..)`, `.file(..)`, `.without(..)`) under settings the world builder sets, with the clock, `restart()`, `edit_outside(..)` and reads through the API. A `Claude` is the harness simulator for one machine, and a `Session` is one conversation on it: `start_in`, `prompt`, `says`, `tool`, `cd`, `compact`, `subagent`, `resume`, `rename`, `at_tokens`, plus `context()` and `model_saw_full(..)` for what the model could actually read. `mcp()` on a session calls this server's own MCP tools, each wrapped in the `PreToolUse` and `PostToolUse` Claude Code sends around it. An `Answer` is one hook answer, asked with matchers: `delivers_full`, `delivers_index`, `retracts`, `announces_scope`, `delivers_nothing`, `held`, `allowed`, `is_empty_object`, `chars`. The simulator sends Claude Code 2.1.270's payloads, held to the recordings in `tests/fixtures/hooks/`, in Claude Code's order, and applies each answer as Claude Code does: a denied `PreToolUse` is followed by no `PostToolUse`, `compact()` is a `SessionStart` for the rebuilt conversation and then a `PostCompact`, and a subagent is a `SubagentStart` on the parent beside a child context with its own id. A scenario is an ordinary test:
+
+```rust
+#[test]
+fn a_knowledge_arrival_holds_nothing() {
+    let world = World::new().store(Store::example()).build();
+    let session = world.claude("alpha").session();
+
+    session.start_in("/home/dev/parts");
+    session.tool("Bash", bash("ls ./rocket-frames"))
+        .assert(|answer| {
+            assert!(answer.allowed());
+            assert!(answer.delivers_index("rocket-stages"));
+        })
+        .run();
+}
+```
+
+Every test is named for the failure it detects and states where its expectation comes from, and a new test lands at the lowest level where its failure is visible.
+
+### Runtime limits
 
 These are requirements, checked by tests:
 
