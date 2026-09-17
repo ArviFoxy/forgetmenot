@@ -137,7 +137,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use forgetmenot_server::app::{self, RunningServer};
-use forgetmenot_server::clock::FixedClock;
+use forgetmenot_server::clock::ManualClock;
 use forgetmenot_server::config::Config;
 use forgetmenot_server::stats::StatsReader;
 use serde_json::{Value, json};
@@ -145,7 +145,8 @@ use serde_json::{Value, json};
 /// A server bound to an ephemeral loopback port, with its own temporary store,
 /// state file and statistics database.
 ///
-/// The clock is fixed, so nothing a test asserts depends on when it ran.
+/// The clock stands still until a test moves it with [`TestServer::advance`], so
+/// nothing a test asserts depends on when it ran.
 pub struct TestServer {
     runtime: tokio::runtime::Runtime,
     server: Option<RunningServer>,
@@ -154,6 +155,7 @@ pub struct TestServer {
     /// Holds the state file and the statistics database; removed on drop.
     paths: TempDir,
     config: Config,
+    clock: Arc<ManualClock>,
 }
 
 impl TestServer {
@@ -179,8 +181,9 @@ impl TestServer {
             .enable_all()
             .build()
             .expect("a tokio runtime");
+        let clock = Arc::new(ManualClock::default());
         let server = runtime
-            .block_on(app::start(config.clone(), Arc::new(FixedClock::default())))
+            .block_on(app::start(config.clone(), clock.clone()))
             .expect("the test server starts");
         let address = server.address;
         Self {
@@ -190,7 +193,14 @@ impl TestServer {
             store,
             paths,
             config,
+            clock,
         }
+    }
+
+    /// Move the server's clock forward, so that the events sent after this call
+    /// are recorded later than the ones before it.
+    pub fn advance(&self, by: chrono::Duration) {
+        self.clock.advance(by);
     }
 
     /// The base URL, without a trailing slash.
@@ -317,10 +327,7 @@ impl TestServer {
             .expect("the server shuts down");
         let server = self
             .runtime
-            .block_on(app::start(
-                self.config.clone(),
-                Arc::new(FixedClock::default()),
-            ))
+            .block_on(app::start(self.config.clone(), self.clock.clone()))
             .expect("the server starts again");
         self.address = server.address;
         self.server = Some(server);

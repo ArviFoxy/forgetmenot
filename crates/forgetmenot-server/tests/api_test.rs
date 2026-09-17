@@ -13,6 +13,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
+use chrono::Duration;
 use serde_json::{Value, json};
 
 use common::{
@@ -1964,6 +1965,28 @@ fn active_scopes(server: &TestServer, key: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The keys of every context in the answer of `GET /api/contexts`, in the order
+/// the answer lists them.
+fn context_keys(answer: &Value) -> Vec<&str> {
+    answer
+        .as_array()
+        .expect("the contexts are a list")
+        .iter()
+        .map(|row| row["key"].as_str().expect("a key is text"))
+        .collect()
+}
+
+/// One recorded payload as an event of the session `session_id`, for the tests
+/// that need more than the one session the payloads carry.
+fn event_of_session(name: &str, session_id: &str) -> Value {
+    let mut event = hook_fixture(name);
+    event
+        .as_object_mut()
+        .expect("the payload is an object")
+        .insert("session_id".to_string(), json!(session_id));
+    event
+}
+
 /// Detects a contexts page that lists sessions by their identifiers alone: the
 /// name the user gave a session with `/rename` is the only thing that says what
 /// the session is, and a page that drops it cannot be read. It also detects the
@@ -2196,6 +2219,61 @@ fn the_contexts_page_lists_a_session_after_its_first_event() {
     assert!(
         row["last_seen"].is_string(),
         "a context must report when it was last seen, got {row}"
+    );
+}
+
+/// Detects contexts listed in key order, or oldest first: the page is read to
+/// see what is working now, so the session heard from last leads the list and a
+/// session nothing has happened in sinks. Source: the contexts page is ordered
+/// by "Last seen", most recent first (issue #21).
+///
+/// Two lists are read, because each wrong order matches the right one on one of
+/// them: oldest first differs on the list taken after `session-1` is prompted,
+/// key order differs on the one taken after `session-2` is prompted in turn.
+#[test]
+fn the_contexts_are_listed_with_the_session_heard_from_last_at_the_top() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let step = Duration::minutes(3);
+    server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_of_session("session_start", "session-1"),
+    );
+    server.advance(step);
+    server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_of_session("session_start", "session-2"),
+    );
+    server.advance(step);
+
+    server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_of_session("user_prompt_submit", "session-1"),
+    );
+    let (status, after_first) = server.api("GET", "/api/contexts", None);
+    server.advance(step);
+    server.hook(
+        "alpha",
+        SOME_TOKENS,
+        &event_of_session("user_prompt_submit", "session-2"),
+    );
+    let (_, after_second) = server.api("GET", "/api/contexts", None);
+
+    assert_eq!(
+        status, 200,
+        "the contexts must be readable, got {after_first}"
+    );
+    assert_eq!(
+        context_keys(&after_first),
+        vec!["alpha/session-1", "alpha/session-2"],
+        "the session prompted last must lead the list, got {after_first}"
+    );
+    assert_eq!(
+        context_keys(&after_second),
+        vec!["alpha/session-2", "alpha/session-1"],
+        "the list must follow the last event and not the keys, got {after_second}"
     );
 }
 

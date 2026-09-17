@@ -1699,12 +1699,21 @@ fn machine_names(
     machines
 }
 
-/// Every context the server knows about, ordered by key.
+/// Every context the server knows about, most recently seen first, contexts
+/// seen at the same instant by key.
+///
+/// The order is the one the contexts page lists, so that the page needs no
+/// order of its own beyond keeping a subagent with its session.
 pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<ContextRow> {
-    registry
-        .snapshot(now)
-        .await
-        .contexts
+    let mut records = registry.snapshot(now).await.contexts;
+    records.sort_by(|left, right| {
+        right
+            .state
+            .last_seen
+            .cmp(&left.state.last_seen)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    records
         .into_iter()
         .map(|record| ContextRow {
             key: record.key.to_string(),

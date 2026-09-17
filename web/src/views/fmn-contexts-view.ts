@@ -32,8 +32,10 @@ export class FmnContextsView extends PageElement {
   }
 
   /**
-   * Each subagent directly under the session it runs in, and the sessions by
-   * key, so the same set of contexts is always listed in the same order.
+   * Each subagent directly under the session it runs in, in the order the rows
+   * arrived in: a session's group stands where the first of its rows stands, so
+   * a group sent in most-recently-seen order is placed by the member seen last,
+   * and the subagents of one session keep the order they came in.
    */
   private static grouped(rows: ContextRow[]): ContextRow[] {
     const groups = new Map<string, ContextRow[]>();
@@ -41,17 +43,11 @@ export class FmnContextsView extends PageElement {
       const group = row.parent ?? row.key;
       groups.set(group, [...(groups.get(group) ?? []), row]);
     }
-    return [...groups.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, members]) =>
-        [...members].sort((left, right) => {
-          // The session itself leads its group, whether or not its key sorts first.
-          const leftIsSession = (left.parent ?? null) === null;
-          const rightIsSession = (right.parent ?? null) === null;
-          if (leftIsSession !== rightIsSession) return leftIsSession ? -1 : 1;
-          return left.key.localeCompare(right.key);
-        }),
-      );
+    // The session itself leads its group, whether or not it was seen last.
+    return [...groups.values()].flatMap((members) => [
+      ...members.filter((row) => (row.parent ?? null) === null),
+      ...members.filter((row) => (row.parent ?? null) !== null),
+    ]);
   }
 
   override render(): TemplateResult {

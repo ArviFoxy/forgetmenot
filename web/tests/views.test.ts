@@ -192,10 +192,11 @@ test('the statistics add the delivery counts together instead of showing each', 
   expect(cells).toContain('2026-01-02T03:04:05+00:00');
 });
 
-// The source of these two expectations is the decision about what the contexts
+// The source of these three expectations is the decision about what the contexts
 // table shows: the columns Name, Scopes, Id, Machine, Delivered, Last seen, in
 // that order, with each subagent directly under the session it runs in and its
-// name indented.
+// name indented, and the rows in the order the server sends them, which is most
+// recently seen first (issue #21).
 
 test('the contexts table names its columns in another order, or lists a context without its name', async () => {
   await renderContexts([session]);
@@ -219,6 +220,27 @@ test('a subagent is listed in the order it arrived, or level with the session it
   expect(rows.map((row) => cellsOf(row)[0])).toEqual([session.name, subagent.name]);
   expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
   expect(rows[0]?.querySelector('td')?.classList.contains('nested')).toBe(false);
+});
+
+/** A session with no subagent, keyed ahead of `session` and seen before it. */
+const otherSession = context({
+  key: 'alpha/session-0',
+  name: 'Sort the fastener bins',
+  last_seen: '2026-01-02T03:04:30+00:00',
+});
+
+test('a session whose subagent was seen last is listed under a session seen earlier', async () => {
+  // The order the server sends: most recently seen first, which puts the
+  // subagent ahead of both sessions and leaves its own session last.
+  await renderContexts([subagent, otherSession, session]);
+
+  const rows = [...document.querySelectorAll('table.data tbody tr')];
+  expect(rows.map((row) => cellsOf(row)[0])).toEqual([
+    session.name,
+    subagent.name,
+    otherSession.name,
+  ]);
+  expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
 });
 
 // The source of these two expectations is what the tree menu can act on: the file is
