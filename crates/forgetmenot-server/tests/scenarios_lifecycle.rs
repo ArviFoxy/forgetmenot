@@ -98,15 +98,15 @@ fn every_memory_arrives_once_in_its_form_across_a_whole_session() {
                 answer.held(),
                 "the tool input turns widgets on and its critical memory is new here"
             );
-            arrivals.record(answer);
         });
+    arrivals.record(held.answer());
     let reissued = held.reissue().assert(|answer| {
         assert!(
             answer.allowed(),
             "the rule has been given, so the call issued again goes ahead"
         );
-        arrivals.record(answer);
     });
+    arrivals.record(reissued.answer());
     arrivals.record(&reissued.result(json!({
         "stdout": "parts-list/rocket-frame.csv:12: widgets, upper bracket"
     })));

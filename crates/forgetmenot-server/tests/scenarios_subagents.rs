@@ -66,11 +66,11 @@ fn a_subagent_inherits_the_parents_scopes_and_not_its_record() {
     let child = session.subagent("general-purpose", "list the files");
 
     assert!(
-        child.model_saw_full("widget-naming"),
+        child.start_answer().delivers_full("widget-naming"),
         "the child copied the scopes, so the widget rule is due to it"
     );
     assert!(
-        child.model_saw_full("bench-power"),
+        child.start_answer().delivers_full("bench-power"),
         "the child's record is its own, so the global rule the parent already holds \
          arrives here too"
     );
@@ -110,11 +110,11 @@ fn a_subagent_starts_from_the_implicit_scopes_when_the_store_says_so() {
     let child = session.subagent("general-purpose", "list the files");
 
     assert!(
-        child.model_saw_full("bench-power"),
+        child.start_answer().delivers_full("bench-power"),
         "the global rule is in a scope every context has, so it is due to the child"
     );
     assert!(
-        !child.model_saw_full("widget-naming"),
+        !child.start_answer().delivers_full("widget-naming"),
         "the store asked for children to start clean, so the parent's widgets is not on here"
     );
     assert_eq!(
@@ -153,7 +153,7 @@ fn a_subagents_task_activates_scopes_at_its_start() {
     let child = session.subagent("general-purpose", "rename the widget brackets");
 
     assert!(
-        child.model_saw_full("widget-naming"),
+        child.start_answer().delivers_full("widget-naming"),
         "the task names a widget, so the child starts working in widgets"
     );
     assert!(
@@ -317,5 +317,81 @@ fn two_subagents_keep_separate_records() {
     held.reissue().assert(|answer| {
         assert!(answer.allowed(), "the parent meets the change once");
         assert!(answer.delivers_nothing());
+    });
+}
+
+/// The context growth after which everything already delivered is delivered
+/// again, small enough that a scenario can name sizes around it by hand.
+const REMINDER: u64 = 1_000;
+
+/// The size the parent has reached by the time it spawns a child, far past
+/// anything the child will report, so that a count taken from it is a count
+/// that never ends.
+const PARENT_TOKENS: u64 = 50_000;
+
+/// The size the child's own events report, which is where a session's context
+/// starts.
+const CHILD_START: u64 = 10_000;
+
+/// Detects a subagent whose reminder counts from the size the `SubagentStart`
+/// reported: that size was read from the parent's transcript, and the child's
+/// own events report a context that starts fresh and is far smaller, so the
+/// growth since would be nothing for as long as the child lives and the rules it
+/// was given at its start would never be repeated however far they fell behind.
+///
+/// The parent is at 50 000 when it spawns the child, and the child's own events
+/// report 10 000 upwards. The child's count therefore starts at its own first
+/// event: at 10 999 the growth is 999, one short of the threshold, and at 11 000
+/// it is exactly the threshold, so everything the child was given at its start
+/// arrives again, the critical rule whole and the knowledge memories as index
+/// lines. A count from the parent's 50 000 would deliver nothing at any of them.
+#[test]
+fn a_reminder_in_a_subagent_counts_from_the_subagents_own_size() {
+    let world = World::new()
+        .store(Store::example())
+        .settings(|settings| {
+            settings.reminder_tokens(Some(REMINDER));
+        })
+        .build();
+    let session = world.claude(ALPHA).session();
+
+    session.start_in(NEUTRAL);
+    session.at_tokens(PARENT_TOKENS);
+    let child = session.subagent("general-purpose", "check the bench supply");
+    assert!(
+        child.start_answer().delivers_full("bench-power"),
+        "the child holds nothing yet, so the global rule arrives at its start"
+    );
+    assert!(
+        child.start_answer().delivers_index("reading-list"),
+        "a knowledge memory arrives at the child's start as its index line"
+    );
+
+    child.at_tokens(CHILD_START);
+    child.prompt("start with the rail").assert(|answer| {
+        assert!(
+            answer.delivers_nothing(),
+            "the child was given everything due at its start and nothing has changed"
+        );
+    });
+
+    child.at_tokens(CHILD_START + REMINDER - 1);
+    child.prompt("carry on").assert(|answer| {
+        assert!(
+            answer.delivers_nothing(),
+            "999 tokens past the child's own first event is one short of the threshold"
+        );
+    });
+
+    child.at_tokens(CHILD_START + REMINDER);
+    child.prompt("and now").assert(|answer| {
+        assert!(
+            answer.delivers_full("bench-power"),
+            "the threshold past the child's own first event, what it was given is out of reach"
+        );
+        assert!(
+            answer.delivers_index("reading-list"),
+            "a stale knowledge memory arrives again as its index line"
+        );
     });
 }

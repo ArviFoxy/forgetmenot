@@ -104,7 +104,7 @@ fn a_memory_get_answer_naming_every_scope_activates_nothing_while_the_same_text_
         .mcp()
         .call("memory_get", json!({ "id": "rocket-stages" }))
         .expect_ok();
-    let answered = serde_json::to_string(fetched.json()).expect("the tool's answer is JSON");
+    let answered = fetched.text().to_string();
     assert!(
         answered.contains("rocket"),
         "the text this scenario is about has to name a rocket, got {answered}"

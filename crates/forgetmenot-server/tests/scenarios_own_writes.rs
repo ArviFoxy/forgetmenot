@@ -406,7 +406,7 @@ fn a_write_by_the_session_still_reaches_its_own_subagent() {
 
     let after = writer.subagent("general-purpose", "list the wiring files");
     assert!(
-        after.model_saw_full("bench-power"),
+        after.start_answer().delivers_full("bench-power"),
         "a child started after the write holds no record of it, so it arrives at its start"
     );
 

@@ -70,6 +70,15 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
 
     let now = state.clock.now();
     let tokens_now = request.context_tokens;
+    // The size an event reports belongs to the context whose transcript it was
+    // read from, which is this event's own context except at a `SubagentStart`:
+    // see [`EventPlan::tokens_are_the_parents`]. Where it is not the context's
+    // own, nothing that counts tokens reads it, and the statistics row below
+    // still records it as it arrived.
+    let context_tokens = match plan.tokens_are_the_parents {
+        true => None,
+        false => tokens_now,
+    };
     let named = SessionName {
         title: request.session_title.as_deref(),
         first_prompt: request.first_prompt.as_deref(),
@@ -78,7 +87,15 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     let outcome = state
         .contexts
         .with_context(&plan.key, now, Inheritance::of(settings), |context| {
-            apply(context, &plan, &catalog, tokens_now, now, named, &previous)
+            apply(
+                context,
+                &plan,
+                &catalog,
+                context_tokens,
+                now,
+                named,
+                &previous,
+            )
         })
         .await;
 
@@ -295,10 +312,12 @@ fn apply(
         context.agent_type = Some(agent_type.clone());
     }
 
-    // The context size the last event reported, which an activation with no
-    // event of its own counts from.
+    // The context size this event reports, which is also the baseline of
+    // everything this context holds that was recorded without one. It is taken
+    // before anything below reads a count, so a delivery and a scope both count
+    // from the first event of this context that carried a size.
     if let Some(tokens) = tokens_now {
-        context.tokens = Some(tokens);
+        context.note_tokens(tokens, catalog);
     }
 
     // Forgetting comes before the triggers are matched, so a trigger that fires
@@ -360,10 +379,10 @@ fn apply(
 /// The one place a scope is forgotten. An event that carries no context size
 /// forgets nothing: the rule counts tokens, and this event read none.
 ///
-/// A scope with a rule and no activation recorded is given one at this event's
-/// tokens and stays on, so its count runs from here. Those are a scope a
-/// subagent inherited, whose count is its own, and a scope that was already on
-/// when the rule was written.
+/// What a missing activation means is [`ContextState::note_tokens`]'s to say,
+/// and it has given every active scope with a rule a baseline at this event's
+/// tokens before this runs, so a scope with none here has met no event carrying
+/// a size at all and there is nothing to count.
 ///
 /// The scopes a forgotten scope implies stay on, as they do when a tool call
 /// turns a scope off: a scope is a flag, and the state does not record which
@@ -382,7 +401,6 @@ fn forget_scopes(
             continue;
         };
         let Some(activated_at) = context.activated_at.get(&scope).copied() else {
-            context.activated_at.insert(scope, tokens_now);
             continue;
         };
         if tokens_now.saturating_sub(activated_at) < forget.tokens_since_trigger {
@@ -450,5 +468,204 @@ fn kind_name(kind: MemoryKind) -> &'static str {
     match kind {
         MemoryKind::Critical => "critical",
         MemoryKind::Knowledge => "knowledge",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{Form, Shown};
+    use crate::store::catalog::Catalog;
+    use crate::store::git::GitRepo;
+    use forgetmenot_types::hook::HookEvent;
+    use serde_json::json;
+
+    /// The context growth after which a delivery is stale and after which the
+    /// scope below turns itself off. One number for both, so the sizes a test
+    /// names are read against a single threshold.
+    const THRESHOLD: u64 = 1_000;
+
+    /// The size the first event of these tests reports, so that every later size
+    /// is this plus a stated amount.
+    const START: u64 = 10_000;
+
+    /// A scope with a `forget` rule, which is what makes a context record when
+    /// it was activated at all.
+    const PASSING: &str = "passing";
+
+    /// A store with one critical memory in `global`, one scope that turns itself
+    /// off [`THRESHOLD`] tokens after its last activation, and reminders at the
+    /// same threshold.
+    fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
+        vec![
+            (
+                "config.yml".to_string(),
+                Some(format!("reminder_tokens: {THRESHOLD}\n").into_bytes()),
+            ),
+            (
+                format!("scopes/{PASSING}.yaml"),
+                Some(
+                    format!("id: {PASSING}\nforget:\n  tokens_since_trigger: {THRESHOLD}\n")
+                        .into_bytes(),
+                ),
+            ),
+            (
+                "memories/bench-power.md".to_string(),
+                Some(
+                    "---\nname: bench-power\ndescription: Cut bench power at the wall\n\
+                     metadata:\n  kind: critical\n  scopes:\n  - global\n---\n\
+                     # Cut bench power before rewiring\n\nSwitch the supply off at the wall.\n"
+                        .to_string()
+                        .into_bytes(),
+                ),
+            ),
+        ]
+    }
+
+    /// The catalog of a store built from [`store_files`], with the directory it
+    /// lives in, which is removed when the test ends.
+    fn catalog() -> (tempfile::TempDir, Catalog) {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let repository = GitRepo::open_or_init(directory.path()).expect("the store opens");
+        repository
+            .commit_files("test", "write the store", "", store_files(), None)
+            .expect("the store's files are committed");
+        let catalog = Catalog::load(&repository).expect("the catalog is built");
+        (directory, catalog)
+    }
+
+    /// The plan of an event that fires no trigger and stops nothing, so that
+    /// what a test sees comes from the context size alone.
+    fn quiet_event(catalog: &Catalog) -> EventPlan {
+        let event: HookEvent = serde_json::from_value(json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-1",
+            "prompt": "carry on where we left off"
+        }))
+        .expect("the payload parses as an event");
+        events::plan(&event, "alpha", None, catalog.settings()).expect("the event is known")
+    }
+
+    /// Answer one event of `context` at `tokens`, and report what it decided.
+    fn at_tokens(context: &mut ContextState, catalog: &Catalog, tokens: u64) -> Outcome {
+        let plan = quiet_event(catalog);
+        let named = SessionName {
+            title: None,
+            first_prompt: None,
+        };
+        apply(
+            context,
+            &plan,
+            catalog,
+            Some(tokens),
+            chrono::Utc::now(),
+            named,
+            &PreviousTexts::new(),
+        )
+    }
+
+    /// Detects a delivery recorded without a context size that is never stale
+    /// again: a `memory_get` fetch and a write by the context itself report no
+    /// size, so a rule read that way would be held for the rest of the session
+    /// however far it fell out of the model's reach.
+    ///
+    /// Source: the rule that a count starts at the first event of the context
+    /// that carries that context's own size. The first event reports 10 000, so
+    /// that is the baseline: at 10 999 the growth is 999, one short of the
+    /// threshold, and at 11 000 it is exactly the threshold and the memory is
+    /// owed again.
+    #[test]
+    fn a_delivery_recorded_without_a_size_goes_stale_from_the_first_event_that_carries_one() {
+        let (_directory, catalog) = catalog();
+        let id = MemoryId::new("bench-power");
+        let version = catalog
+            .memory(&id)
+            .expect("the store holds the memory")
+            .version
+            .to_string();
+        let mut context = ContextState::fresh(
+            BTreeSet::from([ScopeId::global()]),
+            None,
+            chrono::Utc::now(),
+        );
+        context.delivered.insert(
+            id.clone(),
+            Shown {
+                version,
+                form: Form::Full,
+                tokens: None,
+            },
+        );
+
+        let first = at_tokens(&mut context, &catalog, START);
+        assert!(
+            first.needs.stale.is_empty(),
+            "the event that gives the delivery its baseline cannot also be the threshold past it, \
+             got {:?}",
+            first.needs.stale
+        );
+
+        let short = at_tokens(&mut context, &catalog, START + THRESHOLD - 1);
+        assert!(
+            short.needs.stale.is_empty(),
+            "999 tokens past the baseline is one short of the threshold, got {:?}",
+            short.needs.stale
+        );
+
+        let reached = at_tokens(&mut context, &catalog, START + THRESHOLD);
+        assert_eq!(
+            reached.needs.stale,
+            vec![id],
+            "the threshold past the first event that carried a size, the delivery is stale"
+        );
+    }
+
+    /// Detects a scope whose activation was never recorded being kept for ever
+    /// or dropped at once: a scope a subagent inherited, and one turned on by a
+    /// tool call before any event reported a size, have no activation of their
+    /// own, and the rule that turns them off counts tokens from somewhere.
+    ///
+    /// Source: the same rule. The scope's count starts at the first event that
+    /// carries a size, 10 000 here, so it survives 10 999 and goes at 11 000.
+    #[test]
+    fn a_scope_with_no_recorded_activation_is_forgotten_from_the_first_sized_event() {
+        let (_directory, catalog) = catalog();
+        let scope = ScopeId::new(PASSING);
+        let mut context = ContextState::fresh(
+            BTreeSet::from([ScopeId::global(), scope.clone()]),
+            None,
+            chrono::Utc::now(),
+        );
+        assert!(
+            context.activated_at.is_empty(),
+            "this context inherited the scope, so nothing recorded when it came on"
+        );
+
+        let first = at_tokens(&mut context, &catalog, START);
+        assert!(
+            first.forgotten.is_empty() && context.active.contains(&scope),
+            "the event the count starts at cannot also be the threshold past it"
+        );
+
+        let short = at_tokens(&mut context, &catalog, START + THRESHOLD - 1);
+        assert!(
+            short.forgotten.is_empty() && context.active.contains(&scope),
+            "999 tokens past the first sized event is one short of the threshold"
+        );
+
+        let reached = at_tokens(&mut context, &catalog, START + THRESHOLD);
+        assert_eq!(
+            reached
+                .forgotten
+                .iter()
+                .map(|forgotten| forgotten.scope_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![PASSING],
+            "the threshold past the first event that carried a size, the scope turns itself off"
+        );
+        assert!(
+            !context.active.contains(&scope),
+            "a forgotten scope is gone from the context's active scopes"
+        );
     }
 }

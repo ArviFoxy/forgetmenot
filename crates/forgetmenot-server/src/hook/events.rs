@@ -47,6 +47,17 @@ pub struct EventPlan {
     /// The kind of subagent that started, for `SubagentStart` alone. It is what
     /// names the context when nothing said what the task was.
     pub agent_type: Option<String>,
+    /// Whether the context size this event reports is the parent's rather than
+    /// this plan's own context's, which is true of `SubagentStart` alone.
+    ///
+    /// The client reads the size from the transcript of the session the event
+    /// arrived on, and a `SubagentStart` arrives on the parent while it acts on
+    /// the child. The child's transcript begins empty, so its own events report
+    /// a size that starts near zero and has nothing to do with the number here.
+    /// Everything counted in tokens is therefore left unset by such an event and
+    /// counts from the first event of the child that carries the child's own
+    /// size; the statistics still record the size as it arrived.
+    pub tokens_are_the_parents: bool,
 }
 
 /// What to do about `event`, or `None` for an event name this server does not
@@ -77,6 +88,7 @@ pub fn plan(
         matches_directories: false,
         task: task.filter(|task| !task.is_empty()).map(str::to_string),
         agent_type: None,
+        tokens_are_the_parents: false,
     };
 
     match event {
@@ -149,8 +161,11 @@ pub fn plan(
             ..
         } => {
             // The event arrives on the parent session but acts on the child,
-            // whose id is the variant's own field.
+            // whose id is the variant's own field. The size it reports is the
+            // parent's for the same reason: it was read from the transcript of
+            // the session the event arrived on.
             plan.key = ContextKey::subagent(machine, &common.session_id, agent_id);
+            plan.tokens_are_the_parents = true;
             plan.agent_type = agent_type.clone();
             // The task is what the subagent was told to do, so it is matched
             // against the user-message triggers once, where the subagent
@@ -375,6 +390,51 @@ mod tests {
             plan.agent_type.as_deref(),
             Some("general-purpose"),
             "the kind of subagent that started must reach the context that records it"
+        );
+    }
+
+    /// Detects a `SubagentStart` planned as carrying the size of the context it
+    /// acts on: the client read that size from the parent's transcript, so
+    /// taking it for the child's would start every count in the child at the
+    /// parent's whole context size, and the child's own events, which report a
+    /// size starting near zero, would never reach it.
+    ///
+    /// Source: the rule that a count starts at the first event of the context
+    /// that carries that context's own size. Every other event acts on the
+    /// context whose transcript the size came from, which is why only this one
+    /// is marked.
+    #[test]
+    fn only_a_subagent_start_reports_a_size_that_is_not_its_contexts_own() {
+        let started = plan(
+            &event(json!({
+                "hook_event_name": "SubagentStart",
+                "session_id": "session-1",
+                "agent_id": "agent-7",
+                "agent_type": "general-purpose"
+            })),
+            "alpha",
+            Some("survey the widgets crate"),
+            &Settings::default(),
+        )
+        .expect("SubagentStart is a known event");
+        assert!(
+            started.tokens_are_the_parents,
+            "the size a SubagentStart carries was read from the parent's transcript"
+        );
+
+        let inside = plan_of(
+            &event(json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-1",
+                "agent_id": "agent-7",
+                "prompt": "start with the rail"
+            })),
+            "alpha",
+        )
+        .expect("UserPromptSubmit is a known event");
+        assert!(
+            !inside.tokens_are_the_parents,
+            "an event inside the subagent reports the subagent's own size"
         );
     }
 }

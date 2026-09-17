@@ -6,6 +6,8 @@
 //! effect also covers what the memory system's own traffic does to the session
 //! it runs in.
 
+use std::cell::RefCell;
+
 use forgetmenot_server::store::MemoryId;
 use serde_json::{Map, Value, json};
 
@@ -35,6 +37,12 @@ pub enum McpOutcome<'w> {
         /// What the tool answered, as the JSON it reports. A tool that refused
         /// answers a message rather than JSON, which arrives here as a string.
         answer: Value,
+        /// The text of the tool's answer as the model reads it, before any
+        /// attempt to read it as JSON.
+        text: String,
+        /// Whether the tool marked its answer an error, which is what a refusal
+        /// is: `tool_failure` answers with `is_error` set.
+        refused: bool,
         /// The answer to the `PostToolUse` that reported the tool's text.
         post: Answer<'w>,
     },
@@ -44,6 +52,9 @@ pub enum McpOutcome<'w> {
 pub struct Branch<'m, 's, 'w> {
     mcp: &'m Mcp<'s, 'w>,
     name: String,
+    /// The parameters of the last land issued on this branch, which is what
+    /// [`Branch::land_again`] sends again.
+    landed_with: RefCell<Option<Value>>,
 }
 
 impl<'s, 'w> Mcp<'s, 'w> {
@@ -155,7 +166,11 @@ impl<'s, 'w> Mcp<'s, 'w> {
             .as_str()
             .expect("branch_create answers with the branch's name")
             .to_string();
-        Branch { mcp: self, name }
+        Branch {
+            mcp: self,
+            name,
+            landed_with: RefCell::new(None),
+        }
     }
 
     pub fn branch_list(&self) -> McpOutcome<'w> {
@@ -184,9 +199,15 @@ impl<'s, 'w> Mcp<'s, 'w> {
         }
         let result = self.client.call(tool, params);
         let text = tool_text(&result);
+        let refused = result.is_error.unwrap_or(false);
         let answer = serde_json::from_str(&text).unwrap_or_else(|_| Value::String(text.clone()));
-        let post = call.result(Value::String(text));
-        McpOutcome::Done { answer, post }
+        let post = call.result(Value::String(text.clone()));
+        McpOutcome::Done {
+            answer,
+            text,
+            refused,
+            post,
+        }
     }
 
     fn with_session_key(&self, params: Value) -> Value {
@@ -331,10 +352,26 @@ impl<'w> Branch<'_, '_, 'w> {
     }
 
     /// Squash everything written on the branch onto main as one commit.
-    pub fn land(self, title: &str) -> McpOutcome<'w> {
+    ///
+    /// The branch is still there afterwards, so a land that was held at its
+    /// `PreToolUse` or refused by the tool is issued again with
+    /// [`Branch::land_again`].
+    pub fn land(&self, title: &str) -> McpOutcome<'w> {
         let params = self
             .mcp
             .write_params(json!({ "branch": self.name }), title, None);
+        *self.landed_with.borrow_mut() = Some(params.clone());
+        self.mcp.wrapped("branch_land", params)
+    }
+
+    /// The model issues the same land again, which is what it does after
+    /// reading what stopped the first one.
+    pub fn land_again(&self) -> McpOutcome<'w> {
+        let params = self
+            .landed_with
+            .borrow()
+            .clone()
+            .expect("a land is issued again only after one was issued");
         self.mcp.wrapped("branch_land", params)
     }
 
@@ -354,11 +391,43 @@ impl<'w> McpOutcome<'w> {
         }
     }
 
+    /// The tool's answer as the model reads it, failing the test when the call
+    /// never ran.
+    ///
+    /// The text rather than [`McpOutcome::json`] for the answers that are not
+    /// JSON at all, and for asking whether a word reached the model however the
+    /// answer is shaped.
+    pub fn text(&self) -> &str {
+        match self {
+            McpOutcome::Done { text, .. } => text,
+            McpOutcome::Held(_) => panic!("the call was stopped, so the tool answered nothing"),
+        }
+    }
+
+    /// What the tool said when it refused, or `None` when it did the work.
+    ///
+    /// A refusal is an answer with `is_error` set, which is how `tool_failure`
+    /// shapes every operation failure; the text is the message the model reads,
+    /// naming what it can do about it.
+    pub fn refusal(&self) -> Option<&str> {
+        match self {
+            McpOutcome::Done { text, refused, .. } => refused.then_some(text.as_str()),
+            McpOutcome::Held(_) => panic!("the call was stopped, so the tool answered nothing"),
+        }
+    }
+
     /// Check the answer to the `PostToolUse` that reported the tool's text.
     pub fn assert_post(self, check: impl FnOnce(&Answer<'w>)) -> Self {
         match self {
-            McpOutcome::Done { answer, post } => McpOutcome::Done {
+            McpOutcome::Done {
                 answer,
+                text,
+                refused,
+                post,
+            } => McpOutcome::Done {
+                answer,
+                text,
+                refused,
                 post: post.assert(check),
             },
             McpOutcome::Held(_) => panic!("the call was stopped, so there was no PostToolUse"),
@@ -366,19 +435,12 @@ impl<'w> McpOutcome<'w> {
     }
 
     /// Require that the call ran and the tool did the work.
-    ///
-    /// A tool that refused answers a message rather than the JSON it reports on
-    /// success, which is what this tells apart.
     pub fn expect_ok(self) -> Self {
-        match &self {
-            McpOutcome::Held(_) => panic!("the call was stopped before the tool ran"),
-            McpOutcome::Done { answer, .. } => {
-                assert!(
-                    !answer.is_string(),
-                    "the tool refused the call: {}",
-                    answer.as_str().unwrap_or_default()
-                );
-            }
+        if let McpOutcome::Held(_) = &self {
+            panic!("the call was stopped before the tool ran");
+        }
+        if let Some(refusal) = self.refusal() {
+            panic!("the tool refused the call: {refusal}");
         }
         self
     }

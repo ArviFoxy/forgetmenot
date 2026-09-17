@@ -115,13 +115,44 @@ impl World {
             .unwrap_or_else(|| panic!("the server has seen no context {key}"))
     }
 
-    /// What the statistics recorded about one memory's deliveries: one row per
-    /// memory that was ever delivered or fetched, so no row at all when nothing
-    /// about it was ever sent anywhere.
+    /// The body one memory has in the store now, read back through the API the
+    /// way anything outside the server reads it.
+    ///
+    /// What a scenario wrote through a tool and what the store holds are two
+    /// different things, and this is the second: a write that was refused, or
+    /// landed with the wrong text, shows here and nowhere else.
+    pub fn memory_body(&self, id: &str) -> String {
+        let (status, body) = self.api("GET", &format!("/api/memories/{id}"), None);
+        assert_eq!(status, 200, "the memory {id} must be readable, got {body}");
+        body["body"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a memory answers with its body as text, got {body}"))
+            .to_string()
+    }
+
+    /// Everything the statistics recorded for one memory, one row per event
+    /// that delivered, withdrew or skipped it, oldest first.
+    ///
+    /// The log rather than the counts, so a scenario can say which event sent
+    /// what and in which order; [`World::stats_memory`] has the totals.
+    pub fn deliveries_of(&self, memory_id: &str) -> Vec<Value> {
+        let rows = self
+            .server
+            .stats()
+            .deliveries_of(memory_id)
+            .expect("the statistics are readable");
+        rows.into_iter()
+            .map(|row| serde_json::to_value(row).expect("a statistics row is JSON"))
+            .collect()
+    }
+
+    /// What the statistics counted for one memory: one row per memory that was
+    /// ever delivered or fetched, so no row at all when nothing about it was
+    /// ever sent anywhere.
     ///
     /// Read from the statistics reader, which flushes what the answered events
     /// queued before it answers.
-    pub fn stats_deliveries_of(&self, memory_id: &str) -> Vec<Value> {
+    pub fn stats_memory(&self, memory_id: &str) -> Vec<Value> {
         let rows = self
             .server
             .stats()

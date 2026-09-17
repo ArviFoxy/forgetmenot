@@ -43,6 +43,9 @@ pub struct Session<'w> {
     session_id: String,
     /// The subagent this is, or `None` for a session's own context.
     agent: Option<Agent>,
+    /// The answer to the `SubagentStart` that opened this context, for a
+    /// subagent; `None` for a session's own context, which nobody opens.
+    start_answer: Option<Answer<'w>>,
     transcript: PathBuf,
     state: RefCell<State>,
 }
@@ -115,6 +118,7 @@ impl<'w> Session<'w> {
             machine: machine.to_string(),
             session_id: session_id.to_string(),
             agent: None,
+            start_answer: None,
             transcript,
             state: RefCell::new(State::new()),
         }
@@ -277,11 +281,12 @@ impl<'w> Session<'w> {
             agent_id: agent_id.clone(),
             agent_type: agent_type.to_string(),
         };
-        let child = Session {
+        let mut child = Session {
             world: self.world,
             machine: self.machine.clone(),
             session_id: self.session_id.clone(),
             agent: Some(agent.clone()),
+            start_answer: None,
             transcript: subagent_transcript(&self.transcript, &agent_id),
             state: RefCell::new(State {
                 cwd: self.state.borrow().cwd.clone(),
@@ -302,7 +307,19 @@ impl<'w> Session<'w> {
         let event = payloads::subagent_start(&common);
         let answer = self.post(&event, Some(&cut(task)));
         child.absorb(&answer);
+        child.start_answer = Some(Answer::new(self.world, event, answer));
         child
+    }
+
+    /// The answer to the `SubagentStart` that opened this subagent: what the
+    /// child's context was delivered before it did anything at all.
+    ///
+    /// The event is the parent's, so it is not among the child's own answers;
+    /// this is the only place it can be read.
+    pub fn start_answer(&self) -> &Answer<'w> {
+        self.start_answer
+            .as_ref()
+            .expect("only a subagent is opened by a SubagentStart")
     }
 
     /// The MCP tools, called the way Claude Code calls them.
@@ -558,6 +575,12 @@ impl<'s, 'w> ToolCall<'s, 'w> {
     /// Whether the call goes ahead.
     pub fn allowed(&self) -> bool {
         self.answer.allowed()
+    }
+
+    /// The answer to the `PreToolUse`, for the checks a scenario makes after
+    /// the call rather than inside [`ToolCall::assert`].
+    pub fn answer(&self) -> &Answer<'w> {
+        &self.answer
     }
 
     /// The answer to the `PreToolUse`.

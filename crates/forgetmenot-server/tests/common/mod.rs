@@ -770,8 +770,13 @@ pub fn write_transcript(path: &Path, context_tokens: u64, minimum_bytes: u64) {
     file.flush().expect("the transcript flushes");
 }
 
-/// Write a transcript that names its session `title`, padded to at least
-/// `minimum_bytes`, whose last assistant message reports `context_tokens`.
+/// Write the transcript of the session `session_id`, named `title`, padded to
+/// at least `minimum_bytes`, whose last assistant message reports
+/// `context_tokens`.
+///
+/// The title line carries the session id Claude Code wrote it for, so a caller
+/// that writes this for a session of its own gives its own id: a transcript
+/// whose title names another session is a file Claude Code never writes.
 ///
 /// The `custom-title` line is the second line of the file, so only a reader
 /// that covers the whole transcript finds it: a reader that takes the tail of a
@@ -786,6 +791,7 @@ pub fn write_transcript(path: &Path, context_tokens: u64, minimum_bytes: u64) {
 /// by accident, fails there rather than passing silently.
 pub fn write_transcript_with_custom_title(
     path: &Path,
+    session_id: &str,
     title: &str,
     context_tokens: u64,
     minimum_bytes: u64,
@@ -800,9 +806,10 @@ pub fn write_transcript_with_custom_title(
             .unwrap_or_else(|error| panic!("creating {} failed: {error}", path.display())),
     );
     let quoted_title = Value::String(title.to_string());
+    let quoted_session = Value::String(session_id.to_string());
     let opening = format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"the first prompt\"}}}}\n\
-         {{\"type\":\"custom-title\",\"customTitle\":{quoted_title},\"sessionId\":\"session-1\"}}\n"
+         {{\"type\":\"custom-title\",\"customTitle\":{quoted_title},\"sessionId\":{quoted_session}}}\n"
     );
     file.write_all(opening.as_bytes())
         .expect("the transcript writes");

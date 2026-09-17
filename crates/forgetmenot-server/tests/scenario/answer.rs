@@ -109,6 +109,18 @@ impl<'w> Answer<'w> {
         self.text().unwrap_or_default().is_empty()
     }
 
+    /// Whether `needle` is somewhere in the text the answer carries, for the
+    /// scenarios about a word that is in one version of a memory and not in
+    /// another. An answer with no text carries no needle.
+    pub fn text_contains(&self, needle: &str) -> bool {
+        self.text().unwrap_or_default().contains(needle)
+    }
+
+    /// Whether `needle` is nowhere in the text the answer carries.
+    pub fn text_lacks(&self, needle: &str) -> bool {
+        !self.text_contains(needle)
+    }
+
     /// The length of the answer's text as Claude Code measures it, in UTF-16
     /// code units, which is what its own limit is compared against.
     pub fn chars(&self) -> usize {

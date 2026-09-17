@@ -2206,8 +2206,8 @@ fn a_scope_the_agent_turned_on_is_forgotten_from_the_last_events_tokens() {
 /// Detects a subagent that inherits its parent's activation along with the
 /// scope: the two contexts have their own sizes, so a count taken over from the
 /// parent would drop a rule the subagent was given a moment ago. Here the
-/// parent's count is 1500 tokens past its rule at the subagent's first event,
-/// and the subagent's own count has 500 tokens to run at its second.
+/// parent's count is 2000 tokens past its rule at the subagent's own first
+/// event, which is the event the subagent's count starts at.
 #[test]
 fn a_subagent_counts_an_inherited_scope_from_its_own_first_event() {
     let server = TestServer::start(store_forgetting_widgets(), |_| {});
@@ -2228,7 +2228,7 @@ fn a_subagent_counts_an_inherited_scope_from_its_own_first_event() {
     let (_, next) = server.hook("alpha", Some(3_000), &in_subagent);
     assert!(
         !withdraws_the_widget_rule(&next),
-        "500 tokens into the subagent's own count the rule is still in force, got {next}"
+        "the subagent's own count starts at this event, so the rule is in force, got {next}"
     );
 }
 

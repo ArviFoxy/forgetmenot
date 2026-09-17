@@ -141,8 +141,10 @@ pub struct Shown {
     /// The blob id of the file that was delivered, as hex.
     pub version: String,
     pub form: Form,
-    /// The context size when it was delivered, absent when the client could not
-    /// read one; staleness cannot be judged without it.
+    /// The context size the staleness of this delivery is counted from, absent
+    /// while no event of this context has reported one. Staleness cannot be
+    /// judged without it; the first event that carries a size fills it in, in
+    /// [`ContextState::note_tokens`].
     pub tokens: Option<u64>,
 }
 
@@ -218,6 +220,35 @@ impl ContextState {
         }
     }
 
+    /// Record that an event of this context reported `tokens` as its context
+    /// size, and take that size as the baseline of everything here that has
+    /// none.
+    ///
+    /// A count in tokens starts at the first event of this context that carried
+    /// a size, so this is where anything recorded without one gets its baseline:
+    /// a delivery made where nothing reported a size, which is a `memory_get`
+    /// fetch or a write by the context itself, and a scope with a `forget` rule
+    /// that was turned on the same way or inherited from a parent whose sizes
+    /// are not this context's. Until then neither can be counted at all: a
+    /// staleness or a forgetting measured from a size nobody read is measured
+    /// from nothing.
+    ///
+    /// The one place a missing baseline is decided, so that a delivery and a
+    /// scope answer for it the same way.
+    pub fn note_tokens(&mut self, tokens: u64, catalog: &Catalog) {
+        self.tokens = Some(tokens);
+        for shown in self.delivered.values_mut() {
+            if shown.tokens.is_none() {
+                shown.tokens = Some(tokens);
+            }
+        }
+        for scope in &self.active {
+            if catalog.forget_rule(scope).is_some() {
+                self.activated_at.entry(scope.clone()).or_insert(tokens);
+            }
+        }
+    }
+
     /// Record that `scope` was activated in this context at `tokens` context
     /// tokens: a trigger matched for it, or a tool call turned it on.
     ///
@@ -249,7 +280,8 @@ impl ContextState {
     /// and a write by the context itself all record the same thing: the version
     /// and the form come from the catalog entry, never from what a caller asked
     /// for. `tokens` is the context size at that moment, absent where nothing
-    /// reports one.
+    /// reports one, in which case the count starts at the next event that does:
+    /// see [`ContextState::note_tokens`].
     pub fn note_shown(&mut self, memory: &MemoryEntry, tokens: Option<u64>) {
         self.delivered.insert(
             memory.id.clone(),

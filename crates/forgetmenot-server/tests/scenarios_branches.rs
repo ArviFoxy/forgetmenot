@@ -10,7 +10,7 @@
 mod common;
 mod scenario;
 
-use scenario::{Store, World};
+use scenario::{McpOutcome, Store, World};
 
 /// The machine these scenarios run on.
 const ALPHA: &str = "alpha";
@@ -99,14 +99,15 @@ fn a_branch_is_invisible_until_it_lands_and_then_reaches_every_other_context() {
             "the memory created on the branch is newly due here"
         );
         assert!(
-            answer.text().unwrap_or_default().contains(BRANCH_WORD),
+            answer.text_contains(BRANCH_WORD),
             "what arrives must be the text the branch carried"
         );
     });
 
     let child = other.subagent("general-purpose", "Check the bench wiring");
     assert!(
-        child.model_saw_full("bench-power") && child.model_saw_full(BRANCH_MEMORY),
+        child.start_answer().delivers_full("bench-power")
+            && child.start_answer().delivers_full(BRANCH_MEMORY),
         "a context created after the land is given the landed store, not the one before it"
     );
 }
@@ -120,6 +121,12 @@ fn a_branch_is_invisible_until_it_lands_and_then_reaches_every_other_context() {
 /// machine's session looks like from here. The two changes cover the same lines,
 /// so the land cannot merge them and must refuse, naming the file so that the
 /// model can write the version it wants on the branch and land again.
+///
+/// The sequence is the one a session really meets, and it takes two calls: the
+/// same change on main that makes the land conflict is a changed critical
+/// memory the writer has not been given, so the land's own `PreToolUse` holds
+/// it and delivers the rule, and only the land the model issues after reading
+/// it reaches the tool and is refused.
 ///
 /// What the other session is then given is the point: the store still holds the
 /// version written on main, so the rewrite arrives in full and the branch's word
@@ -145,23 +152,33 @@ fn a_conflicting_land_is_refused_and_delivers_nothing() {
 
     world.rewrite_memory("bench-power", OUTSIDE_BENCH_POWER);
 
-    // The writer meets the change made on main at the end of its turn, which is
-    // an event that stops nothing, so the land that follows is refused for the
-    // conflict and not held for the rule. That a changed critical memory stops
-    // the next tool call is `scenarios_ported`'s subject, not this one.
-    writer
-        .says("The branch is written; landing it now.")
-        .assert(|answer| assert!(answer.delivers_full("bench-power")));
+    // The change on main is what makes the land conflict, and it is also a
+    // changed critical memory the writer has not seen, so the land's own
+    // `PreToolUse` is the event that carries it and the call is held. The model
+    // reads it and issues the land again, which is the call that reaches the
+    // tool.
+    let held = branch.land("say what the meter reads");
+    let McpOutcome::Held(stopped) = &held else {
+        panic!("the change on main must stop the land's own call before the tool runs")
+    };
+    assert!(
+        stopped.delivers_full("bench-power"),
+        "the held call must carry the version written on main, which is what stopped it"
+    );
 
-    let refused = branch.land("say what the meter reads");
+    let refused = branch.land_again();
     let message = refused
-        .json()
-        .as_str()
-        .unwrap_or_else(|| panic!("a land that conflicts must refuse, got {}", refused.json()))
+        .refusal()
+        .unwrap_or_else(|| panic!("a land that conflicts must refuse, got {}", refused.text()))
         .to_string();
     assert!(
         message.contains("memories/bench-power.md"),
         "the refusal must name the file the two changes disagree about, got {message:?}"
+    );
+    assert_eq!(
+        world.memory_body("bench-power"),
+        OUTSIDE_BENCH_POWER,
+        "a refused land writes nothing, so the store still holds what main said"
     );
 
     other.prompt("carry on where we left off").assert(|answer| {
@@ -170,7 +187,7 @@ fn a_conflicting_land_is_refused_and_delivers_nothing() {
             "the store holds the version written on main, and this context holds the older one"
         );
         assert!(
-            !answer.text().unwrap_or_default().contains(BRANCH_WORD),
+            answer.text_lacks(BRANCH_WORD),
             "the land wrote nothing, so no word of the branch may reach another session"
         );
     });

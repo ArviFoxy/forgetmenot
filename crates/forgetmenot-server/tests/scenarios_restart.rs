@@ -119,9 +119,14 @@ fn names_and_statistics_survive_a_restart() {
         json!(SESSION_TITLE),
         "the name the page shows must be the one the session was given"
     );
-    assert!(
-        !world.stats_deliveries_of("bench-power").is_empty(),
-        "what was delivered before the restart is still counted after it"
+    let deliveries = world.deliveries_of("bench-power");
+    assert_eq!(
+        deliveries
+            .iter()
+            .map(|row| row["event"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["SessionStart"],
+        "the delivery made before the restart is in the log after it, got {deliveries:?}"
     );
 }
 

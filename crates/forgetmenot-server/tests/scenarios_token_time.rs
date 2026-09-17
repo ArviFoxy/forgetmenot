@@ -296,17 +296,21 @@ fn a_scope_turned_on_by_mcp_counts_from_the_last_events_tokens() {
     });
 }
 
-/// Detects a subagent that counts an inherited forgetting scope from its
-/// parent's trigger: the child's context has a size of its own, unrelated to the
-/// parent's, so counting the parent's number against the child's size forgets
-/// the scope at an arbitrary moment in the child, or never.
+/// Detects a subagent that counts an inherited forgetting scope from a size
+/// that is not its own: from the parent's trigger, or from the size the
+/// `SubagentStart` reports, which the client read from the parent's transcript.
+/// The child's transcript begins empty, so its own sizes start near the size a
+/// session opens at and have nothing to do with the parent's; counting the
+/// parent's number against them forgets the scope at an arbitrary moment in the
+/// child, or never.
 ///
-/// The parent fires the trigger at 10 000 and spawns the child at 10 900, which
-/// is the child's first event and the size it is counted from. The child's own
-/// events are then chosen to separate the two counts: at 11 500 the growth since
-/// the parent's trigger is 1 500, past the threshold, while the growth since the
-/// child's own start is 600, so a child that kept the scope is counting its own
-/// start. At 11 900 it is 1 000 past that start and the scope goes.
+/// The parent fires the trigger at 10 000 and spawns the child at 10 900. The
+/// child's count starts at its own first event, which reports the size a session
+/// opens at, 10 000: at 10 999 the growth is 999, one short of the threshold, and
+/// at 11 000 it is exactly the threshold and the scope goes. A count started at
+/// the 10 900 the `SubagentStart` reported would keep the scope at 11 000 and
+/// drop it at 11 900; one started at the parent's 10 000 trigger would drop it
+/// as soon as the child grew past 11 000 whatever the child had done.
 ///
 /// The parent is asked afterwards at 10 999 and 11 000: the child's events are
 /// not the parent's, and the parent goes off at the threshold past its own
@@ -326,20 +330,28 @@ fn a_subagent_counts_a_forgetting_scope_from_its_own_first_event() {
     parent.at_tokens(START + 900);
     let child = parent.subagent("general-purpose", "Survey the bench wiring");
     assert!(
-        child.model_saw_full(PASSING_RULE),
+        child.start_answer().delivers_full(PASSING_RULE),
         "the child copied the parent's scopes, so the rule is due at its start"
     );
 
-    child.at_tokens(START + 1_500);
+    child.at_tokens(START);
     child.prompt("start with the rail").assert(|answer| {
         assert!(
             !answer.retracts(PASSING_RULE),
-            "600 tokens past the child's own first event, the scope is still on for it"
+            "the child's first own event is where its count starts, not where it ends"
         );
     });
 
-    child.at_tokens(START + 900 + THRESHOLD);
+    child.at_tokens(START + THRESHOLD - 1);
     child.prompt("carry on").assert(|answer| {
+        assert!(
+            !answer.retracts(PASSING_RULE),
+            "999 tokens past the child's own first event, the scope is still on for it"
+        );
+    });
+
+    child.at_tokens(START + THRESHOLD);
+    child.prompt("and the rail again").assert(|answer| {
         assert!(
             answer.retracts(PASSING_RULE),
             "the threshold past the child's own first event, the scope goes off for it"
@@ -401,9 +413,8 @@ fn a_shrunk_memory_reminded_later_arrives_in_its_new_form() {
             answer.delivers_full("bench-power"),
             "the threshold past the event that met the shrink, the rule is stale"
         );
-        let text = answer.text().unwrap_or_default();
         assert!(
-            !text.contains(DROPPED_LINE),
+            answer.text_lacks(DROPPED_LINE),
             "the reminder must carry the body the store holds, not the one delivered before it"
         );
     });

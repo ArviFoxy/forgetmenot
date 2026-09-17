@@ -245,7 +245,7 @@ fn issue_14_a_memory_that_only_shrank_is_not_delivered_again() {
         );
     });
 
-    let rows = world.stats_deliveries_of("bench-power");
+    let rows = world.stats_memory("bench-power");
     assert_eq!(
         rows.len(),
         1,

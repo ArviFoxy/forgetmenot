@@ -365,6 +365,29 @@ pub struct LatencyRow {
     pub max_us: u64,
 }
 
+/// One delivery of one memory, as the log wrote it, with the event it belongs
+/// to.
+///
+/// A row per event rather than per memory, so what a memory cost one context
+/// over a session can be read back in the order it happened; the counts over the
+/// whole log are [`MemoryStatsRow`]'s.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MemoryDeliveryRow {
+    /// When the event was answered, as the log wrote it.
+    pub ts: String,
+    /// `<machine>/<session-id>[/<agent-id>]`, the key the MCP tools take.
+    pub session_key: String,
+    /// The hook event this delivery was made at.
+    pub event: String,
+    pub kind: String,
+    /// `full` or `index`, and `none` for a withdrawal.
+    pub form: String,
+    /// `new`, `changed`, `stale`, [`SHRUNK_REASON`], or [`RETRACTED_PREFIX`]
+    /// and why it was withdrawn.
+    pub reason: String,
+    pub bytes: u64,
+}
+
 /// What one session was given, in bytes, with the two forms kept apart.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SessionBytesRow {
@@ -432,6 +455,54 @@ impl StatsReader {
                 .fetched_full = count.max(0) as u64;
         }
         Ok(rows.into_values().collect())
+    }
+
+    /// Every delivery recorded for one memory, oldest first.
+    ///
+    /// The log as it was written, one row per event that delivered, withdrew or
+    /// skipped this memory, so an order and a repeat are visible where the
+    /// counts of [`StatsReader::memory_stats`] are not.
+    pub fn deliveries_of(&self, memory: &str) -> Result<Vec<MemoryDeliveryRow>, StatsError> {
+        let rows = self.rows(
+            "SELECT hook_events.ts, hook_events.machine, hook_events.session_id,
+                    hook_events.agent, hook_events.event,
+                    deliveries.kind, deliveries.form, deliveries.reason, deliveries.bytes
+             FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id
+             WHERE deliveries.memory = ?1
+             ORDER BY deliveries.rowid",
+            params![memory],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(ts, machine, session_id, agent, event, kind, form, reason, bytes)| {
+                    MemoryDeliveryRow {
+                        ts,
+                        // The constructor prints the agent only when there is a
+                        // subagent to name, which is the form the MCP tools take.
+                        session_key: ContextKey::subagent(machine, session_id, agent).to_string(),
+                        event,
+                        kind,
+                        form,
+                        reason,
+                        bytes: bytes.max(0) as u64,
+                    }
+                },
+            )
+            .collect())
     }
 
     /// What each trigger pattern did, sorted by scope, field and pattern.
@@ -924,6 +995,88 @@ fn insert_tool_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One hook event with the deliveries given, written into `connection`.
+    fn record(
+        connection: &mut Connection,
+        key: &ContextKey,
+        event: &str,
+        deliveries: Vec<(&str, &str)>,
+    ) {
+        insert_hook_event(
+            connection,
+            &HookEventRecord {
+                ts: Utc::now(),
+                machine: key.machine.clone(),
+                session_id: key.session_id.clone(),
+                agent: key.agent.clone(),
+                event: event.to_string(),
+                context_tokens: Some(10_000),
+                latency_us: 1,
+                decision: Decision::Context,
+                triggers: Vec::new(),
+                forgotten: Vec::new(),
+                deliveries: deliveries
+                    .into_iter()
+                    .map(|(memory, reason)| Delivery {
+                        memory: memory.to_string(),
+                        kind: "critical".to_string(),
+                        form: "full".to_string(),
+                        reason: reason.to_string(),
+                        bytes: 100,
+                    })
+                    .collect(),
+            },
+        )
+        .expect("the event is written");
+    }
+
+    /// Detects a delivery log that answers for the wrong memory, loses a
+    /// repeat, or reports the events in an order that is not the order they
+    /// were written: the log is read to see what one memory cost one context
+    /// over a session, and each of those makes it say something else.
+    ///
+    /// Expectation source: the rows written here, which are the only ones in
+    /// the database.
+    #[test]
+    fn the_delivery_log_of_one_memory_is_its_own_events_in_the_order_they_happened() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let path = directory.path().join("stats.sqlite3");
+        let mut connection = open_connection(&path).expect("the database opens");
+        let key = ContextKey::subagent("alpha", "session-1", "agent-7");
+        record(
+            &mut connection,
+            &key,
+            "SubagentStart",
+            vec![("bench-power", "new"), ("widget-naming", "new")],
+        );
+        record(
+            &mut connection,
+            &key,
+            "PreToolUse",
+            vec![("bench-power", "stale")],
+        );
+        drop(connection);
+
+        let rows = StatsReader::open(&path)
+            .expect("the database is readable")
+            .deliveries_of("bench-power")
+            .expect("the log is readable");
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.event.as_str(), row.reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("SubagentStart", "new"), ("PreToolUse", "stale")],
+            "the log must carry every event of this memory, oldest first, got {rows:?}"
+        );
+        assert_eq!(
+            rows[0].session_key,
+            key.to_string(),
+            "a delivery names the context it was made into, got {:?}",
+            rows[0]
+        );
+    }
 
     /// Detects a percentile off by one rank, which is invisible in a report but
     /// turns a latency budget into the wrong answer: with a hundred

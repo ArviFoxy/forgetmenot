@@ -117,6 +117,7 @@ fn a_session_start_with_a_forty_megabyte_transcript_stays_under_the_limit_and_re
     let session = world.claude(ALPHA).session();
     common::write_transcript_with_custom_title(
         session.transcript(),
+        session.session_id(),
         TRANSCRIPT_TITLE,
         CONTEXT_TOKENS,
         TRANSCRIPT_BYTES,

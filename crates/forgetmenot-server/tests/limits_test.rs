@@ -37,6 +37,10 @@ const CLIENT_LIMIT: Duration = Duration::from_millis(30);
 /// It happens once per session, which is what buys it the larger budget.
 const SESSION_START_CLIENT_LIMIT: Duration = Duration::from_millis(200);
 
+/// The session the recorded payloads belong to, which is the session whose
+/// transcript the timed runs read.
+const SESSION_ID: &str = "session-1";
+
 /// The name the session start test gives its session. Distinctive, so that a
 /// name read back cannot have come from anywhere else in the transcript, the
 /// event or the store.
@@ -212,6 +216,7 @@ fn one_session_start_client_run_with_a_40_megabyte_transcript_stays_under_the_li
     let transcript = directory.path().join("session-1.jsonl");
     write_transcript_with_custom_title(
         &transcript,
+        SESSION_ID,
         SESSION_TITLE,
         CONTEXT_TOKENS,
         TRANSCRIPT_BYTES,

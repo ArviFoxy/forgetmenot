@@ -51,7 +51,7 @@ fn events_named(world: &World, event: &str) -> u64 {
 /// The one statistics row for a memory, failing when the memory was never sent
 /// anywhere.
 fn delivery_row(world: &World, memory: &str) -> Value {
-    let rows = world.stats_deliveries_of(memory);
+    let rows = world.stats_memory(memory);
     assert_eq!(
         rows.len(),
         1,
@@ -204,7 +204,7 @@ fn a_subagents_hold_leaves_the_parents_next_call_alone() {
         "audit the widget part numbers on the brackets",
     );
     assert!(
-        child.model_saw_full("widget-naming"),
+        child.start_answer().delivers_full("widget-naming"),
         "the task named a widget, so the child starts holding the rule"
     );
 
