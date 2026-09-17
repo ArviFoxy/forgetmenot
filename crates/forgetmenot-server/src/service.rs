@@ -17,7 +17,9 @@ use git2::Oid;
 
 use crate::store::branch::{BranchName, BranchRecord};
 use crate::store::catalog::{Catalog, LoadError};
-use crate::store::git::{CommitOutcome, FileChange, FileConflict, GitError, GitRepo, LandAttempt};
+use crate::store::git::{
+    BlameLine, CommitOutcome, FileChange, FileConflict, GitError, GitRepo, LandAttempt,
+};
 use crate::store::settings::SETTINGS_PATH;
 use crate::store::validate::{self, ValidationError};
 use crate::store::{MemoryId, ScopeId};
@@ -161,6 +163,17 @@ impl Store {
             .read()
             .expect("the catalog lock is not poisoned")
             .clone()
+    }
+
+    /// Every line of one memory's file at the head of `main`, with the commit
+    /// that last changed it.
+    ///
+    /// The whole file as it is stored, frontmatter included, so a line number is
+    /// the line number in the file.
+    pub async fn blame_memory(&self, id: &MemoryId) -> Result<Vec<BlameLine>, StoreError> {
+        let path = id.repository_path();
+        self.with_repository(move |repository| repository.blame(&path))
+            .await
     }
 
     /// Write a set of documents as one commit.

@@ -35,9 +35,11 @@ const MACHINE: &str = "alpha";
 const SOME_TOKENS: Option<u64> = Some(10_000);
 
 /// The memory management tools, which read and change the store.
-const MEMORY_TOOLS: [&str; 7] = [
+const MEMORY_TOOLS: [&str; 9] = [
     "memory_index",
     "memory_get",
+    "memory_history",
+    "memory_blame",
     "memory_put",
     "memory_replace_text",
     "memory_set_fields",
@@ -1068,6 +1070,214 @@ fn a_memory_fetched_through_mcp_for_a_session_is_recorded_as_delivered_and_as_a_
     assert_eq!(
         fetched.fetched_full, 1,
         "the row must count the fetch under the fetch tool's name, got {fetched:?}"
+    );
+}
+
+/// Detects a `memory_history` that drops a commit, orders the commits oldest
+/// first, or names the wrong author: a model reads how old a rule is and who
+/// wrote it off the newest entry, so either fault sends it back to the dates
+/// written into the memory's text, which is what this tool replaces. Detects a
+/// second history implementation behind MCP as well, by holding the answer to
+/// the one the API route gives. Source: the ticket for issue #10.
+#[test]
+fn memory_history_reports_the_commits_that_touched_the_memory_newest_first() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let first_writer = "alpha/session-1";
+    let second_writer = "alpha/session-2";
+    let seed = store_revision(&server);
+
+    let first_edit_message = "say which rail the meter reads";
+    let edited = session.call(
+        "memory_replace_text",
+        json!({
+            "session_key": first_writer,
+            "id": "bench-power",
+            "old_string": "that the rail reads zero.",
+            "new_string": "that the output rail reads zero.",
+            "message": first_edit_message
+        }),
+    );
+    assert_ne!(
+        edited.is_error,
+        Some(true),
+        "the first edit must be made, got {}",
+        tool_text(&edited)
+    );
+    let first_edit = store_revision(&server);
+
+    let second_edit_message = "keep the meter check first";
+    let edited = session.call(
+        "memory_replace_text",
+        json!({
+            "session_key": second_writer,
+            "id": "bench-power",
+            "old_string": "is the part that matters.",
+            "new_string": "is the part that matters most.",
+            "message": second_edit_message
+        }),
+    );
+    assert_ne!(
+        edited.is_error,
+        Some(true),
+        "the second edit must be made, got {}",
+        tool_text(&edited)
+    );
+    let second_edit = store_revision(&server);
+
+    let answer = tool_json(&session.call("memory_history", json!({ "id": "bench-power" })));
+
+    let commits = answer.as_array().expect("a history is an array of commits");
+    let oids: Vec<&str> = commits
+        .iter()
+        .map(|commit| commit["oid"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        oids,
+        vec![second_edit.as_str(), first_edit.as_str(), seed.as_str()],
+        "the history must be the seed commit and the two edits, newest first, got {answer}"
+    );
+    assert_eq!(
+        commits[0]["author"],
+        json!(second_writer),
+        "the newest commit must be authored by the session that made it, got {answer}"
+    );
+    assert_eq!(
+        commits[1]["author"],
+        json!(first_writer),
+        "the commit before it must be authored by the session that made it, got {answer}"
+    );
+    assert_eq!(
+        commits[0]["title"],
+        json!(second_edit_message),
+        "the newest commit must carry the message its write was given, got {answer}"
+    );
+    assert_eq!(
+        commits[1]["title"],
+        json!(first_edit_message),
+        "the commit before it must carry the message its write was given, got {answer}"
+    );
+    for commit in commits {
+        let time = commit["time"].as_str().unwrap_or_default();
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(time).is_ok(),
+            "every commit must carry the time it was made, got {time:?} in {answer}"
+        );
+    }
+    assert_eq!(
+        answer,
+        Value::Array(history(&server, "bench-power")),
+        "the tool must answer with the history the API route answers with, got {answer}"
+    );
+}
+
+/// Detects a `memory_blame` that attributes a line to the wrong commit: a line
+/// carrying the commit of an edit it was not part of, or one that never leaves
+/// the commit the file was seeded by, makes "who wrote this sentence" wrong
+/// while looking right, which is worse than no answer. Detects line numbers that
+/// do not count the file's own lines from one as well, which would point the
+/// reader at a different line than the one blamed. Source: the ticket for issue
+/// #10.
+#[test]
+fn memory_blame_attributes_each_line_to_the_commit_that_last_set_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let writer = "alpha/session-4";
+    let seed = store_revision(&server);
+
+    let edited = session.call(
+        "memory_replace_text",
+        json!({
+            "session_key": writer,
+            "id": "bench-power",
+            "old_string": "is the part that matters.",
+            "new_string": "is the part that matters most.",
+            "message": "keep the meter check first"
+        }),
+    );
+    assert_ne!(
+        edited.is_error,
+        Some(true),
+        "the edit must be made, got {}",
+        tool_text(&edited)
+    );
+    let edit = store_revision(&server);
+
+    let answer = tool_json(&session.call("memory_blame", json!({ "id": "bench-power" })));
+
+    let lines = answer["lines"]
+        .as_array()
+        .expect("a blame is an array of lines");
+    let changed = lines
+        .iter()
+        .find(|line| line["text"] == json!("is the part that matters most."))
+        .unwrap_or_else(|| panic!("the edited line must be in the blame, got {answer}"));
+    assert_eq!(
+        changed["oid"],
+        json!(edit),
+        "the edited line must carry the commit that set it, got {changed}"
+    );
+    assert_eq!(
+        changed["author"],
+        json!(writer),
+        "the edited line must carry the session that wrote it, got {changed}"
+    );
+    let untouched = lines
+        .iter()
+        .find(|line| {
+            line["text"]
+                .as_str()
+                .is_some_and(|text| text.contains(BENCH_POWER_BODY))
+        })
+        .unwrap_or_else(|| panic!("the untouched line must be in the blame, got {answer}"));
+    assert_eq!(
+        untouched["oid"],
+        json!(seed),
+        "a line the edit left alone must carry the commit that seeded it, got {untouched}"
+    );
+
+    let file = server.store().file_text("memories/bench-power.md");
+    assert_eq!(
+        lines.len(),
+        file.lines().count(),
+        "the blame must have one line per line of the file, got {answer}"
+    );
+    for (index, text) in file.lines().enumerate() {
+        let number = index + 1;
+        assert_eq!(
+            lines[index]["line"],
+            json!(number),
+            "line {number} of the file must be blamed as line {number}, got {answer}"
+        );
+        assert_eq!(
+            lines[index]["text"],
+            json!(text),
+            "line {number} must carry the text the file has there, got {answer}"
+        );
+    }
+}
+
+/// Detects a `memory_blame` of an id the store has nothing at answering with an
+/// empty blame: a model reading no lines for a memory it misnamed would conclude
+/// the memory has no history rather than that it asked for the wrong one, so the
+/// refusal has to name the id it asked for. Source: the ticket for issue #10.
+#[test]
+fn memory_blame_of_a_memory_the_store_does_not_have_is_refused_naming_the_id() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let refused = session.call("memory_blame", json!({ "id": "bench-power-notes" }));
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a blame of a memory the store does not have must be refused, got {}",
+        tool_text(&refused)
+    );
+    assert!(
+        tool_text(&refused).contains("bench-power-notes"),
+        "the refusal must name the id that was asked for, got {:?}",
+        tool_text(&refused)
     );
 }
 

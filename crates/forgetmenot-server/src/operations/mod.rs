@@ -308,6 +308,41 @@ impl ScopeRow {
     }
 }
 
+/// One line of a memory's file with the commit that last changed it.
+#[derive(Clone, Debug, Serialize)]
+pub struct BlameLine {
+    /// The line's number in the file, counting from one.
+    pub line: usize,
+    /// The commit that last changed the line.
+    pub oid: String,
+    /// ISO 8601.
+    pub time: String,
+    pub author: String,
+    /// The line itself, without its newline.
+    pub text: String,
+}
+
+impl BlameLine {
+    fn of(line: &crate::store::git::BlameLine) -> Self {
+        Self {
+            line: line.line,
+            oid: line.oid.clone(),
+            time: iso8601(line.time),
+            author: line.author.clone(),
+            text: line.text.clone(),
+        }
+    }
+}
+
+/// One memory's file, line by line, with the commit each line came from.
+#[derive(Clone, Debug, Serialize)]
+pub struct MemoryBlame {
+    pub id: MemoryId,
+    /// The blob id of the file the lines were read from.
+    pub version: String,
+    pub lines: Vec<BlameLine>,
+}
+
 /// One commit of one document, with the file as it was and what changed.
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoryEntry {
@@ -1586,6 +1621,24 @@ pub async fn history(
         return Err(OperationError::NotFound(kind.describe(id)));
     }
     Ok(summaries.iter().map(Commit::of).collect())
+}
+
+/// One memory's file at the head of `main`, line by line, with the commit that
+/// last changed each line.
+///
+/// The whole file as it is stored, frontmatter included, so a line number here
+/// is the line number in the file.
+pub async fn memory_blame(state: &AppState, id: &MemoryId) -> Result<MemoryBlame, OperationError> {
+    let catalog = state.store.snapshot().await?;
+    let entry = catalog
+        .memory(id)
+        .ok_or_else(|| OperationError::missing_memory(id))?;
+    let lines = state.store.blame_memory(id).await?;
+    Ok(MemoryBlame {
+        id: id.clone(),
+        version: entry.version.to_string(),
+        lines: lines.iter().map(BlameLine::of).collect(),
+    })
 }
 
 /// One document at one commit, with the change that commit made to it.

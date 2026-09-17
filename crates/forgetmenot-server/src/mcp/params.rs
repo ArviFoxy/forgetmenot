@@ -78,6 +78,14 @@ pub struct MemoryGetParams {
     pub session_key: Option<String>,
 }
 
+/// Which memory's git record to read: its history, or its blame.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MemoryIdParams {
+    /// The memory id, as the index reports it: `widget-naming`, or
+    /// `sessions/<machine>/<session-id>/<name>` for a session's own note.
+    pub id: String,
+}
+
 /// One memory to write.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemoryPutParams {

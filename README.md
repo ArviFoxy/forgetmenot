@@ -120,6 +120,8 @@ Memory tools read and change the store; every change is one commit.
 |---|---|
 | `memory_index` | List memories with their descriptions, kinds and scopes |
 | `memory_get` | Read one memory |
+| `memory_history` | List the commits that changed one memory, newest first, each with its oid, time, author and title |
+| `memory_blame` | Read one memory's file line by line, each line with the oid, time and author of the commit that last changed it |
 | `memory_put` | Create a memory or replace one whole, including any extra metadata keys |
 | `memory_replace_text` | Replace one exact snippet in a body, leaving the rest as it is |
 | `memory_set_fields` | Change the description, kind, scopes, source or extra metadata keys without touching the body |

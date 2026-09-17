@@ -36,8 +36,8 @@ use crate::context::ContextKey;
 use crate::operations::branches::{self, LandRequest};
 use crate::operations::settings::{self as settings_operations, SettingsWriteRequest};
 use crate::operations::{
-    self, CurrentDocument, DeleteRequest, MemoryFilter, MemoryWriteRequest, OperationError,
-    RenameRequest, ReplaceTextRequest, SetFieldsRequest,
+    self, CurrentDocument, DeleteRequest, DocumentKind, MemoryFilter, MemoryWriteRequest,
+    OperationError, RenameRequest, ReplaceTextRequest, SetFieldsRequest,
 };
 use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord};
 use crate::store::branch::BranchName;
@@ -45,9 +45,9 @@ use crate::store::validate::WriteMode;
 use crate::store::{MemoryId, ScopeId};
 use params::{
     BranchCreateParams, BranchLandParams, BranchParams, MemoryDeleteParams, MemoryGetParams,
-    MemoryIndexParams, MemoryPutParams, MemoryRenameParams, MemoryReplaceTextParams,
-    MemorySetFieldsParams, SessionInheritParams, SessionParams, SessionScopeParams,
-    SettingsSetParams, parse_session_key,
+    MemoryIdParams, MemoryIndexParams, MemoryPutParams, MemoryRenameParams,
+    MemoryReplaceTextParams, MemorySetFieldsParams, SessionInheritParams, SessionParams,
+    SessionScopeParams, SettingsSetParams, parse_session_key,
 };
 
 /// What the model is told about this server when it connects.
@@ -56,10 +56,12 @@ use params::{
 /// commits to the store when it meant to change its own scopes, or expects a
 /// scope change to reach everyone.
 const INSTRUCTIONS: &str = "\
-The memory management tools (memory_index, memory_get, memory_put, memory_replace_text, \
-memory_set_fields, memory_rename, memory_delete) read and change the shared store of memories, \
-where every write is one git commit and takes effect in every session the memory's scopes \
-cover. A branch is how several changes land as one commit: branch_create opens one, every write \
+The memory management tools (memory_index, memory_get, memory_history, memory_blame, \
+memory_put, memory_replace_text, memory_set_fields, memory_rename, memory_delete) read and \
+change the shared store of memories, where every write is one git commit and takes effect in \
+every session the memory's scopes cover. memory_history and memory_blame are where the age of a \
+memory and the author of one of its lines come from, rather than any date written into its text. \
+A branch is how several changes land as one commit: branch_create opens one, every write \
 tool takes its name in branch and then changes nothing any session sees, and branch_land \
 squashes the whole branch onto main as a single commit. The settings management tools \
 (settings_get, settings_set) read and change the shared store's behaviour settings, which say \
@@ -81,6 +83,8 @@ inside a subagent.";
 pub const FORGETMENOT_TOOL_NAMES: &[&str] = &[
     "memory_index",
     "memory_get",
+    "memory_history",
+    "memory_blame",
     "memory_put",
     "memory_delete",
     "memory_replace_text",
@@ -195,6 +199,45 @@ impl ToolServer {
         }
         match outcome {
             Ok(document) => json_text(&document),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Memory management family: the shared store of memories, where every write \
+                       is one git commit and takes effect in every session the memory's scopes \
+                       cover. This call only reads. Returns the commits that changed one memory \
+                       as JSON, newest first, each with its oid, time, author and title. Read \
+                       how old a memory is, when it last changed and who wrote it from here, \
+                       never from a date written into its text."
+    )]
+    async fn memory_history(
+        &self,
+        Parameters(params): Parameters<MemoryIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match operations::history(&self.state, DocumentKind::Memory, &params.id).await {
+            Ok(commits) => json_text(&commits),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Memory management family: the shared store of memories, where every write \
+                       is one git commit and takes effect in every session the memory's scopes \
+                       cover. This call only reads. Returns the memory's file line by line as \
+                       JSON, each line with the commit that last changed it: oid, time and \
+                       author, the way git blame does. The whole file as it is stored, \
+                       frontmatter included, so a line number is the line number in the file. \
+                       Read when one line appeared and who wrote it from here, never from a date \
+                       written into the text."
+    )]
+    async fn memory_blame(
+        &self,
+        Parameters(params): Parameters<MemoryIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let id = MemoryId::new(params.id);
+        match operations::memory_blame(&self.state, &id).await {
+            Ok(blame) => json_text(&blame),
             Err(error) => Ok(tool_failure(&error)),
         }
     }

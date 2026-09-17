@@ -12,8 +12,9 @@ use std::path::Path;
 use chrono::{DateTime, TimeZone, Utc};
 use git2::build::CheckoutBuilder;
 use git2::{
-    BranchType, Delta, DiffDelta, DiffFormat, DiffOptions, ErrorCode, Index, IndexEntry, IndexTime,
-    ObjectType, Oid, Repository, RepositoryInitOptions, Signature, Sort, Tree,
+    BlameOptions, BranchType, Delta, DiffDelta, DiffFormat, DiffOptions, ErrorCode, Index,
+    IndexEntry, IndexTime, ObjectType, Oid, Repository, RepositoryInitOptions, Signature, Sort,
+    Tree,
 };
 
 use super::branch::{BranchName, BranchRecord, opening_message, owner_in_message};
@@ -82,6 +83,19 @@ pub struct CommitSummary {
     pub author: String,
     /// The first line of the commit message.
     pub title: String,
+}
+
+/// One line of a file with the commit that last changed it.
+#[derive(Clone, Debug)]
+pub struct BlameLine {
+    /// The line's number in the file, counting from one.
+    pub line: usize,
+    /// The commit that last changed the line.
+    pub oid: String,
+    pub time: DateTime<Utc>,
+    pub author: String,
+    /// The line itself, without its newline.
+    pub text: String,
 }
 
 /// What a successful [`GitRepo::commit_files`] produced.
@@ -281,6 +295,51 @@ impl GitRepo {
             }
         }
         Ok(summaries)
+    }
+
+    /// Every line of `path` at the head of the branch HEAD points at, with the
+    /// commit that last changed it, in line order.
+    ///
+    /// The whole file as it is stored, frontmatter included, so a line number
+    /// here is the line number in the file. The text of each line comes from the
+    /// head revision, and the commit, its time and its author are the ones
+    /// [`GitRepo::log_for_path`] reports for that commit.
+    pub fn blame(&self, path: &str) -> Result<Vec<BlameLine>, GitError> {
+        let head = self.head_oid()?;
+        let mut options = BlameOptions::new();
+        options.newest_commit(head);
+        let blame = self
+            .repository
+            .blame_file(Path::new(path), Some(&mut options))?;
+        let content = self.blob_at(head, path)?.unwrap_or_default();
+        let text = String::from_utf8_lossy(&content);
+        let file_lines: Vec<&str> = text.lines().collect();
+
+        let mut lines = Vec::with_capacity(file_lines.len());
+        for hunk in blame.iter() {
+            let commit = self.repository.find_commit(hunk.final_commit_id())?;
+            let oid = commit.id().to_string();
+            let time = commit_time(&commit);
+            let author = commit.author().name().unwrap_or_default().to_string();
+            for offset in 0..hunk.lines_in_hunk() {
+                let number = hunk.final_start_line() + offset;
+                lines.push(BlameLine {
+                    line: number,
+                    oid: oid.clone(),
+                    time,
+                    author: author.clone(),
+                    // A blame counts lines from one, and a hunk that reaches
+                    // past the file's last line has no text to show.
+                    text: file_lines
+                        .get(number - 1)
+                        .copied()
+                        .unwrap_or_default()
+                        .to_string(),
+                });
+            }
+        }
+        lines.sort_by_key(|line| line.line);
+        Ok(lines)
     }
 
     /// The content of `path` in the revision `commit_oid`.
