@@ -1942,11 +1942,11 @@ pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<Con
 /// [`PromptMode::All`] computes it against an empty record, which is every
 /// critical memory of its scopes in full and every knowledge memory as its
 /// description. Both count staleness from the context size the last event
-/// reported. The rendering is of a plain event: no session start, so neither the
-/// available scopes nor the session key is added, and no file notice, because
-/// the reader of this text is a person looking at a page. A context that is owed
-/// nothing has no text, the way an event that is owed nothing is answered with
-/// nothing.
+/// reported. The text is exactly what the hook would answer: `Due` is rendered
+/// as the next ordinary event and `All` as a session start, with the store's
+/// file notice applied to both, so a person reads the same characters the model
+/// would. A context that is owed nothing has no text, the way an event that is
+/// owed nothing is answered with nothing.
 pub async fn context_prompt(
     state: &AppState,
     key: &ContextKey,
@@ -1985,8 +1985,8 @@ pub async fn context_prompt(
         active: &held.active,
         activated: &[],
         announce_empty_scopes: false,
-        session_start: false,
-        answer_file_threshold: None,
+        session_start: matches!(mode, PromptMode::All),
+        answer_file_threshold: catalog.settings().answer_file_threshold,
     };
     // An event that is owed nothing answers with nothing at all, so a context
     // that is owed nothing has no text: the heading line the renderer opens with

@@ -94,7 +94,7 @@ function summaryCards(summary: Summary): Card[] {
     { label: 'Tokens, last hour', value: formatTokens(summaryTokens(summary, '1h')) },
     { label: 'Tokens, last day', value: formatTokens(summaryTokens(summary, '1d')) },
     { label: 'Tokens, last week', value: formatTokens(summaryTokens(summary, '7d')) },
-    { label: 'Held calls today', value: String(summaryHeld(summary, '1d')) },
+    { label: 'Tool calls stopped today', value: String(summaryHeld(summary, '1d')) },
     { label: 'Live contexts', value: String(summary.live_contexts) },
   ];
 }

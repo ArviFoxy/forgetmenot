@@ -1178,6 +1178,29 @@ fn prompt(server: &TestServer, key: &ContextKey, mode: PromptMode) -> ContextPro
         .unwrap_or_else(|error| panic!("the prompt of {key} must render, got {error}"))
 }
 
+/// Detects a prompt page that shows a person other characters than the model
+/// was sent: a session start rendered without its own lines, or without the
+/// notice the store puts on a long answer. The whole prompt of a context that
+/// has just started is that start's answer, character for character.
+///
+/// Source: the rule that the page shows the text the hook would answer.
+#[test]
+fn the_whole_prompt_of_a_context_that_just_started_is_its_session_starts_answer() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let key = ContextKey::main(MACHINE, "session-1");
+    let (_, started) = server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
+    let answered = additional_context(&started)
+        .expect("a session start of the example store is answered with text")
+        .to_string();
+
+    let whole = prompt(&server, &key, PromptMode::All);
+
+    assert_eq!(
+        whole.text, answered,
+        "the whole prompt must be the very text the session start was answered with"
+    );
+}
+
 /// How many memories one context is recorded as holding.
 fn delivered_count(server: &TestServer, key: &ContextKey) -> usize {
     server
