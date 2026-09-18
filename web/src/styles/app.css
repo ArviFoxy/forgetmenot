@@ -1189,10 +1189,8 @@ table.stats td:first-child {
 pre.diff,
 pre.content,
 pre.prompt {
-  max-height: 60vh;
   margin: 0 0 var(--sl-spacing-medium);
   padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-  overflow: auto;
   border: 1px solid var(--fmn-border);
   border-radius: var(--sl-border-radius-medium);
   background-color: var(--fmn-raised);
