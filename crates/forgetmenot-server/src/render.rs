@@ -40,8 +40,8 @@ pub struct Delivery<'a> {
     /// Whether the store asks for a scope that became active with nothing to
     /// deliver to be named to the agent.
     pub announce_empty_scopes: bool,
-    /// At a session start the model is also told which scopes it can turn on
-    /// and which session key to pass to the MCP tools.
+    /// At a session start the model is also told which session key to pass to
+    /// the MCP tools.
     pub session_start: bool,
     /// The characters of an answer above which Claude Code shows the model a
     /// preview and a file path instead of the text, so the answer has to open
@@ -314,22 +314,10 @@ fn render_body(delivery: &Delivery<'_>) -> Rendered {
         }
     }
 
+    // A session start prints the key the MCP tools take and nothing about the
+    // scopes the session is not in: what is not active is not delivered, not
+    // named, not listed. The tools are where a session asks what else exists.
     if delivery.session_start {
-        let available: Vec<&str> = delivery
-            .catalog
-            .scopes()
-            .filter(|scope| !delivery.active.contains(&scope.id))
-            .map(|scope| scope.id.as_str())
-            .collect();
-        if !available.is_empty() {
-            overhead(
-                &mut text,
-                "== scopes available (session_scope_on <id>) ==\n",
-            );
-            for id in available {
-                overhead(&mut text, &format!("{id}\n"));
-            }
-        }
         overhead(&mut text, &format!("session_key: {}\n", delivery.key));
     }
 

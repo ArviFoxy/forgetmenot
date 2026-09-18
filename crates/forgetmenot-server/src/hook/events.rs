@@ -28,8 +28,8 @@ pub struct EventPlan {
     /// The tool about to run, for `PreToolUse` alone, which is what the store's
     /// exemptions are matched against.
     pub tool_name: Option<String>,
-    /// Whether the answer also tells the model which scopes it can turn on and
-    /// which session key to pass to the MCP tools.
+    /// Whether the answer also tells the model which session key to pass to
+    /// the MCP tools.
     pub session_start: bool,
     /// The directory this event reports: the event's own `cwd`, except for
     /// `CwdChanged`, where it is the directory the event puts in force. A

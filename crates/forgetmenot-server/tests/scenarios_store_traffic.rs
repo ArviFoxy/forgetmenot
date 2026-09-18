@@ -302,14 +302,13 @@ fn without_the_marker(text: &str) -> String {
 /// Detects the server's own answer turning scopes on when it comes back through
 /// a tool. A session start past 10 000 characters is saved to a file, and the
 /// notice at the top tells the model to read that file; the whole answer then
-/// arrives as the result of a `Read` — every critical body it delivered and the
-/// list of every scope on offer — and matching it against the tool-result
-/// triggers activates every scope the answer names at once, from the store's own
-/// traffic rather than from the work. Same class as issue 17.
+/// arrives as the result of a `Read`, every critical body it delivered, and
+/// matching it against the tool-result triggers activates every scope those
+/// bodies name at once, from the store's own traffic rather than from the work.
+/// Same class as issue 17.
 ///
-/// `rocketry`'s trigger has no field, so it fires on any text, and the answer
-/// names a rocket twice over: in the bodies of the five long rules and as the
-/// id `rocketry` in the scopes on offer. The store's threshold is set below the
+/// `rocketry`'s trigger has no field, so it fires on any text, and the bodies of
+/// the five long rules name a rocket. The store's threshold is set below the
 /// answer's length as well, so the answer opens with the notice that sends the
 /// model to the file.
 ///
@@ -343,8 +342,12 @@ fn the_persisted_answer_read_back_through_the_read_tool_activates_nothing() {
     let path = &saved[0];
     let answer = std::fs::read_to_string(path).expect("the saved answer is readable");
     assert!(
-        answer.contains("rocket") && answer.contains("rocketry"),
-        "the answer this scenario is about names a rocket and offers rocketry, got {answer}"
+        answer.contains("rocket"),
+        "the answer this scenario is about names a rocket, got {answer}"
+    );
+    assert!(
+        !answer.contains("rocketry"),
+        "a scope the session is not in is not named at its start, got {answer}"
     );
     let printed = numbered(&answer);
 

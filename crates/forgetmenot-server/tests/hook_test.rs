@@ -65,15 +65,16 @@ fn has_line(text: &str, wanted: &str) -> bool {
 /// Detects an answer Claude Code drops or refuses at a session start: it reads
 /// `hookSpecificOutput.additionalContext` under the event's own name and
 /// nothing else, so a misspelled or missing key injects nothing silently. It
-/// also detects a start that hides the scopes the model can turn on or omits
-/// the session key the MCP tools take, which would leave the session with no
-/// way to ask for a memory.
+/// also detects a start that omits the session key the MCP tools take, which
+/// would leave the session with no way to ask for a memory, and one that names
+/// scopes the session is not in: what is not active is not delivered and not
+/// listed, and the tools are where a session asks what else exists.
 ///
 /// The global critical memory stands for what the answer carries: which
 /// memories are owed and how each is written are decided by the state machine
 /// and the renderer and are tested there.
 #[test]
-fn a_session_start_is_answered_with_the_context_shape_the_session_key_and_what_it_can_turn_on() {
+fn a_session_start_is_answered_with_the_context_shape_the_session_key_and_nothing_inactive() {
     let server = TestServer::start(example_store_files(), |_| {});
 
     let (status, answer) = server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
@@ -97,8 +98,8 @@ fn a_session_start_is_answered_with_the_context_shape_the_session_key_and_what_i
     );
     for scope in ["widgets", "rocketry", "workshop"] {
         assert!(
-            has_line(text, scope),
-            "the scope {scope} must be offered as one the session can turn on, got {text:?}"
+            !has_line(text, scope),
+            "the scope {scope} is not active here and must not be named, got {text:?}"
         );
     }
 }
