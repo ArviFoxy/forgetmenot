@@ -281,7 +281,9 @@ for (const scheme of ['light', 'dark'] as const) {
     });
 
     test('the statistics look as reviewed', async ({ page }) => {
-      await page.goto('/stats');
+      // The `all` range takes its window from the log, so the chart's points sit
+      // where the data puts them rather than where the clock does.
+      await page.goto('/stats?range=all');
       await expect(page.locator('table.stats').first()).toBeVisible();
       await settle(page);
       await expect(page).toHaveScreenshot(`stats-laptop-${scheme}.png`, {
@@ -356,7 +358,9 @@ for (const size of sizes) {
       });
 
       test('the statistics at this size look as reviewed', async ({ page }) => {
-        await page.goto('/stats');
+        // The `all` range takes its window from the log, so the chart's points
+        // sit where the data puts them rather than where the clock does.
+        await page.goto('/stats?range=all');
         await expect(page.locator('table.stats').first()).toBeVisible();
         await settle(page);
         await expect(page).toHaveScreenshot(`stats-${size.name}-${scheme}.png`, {
