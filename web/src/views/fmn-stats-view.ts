@@ -7,7 +7,6 @@ import type {
   MemoryStatsRow,
   ScopeStatsRow,
   Series,
-  SessionStatsRow,
   StatsQuery,
   Summary,
   TriggerStatsRow,
@@ -21,6 +20,7 @@ import {
   scopeColumns,
   scopeSort,
   sessionColumns,
+  sessionOptions,
   sessionRows,
   sessionSort,
   statsAddress,
@@ -121,8 +121,13 @@ export class FmnStatsView extends PageElement {
   private readonly triggers = new Resource<TriggerStatsRow[]>(() => this.requestUpdate());
   private readonly denies = new Resource<DenyDayRow[]>(() => this.requestUpdate());
   private readonly latency = new Resource<LatencyRow[]>(() => this.requestUpdate());
-  /** Every session and every scope the log knows, which is what the selects offer. */
-  private readonly sessionNames = new Resource<SessionStatsRow[]>(() => this.requestUpdate());
+  /**
+   * The contexts the registry holds, which is what the session select offers,
+   * and every scope the log knows, which is what the scope select offers. The
+   * sessions come from the contexts and not from the log because only a context
+   * carries a name to show, and a session nobody named is not worth offering.
+   */
+  private readonly sessionNames = new Resource<ContextRow[]>(() => this.requestUpdate());
   private readonly scopeNames = new Resource<ScopeStatsRow[]>(() => this.requestUpdate());
 
   /** The window the sections were read over, which the per-session chart shares. */
@@ -147,7 +152,7 @@ export class FmnStatsView extends PageElement {
   override updated(): void {
     if (!this.loadedNames) {
       this.loadedNames = true;
-      void this.sessionNames.load(() => api.sessionStats());
+      void this.sessionNames.load(() => api.contexts());
       void this.scopeNames.load(() => api.scopeStats());
       void this.denies.load(() => api.denyStats());
       void this.latency.load(() => api.latencyStats());
@@ -207,7 +212,7 @@ export class FmnStatsView extends PageElement {
   }
 
   private renderControls(): TemplateResult {
-    const sessions = this.sessionNames.value ?? [];
+    const sessions = sessionOptions(this.sessionNames.value ?? [], this.filter.session);
     const scopes = this.scopeNames.value ?? [];
     return html`<div class="actions series-controls">
       <sl-radio-group
@@ -230,7 +235,7 @@ export class FmnStatsView extends PageElement {
       >
         <sl-option value="">All sessions</sl-option>
         ${sessions.map(
-          (row) => html`<sl-option value=${row.session_key}>${row.session_key}</sl-option>`,
+          (option) => html`<sl-option value=${option.key}>${option.label}</sl-option>`,
         )}
       </sl-select>
       <sl-select

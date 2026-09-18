@@ -20,6 +20,13 @@ use crate::store::catalog::{Catalog, MemoryEntry};
 use crate::store::memory::MemoryKind;
 use crate::store::{MemoryId, ScopeId, ScopeKind};
 
+/// The line every answer opens with, before the context key: the one mark that
+/// says a text is this server's own answer.
+///
+/// The renderer prints it and [`crate::hook::events::carries_own_answer`] looks
+/// for it, so a change here changes both at once.
+pub const ANSWER_MARKER: &str = "[forgetmenot] context ";
+
 /// What to render for one event.
 pub struct Delivery<'a> {
     pub key: &'a ContextKey,
@@ -253,10 +260,7 @@ fn render_body(delivery: &Delivery<'_>) -> Rendered {
         text.push_str(piece);
     };
 
-    overhead(
-        &mut text,
-        &format!("[forgetmenot] context {}\n", delivery.key),
-    );
+    overhead(&mut text, &format!("{ANSWER_MARKER}{}\n", delivery.key));
 
     for (scope, critical, knowledge) in delivery.grouped_sections() {
         let heading = format!("== scope: {scope} ==\n");
@@ -848,7 +852,7 @@ mod tests {
             "an answer Claude Code shows whole must carry no notice, got {within:?}"
         );
         assert!(
-            within.starts_with("[forgetmenot] context "),
+            within.starts_with(ANSWER_MARKER),
             "the answer must open with its context line, got {within:?}"
         );
 

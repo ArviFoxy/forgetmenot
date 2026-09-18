@@ -22,7 +22,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::context::ContextKey;
-use crate::store::ScopeId;
+use crate::store::{ScopeId, ScopeKind};
 
 pub use queries::{
     Bucket, Filter, SUMMARY_WINDOWS, SeriesPoint, SessionEventRow, SummaryRow, Window, tokens_of,
@@ -725,6 +725,17 @@ impl StatsReader {
         for scope in existing {
             row_for(&mut rows, scope.as_str());
         }
+        // There is one session scope per session, so an empty one is a row that
+        // says only that a session existed. A session scope earns its row by
+        // having delivered, activated or been forgotten inside the window;
+        // global, machine and file scopes are listed whether or not they moved,
+        // because each of those is one line the reader chose to have.
+        rows.retain(|scope_id, row| {
+            ScopeId::new(scope_id.clone()).kind() != ScopeKind::Session
+                || row.deliveries > 0
+                || row.activations > 0
+                || row.forgettings > 0
+        });
         // A scope can be live without ever having been activated by a trigger:
         // the implicit scopes are, and so is one a scope implies.
         for active in active_sets {

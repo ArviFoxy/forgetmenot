@@ -8,6 +8,7 @@ use forgetmenot_types::hook::{HookCommon, HookEvent};
 
 use crate::context::{ContextKey, MAIN_AGENT};
 use crate::mcp::FORGETMENOT_TOOL_NAMES;
+use crate::render::ANSWER_MARKER;
 use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 
@@ -130,7 +131,9 @@ pub fn plan(
         } => {
             if !triggers_exempt(settings, tool_name) {
                 let result = string_leaves(tool_output, settings.tool_result_cap());
-                push_text(&mut plan, TriggerField::ToolResult, Some(&result));
+                if !carries_own_answer(&result) {
+                    push_text(&mut plan, TriggerField::ToolResult, Some(&result));
+                }
             }
         }
         HookEvent::Stop {
@@ -176,6 +179,29 @@ pub fn plan(
         HookEvent::Unknown => return None,
     }
     Some(plan)
+}
+
+/// Whether `text` is this server's own answer handed back through a tool.
+///
+/// An answer past the store's threshold is written to a file by Claude Code,
+/// which shows the model a preview and the path; the notice at the top of such
+/// an answer tells the model to read that file, so the whole answer comes back
+/// as the result of a `Read` — every scope id of the available list and the
+/// text of every critical memory delivered. Matched against the tool-result
+/// triggers, that one result activates every scope the answer names, which is
+/// the store's own traffic and not the session's work.
+///
+/// The mark is [`ANSWER_MARKER`], the line every answer opens with. It is
+/// looked for on any line, because the notice comes before it and a `Read`
+/// prints the file's lines numbered: the digits, the whitespace and the `\u{2192}`
+/// or tab Claude Code puts in front of a line are stripped before comparing.
+pub fn carries_own_answer(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.trim_start_matches(|character: char| {
+            character.is_ascii_digit() || character.is_whitespace() || character == '\u{2192}'
+        })
+        .starts_with(ANSWER_MARKER)
+    })
 }
 
 /// Whether the name, the input and the result of `tool_name` are kept out of the
@@ -432,6 +458,38 @@ mod tests {
             texts_on(&matched, TriggerField::ToolResult),
             vec![output],
             "a tool the store did not name must still be matched"
+        );
+    }
+
+    /// Detects the server's own answer, read back out of the file Claude Code
+    /// saved it to, being matched against the tool-result triggers: the answer
+    /// lists every scope on offer and prints every critical memory delivered,
+    /// so one such result activates every scope the store has at once. Detects
+    /// too a check that fires on any mention of this server, which would silence
+    /// the work's own results whenever a log line said `forgetmenot`.
+    ///
+    /// The marker arrives the way a `Read` prints it: numbered, indented and
+    /// behind the notice that told the model to read the file.
+    #[test]
+    fn the_answer_read_back_through_a_tool_contributes_no_text_while_other_results_still_do() {
+        let answer = "     1\t[forgetmenot] READ THE FILE FIRST. This hook answer is long.\n     \
+                      2\t\n     3\t[forgetmenot] context alpha/session-1\n     4\t== scope: \
+                      rocketry ==\n     5\t-- critical: rocket-stages --\n";
+        let read_back =
+            plan_of(&tool_result("Read", answer), "alpha").expect("PostToolUse is known");
+        assert!(
+            read_back.texts.is_empty(),
+            "the answer handed back through a tool is the store's own traffic, got {:?}",
+            read_back.texts
+        );
+
+        let mention = "forgetmenot: the rocket stages are in the binder";
+        let work = plan_of(&tool_result("Read", mention), "alpha").expect("PostToolUse is known");
+        assert_eq!(
+            texts_on(&work, TriggerField::ToolResult),
+            vec![mention],
+            "a result that names this server without carrying its answer is matched like any \
+             other"
         );
     }
 

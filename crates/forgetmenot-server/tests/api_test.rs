@@ -18,6 +18,8 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use common::{
@@ -1330,6 +1332,140 @@ fn server_with_a_session() -> TestServer {
     );
     server.hook("alpha", Some(10_000), &widget_prompt());
     server
+}
+
+/// Two sessions on one machine that were delivered different scopes: the first
+/// names a widget, so `widgets` and the `rocketry` it implies are on; the second
+/// names only a rocket, so `rocketry` alone is. The second session has no notes
+/// in the store, so nothing is ever delivered under its own session scope.
+fn server_with_two_sessions() -> TestServer {
+    let server = server_with_a_session();
+    server.hook(
+        "alpha",
+        Some(10_000),
+        &json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "session-2",
+            "cwd": "/home/dev/notes",
+            "source": "startup"
+        }),
+    );
+    server.hook(
+        "alpha",
+        Some(10_000),
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-2",
+            "cwd": "/home/dev/notes",
+            "prompt": "check the rocket fairing before we continue"
+        }),
+    );
+    server
+}
+
+/// The rows of the scopes report, by scope id, for the query `search`.
+fn scope_rows(server: &TestServer, search: &str) -> BTreeMap<String, Value> {
+    let (status, answer) = server.api("GET", &format!("/api/stats/scopes{search}"), None);
+    assert_eq!(status, 200, "the scopes must be readable, got {answer}");
+    answer
+        .as_array()
+        .unwrap_or_else(|| panic!("the report is a list of rows: {answer}"))
+        .iter()
+        .map(|row| {
+            let id = row["scope_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a row names its scope: {row}"));
+            (id.to_string(), row.clone())
+        })
+        .collect()
+}
+
+/// Detects a per-scope report that ignores the session the query names: the
+/// page's session filter reaches every table on it, so a scopes report that
+/// answered the whole log would show one session's page the tokens of all of
+/// them and no figure on the page would say so.
+///
+/// Two sessions, two different scopes. The widget session's page charges
+/// `widgets`; the rocket session's page charges `rocketry` and leaves `widgets`
+/// at nothing, though `widgets` still has a row because the index lists it.
+#[test]
+fn the_scopes_route_counts_only_the_rows_of_the_session_the_query_names() {
+    let server = server_with_two_sessions();
+
+    let whole = scope_rows(&server, "");
+    let widget_session = scope_rows(&server, "?session=alpha/session-1");
+    let rocket_session = scope_rows(&server, "?session=alpha/session-2");
+
+    let tokens = |rows: &BTreeMap<String, Value>, scope: &str| -> u64 {
+        rows.get(scope)
+            .unwrap_or_else(|| panic!("{scope} must have a row, got {rows:?}"))["tokens"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a scope reports what it cost in tokens, got {rows:?}"))
+    };
+    let deliveries = |rows: &BTreeMap<String, Value>, scope: &str| -> u64 {
+        rows.get(scope)
+            .unwrap_or_else(|| panic!("{scope} must have a row, got {rows:?}"))["deliveries"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("a scope reports its deliveries, got {rows:?}"))
+    };
+
+    assert!(
+        tokens(&whole, "widgets") > 0 && tokens(&whole, "rocketry") > 0,
+        "both scopes were delivered somewhere in the log, got {whole:?}"
+    );
+    assert_eq!(
+        (
+            tokens(&widget_session, "widgets"),
+            deliveries(&widget_session, "widgets")
+        ),
+        (tokens(&whole, "widgets"), deliveries(&whole, "widgets")),
+        "the widget session is the only one that was ever charged for widgets"
+    );
+    assert_eq!(
+        (
+            tokens(&rocket_session, "widgets"),
+            deliveries(&rocket_session, "widgets")
+        ),
+        (0, 0),
+        "the rocket session was never delivered widgets, got {rocket_session:?}"
+    );
+    assert!(
+        tokens(&rocket_session, "rocketry") > 0,
+        "the rocket session was delivered rocketry, got {rocket_session:?}"
+    );
+}
+
+/// Detects a per-scope report that lists every session scope it knows of. There
+/// is one such scope per session and most of them hold nothing, so a report
+/// that keeps the empty ones fills the table with a row per session that says
+/// only that the session existed.
+///
+/// The first session has notes in the store and is charged for them; the second
+/// has none, so its scope was never delivered and is not a row. Both sessions
+/// are live, so a report that kept a scope for having a live context in it would
+/// keep the second one too.
+#[test]
+fn the_scopes_route_leaves_out_a_session_scope_nothing_was_delivered_under() {
+    let server = server_with_two_sessions();
+
+    let rows = scope_rows(&server, "");
+
+    let delivered = rows
+        .get("session:alpha/session-1")
+        .unwrap_or_else(|| panic!("the session with notes must have a row, got {rows:?}"));
+    assert!(
+        delivered["deliveries"].as_u64().unwrap_or(0) > 0
+            && delivered["tokens"].as_u64().unwrap_or(0) > 0,
+        "the session with notes was charged for them, got {delivered}"
+    );
+    assert!(
+        !rows.contains_key("session:alpha/session-2"),
+        "a session scope nothing was delivered under is not a row, got {rows:?}"
+    );
+    assert!(
+        rows.contains_key("machine:alpha") && rows.contains_key("global"),
+        "only session scopes are dropped when empty, got {rows:?}"
+    );
 }
 
 /// Detects a summary that answers in a shape the page cannot read: it draws one

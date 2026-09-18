@@ -3,6 +3,7 @@
 // in, the points the charts are drawn from, and what each table's columns hold.
 
 import type {
+  ContextRow,
   MemoryStatsRow,
   ScopeStatsRow,
   SeriesPoint,
@@ -344,6 +345,35 @@ export const triggerColumns: TableColumn<TriggerStatsRow>[] = [
     numeric: true,
   },
 ];
+
+/** One session the page's session filter offers. */
+export interface SessionOption {
+  /** The context key the filter takes, which is what the address carries. */
+  key: string;
+  /** What the option reads as. */
+  label: string;
+}
+
+/**
+ * The sessions the page offers to filter by: the main contexts that have a name
+ * of their own, labelled by that name, in the order `/api/contexts` answers
+ * them, which is the most recently seen first.
+ *
+ * A subagent is left out because it is not a session, and a context whose only
+ * name is its key is left out because an option reading as a key is what naming
+ * the sessions replaced. `selected` is the key the address names: it stays on
+ * offer, labelled by itself, whatever the contexts hold, so that a link to a
+ * session the registry no longer knows still shows the filter it asked for.
+ */
+export function sessionOptions(contexts: ContextRow[], selected: string): SessionOption[] {
+  const options = contexts
+    .filter((row) => row.parent === null && row.name !== '' && row.name !== row.key)
+    .map((row) => ({ key: row.key, label: row.name }));
+  if (selected !== '' && !options.some((option) => option.key === selected)) {
+    options.push({ key: selected, label: selected });
+  }
+  return options;
+}
 
 /** The session rows with the time the registry last saw each context. */
 export function sessionRows(rows: SessionStatsRow[], lastSeen: Map<string, string>): SessionRow[] {

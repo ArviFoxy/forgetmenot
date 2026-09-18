@@ -243,3 +243,154 @@ fn a_session_scope_list_call_changes_nothing_and_answers_the_scopes() {
             );
         });
 }
+
+/// How many long critical rules the store carries beyond the example store's
+/// own, and how many lines each one has. Five of this size put the session
+/// start past the 10 000 characters Claude Code shows in full, so the answer is
+/// saved to a file.
+const LONG_RULES: usize = 5;
+const LONG_LINES: usize = 34;
+
+/// The example store with five long critical rules in `global`, each naming a
+/// rocket.
+///
+/// `rocketry`'s trigger has no field, so it fires on any text: the bodies name
+/// a rocket and the session start lists `rocketry` itself among the scopes on
+/// offer, which is what makes the answer, read back, able to turn it on.
+fn store_with_long_rocket_rules() -> scenario::StoreBuilder {
+    let mut store = Store::example();
+    for index in 0..LONG_RULES {
+        let id = format!("long-rule-{index}");
+        let body: String = (0..LONG_LINES)
+            .map(|line| {
+                format!(
+                    "{id} line {line:02}: keep the rocket on its pad until the rail reads zero \
+                     on the meter."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        store = store.memory(&id, |memory| {
+            memory
+                .critical()
+                .scopes(["global"])
+                .description("A long launch rule")
+                .body(&body);
+        });
+    }
+    store
+}
+
+/// `text` as the `Read` tool prints a file: every line behind its number, right
+/// aligned in six columns and followed by a tab.
+fn numbered(text: &str) -> String {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| format!("{:>6}\t{line}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text` without the line that marks it as this server's answer.
+fn without_the_marker(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.contains("[forgetmenot] context "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Detects the server's own answer turning scopes on when it comes back through
+/// a tool. A session start past 10 000 characters is saved to a file, and the
+/// notice at the top tells the model to read that file; the whole answer then
+/// arrives as the result of a `Read` — every critical body it delivered and the
+/// list of every scope on offer — and matching it against the tool-result
+/// triggers activates every scope the answer names at once, from the store's own
+/// traffic rather than from the work. Same class as issue 17.
+///
+/// `rocketry`'s trigger has no field, so it fires on any text, and the answer
+/// names a rocket twice over: in the bodies of the five long rules and as the
+/// id `rocketry` in the scopes on offer. The store's threshold is set below the
+/// answer's length as well, so the answer opens with the notice that sends the
+/// model to the file.
+///
+/// The same numbered text handed back as a `Bash` result moves nothing either:
+/// the marker line decides, not the tool. With that line taken out, the very
+/// same bytes turn `rocketry` on and its memory arrives, which is what says the
+/// marker is what silenced the read and not the text or the tool.
+#[test]
+fn the_persisted_answer_read_back_through_the_read_tool_activates_nothing() {
+    let world = World::new()
+        .store(store_with_long_rocket_rules())
+        .settings(|settings| {
+            settings.answer_file_threshold(Some(400));
+        })
+        .build();
+    let session = world.claude(ALPHA).session();
+
+    session.start_in(NEUTRAL);
+    let before = session.active_scopes();
+    assert!(
+        !before.contains("rocketry"),
+        "the session starts outside rocketry, got {before:?}"
+    );
+
+    let saved = session.persisted_files();
+    assert_eq!(
+        saved.len(),
+        1,
+        "the start answer is long enough for Claude Code to save it to one file, got {saved:?}"
+    );
+    let path = &saved[0];
+    let answer = std::fs::read_to_string(path).expect("the saved answer is readable");
+    assert!(
+        answer.contains("rocket") && answer.contains("rocketry"),
+        "the answer this scenario is about names a rocket and offers rocketry, got {answer}"
+    );
+    let printed = numbered(&answer);
+
+    session
+        .tool("Read", read(path.to_str().expect("a utf-8 path")))
+        .assert(|answer| assert!(answer.allowed(), "nothing is due, so the read goes ahead"))
+        .result(json!({ "content": printed.clone() }))
+        .assert(|answer| {
+            assert!(
+                answer.delivers_nothing(),
+                "the server's own answer read back is the store's traffic, not the work's"
+            );
+        });
+    assert_eq!(
+        session.active_scopes(),
+        before,
+        "no scope may come on from the answer this session was given"
+    );
+
+    session
+        .tool("Bash", bash("cat the-saved-answer.txt"))
+        .result(json!({ "stdout": printed.clone() }))
+        .assert(|answer| {
+            assert!(
+                answer.delivers_nothing(),
+                "the marker decides and not the tool, so the same text through Bash is silent too"
+            );
+        });
+    assert_eq!(
+        session.active_scopes(),
+        before,
+        "the same text through another tool must move no scope either"
+    );
+
+    session
+        .tool("Bash", bash("cat the-launch-log.txt"))
+        .result(json!({ "stdout": without_the_marker(&printed) }))
+        .assert(|answer| {
+            assert!(
+                answer.delivers_index("rocket-stages"),
+                "without the marker line the very same bytes are the work's own output"
+            );
+        });
+    assert!(
+        session.active_scopes().contains("rocketry"),
+        "the scope the text names is on, got {:?}",
+        session.active_scopes()
+    );
+}

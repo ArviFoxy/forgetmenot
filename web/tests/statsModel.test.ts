@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import type {
+  ContextRow,
   MemoryStatsRow,
   ScopeStatsRow,
   SeriesPoint,
@@ -16,6 +17,7 @@ import {
   scopeColumns,
   scopeSort,
   sessionColumns,
+  sessionOptions,
   sessionPoints,
   sessionRows,
   sessionSort,
@@ -298,4 +300,51 @@ test('a table opens on a column other than the cost, or on the smallest figure f
       `${table.name} must sort by a column it has`,
     ).toBe(true);
   }
+});
+
+/** One context as `/api/contexts` answers it. */
+function contextRow(over: Partial<ContextRow> & { key: string }): ContextRow {
+  return {
+    name: '',
+    title: null,
+    first_prompt: null,
+    parent: null,
+    task: null,
+    agent_type: null,
+    active_scopes: [],
+    delivered_count: 0,
+    last_seen: '2026-01-02T03:04:05+00:00',
+    ...over,
+  };
+}
+
+test('the session in the address is dropped from the options, so the filter it names reads as unset', () => {
+  // The registry holds one named session; the address names another it has
+  // forgotten. Dropping the second would leave the select showing no value
+  // while the page went on reading the log for that session.
+  const held = contextRow({ key: 'alpha/session-1', name: 'Rebuild the rig' });
+
+  expect(sessionOptions([held], 'alpha/session-9')).toEqual([
+    { key: 'alpha/session-1', label: 'Rebuild the rig' },
+    { key: 'alpha/session-9', label: 'alpha/session-9' },
+  ]);
+  expect(sessionOptions([held], 'alpha/session-1')).toEqual([
+    { key: 'alpha/session-1', label: 'Rebuild the rig' },
+  ]);
+  expect(sessionOptions([held], '')).toEqual([
+    { key: 'alpha/session-1', label: 'Rebuild the rig' },
+  ]);
+});
+
+/** The order the options keep, which is the order the API answers contexts in. */
+test('the options are reordered, so the most recently seen session is not the first offered', () => {
+  const rows = [
+    contextRow({ key: 'alpha/session-2', name: 'Sort the bins' }),
+    contextRow({ key: 'alpha/session-1', name: 'Rebuild the rig' }),
+  ];
+
+  expect(sessionOptions(rows, '').map((option) => option.key)).toEqual([
+    'alpha/session-2',
+    'alpha/session-1',
+  ]);
 });

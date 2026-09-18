@@ -461,6 +461,27 @@ test('a click on Tokens sorts it the way it already is, so the order does not ch
   expect(order).toEqual([cheaperScopeStatsRow.scope_id, scopeStatsRow.scope_id]);
 });
 
+/** A session the registry holds but nobody ever named. */
+const namelessSession = context({ key: 'alpha/session-4' });
+
+test('the session select labels an option by its key, or offers a nameless session or a subagent', async () => {
+  // The source of this expectation is what the select is for: choosing a
+  // session by what it was doing. A subagent is not a session, and a context
+  // with no name has nothing to read as, so neither is on offer.
+  answers.contexts = [subagent, namelessSession, session];
+  const element = await renderStats();
+
+  const [sessions] = [...element.querySelectorAll('.series-filter')];
+  const options = [...(sessions?.querySelectorAll('sl-option') ?? [])].map((option) => [
+    option.getAttribute('value'),
+    option.textContent?.trim(),
+  ]);
+  expect(options).toEqual([
+    ['', 'All sessions'],
+    [session.key, session.name],
+  ]);
+});
+
 test('a memory row has no way to the memory it names', async () => {
   const element = await renderStats();
 
