@@ -77,6 +77,19 @@ const memoryRow: MemoryStatsRow = {
   last_shown: '2026-01-02T03:04:05+00:00',
 };
 
+/** A second scope, cheaper than `widgets` and named ahead of it in the alphabet. */
+const cheaperScopeStatsRow: ScopeStatsRow = {
+  scope_id: 'rocketry',
+  activations: 1,
+  forgettings: 0,
+  chars: 3500,
+  deliveries: 1,
+  live_contexts: 1,
+  tokens: 1000,
+  tokens_per_delivery: 1000,
+  memories: 1,
+};
+
 const scopeStatsRow: ScopeStatsRow = {
   scope_id: 'widgets',
   activations: 2,
@@ -198,7 +211,8 @@ vi.mock('../src/api/client', () => ({
     review: () => Promise.resolve({ errors: [], global_only_critical: [] }),
     memoryStats: () => Promise.resolve(answers.statsRows ? [memoryRow] : []),
     triggerStats: () => Promise.resolve([]),
-    scopeStats: () => Promise.resolve(answers.statsRows ? [scopeStatsRow] : []),
+    scopeStats: () =>
+      Promise.resolve(answers.statsRows ? [cheaperScopeStatsRow, scopeStatsRow] : []),
     denyStats: () => Promise.resolve([]),
     latencyStats: () => Promise.resolve([]),
     sessionStats: () => Promise.resolve(answers.statsRows ? [sessionStatsRow] : []),
@@ -212,6 +226,16 @@ const { formatBytes } = await import('../src/model/units');
 const { paths, resolve } = await import('../src/routes');
 const { menuItemsFor } = await import('../src/components/fmn-sidebar');
 await import('../src/components/fmn-app');
+
+// jsdom has no media queries and the tables listen for the widths at which their
+// columns change. The window here is wide enough for every column, so what this
+// file asserts is the table with all of them drawn.
+window.matchMedia = ((media: string) => ({
+  media,
+  matches: false,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+})) as unknown as typeof window.matchMedia;
 
 /** Waits for the element and everything it loads to settle. */
 async function settle(element: HTMLElement & { updateComplete?: Promise<unknown> }): Promise<void> {
@@ -394,12 +418,47 @@ test('a range with nothing in it is drawn as an empty chart and empty tables', a
 test('a click on a scope row leaves the address alone, so the other sections keep their window', async () => {
   const element = await renderStats();
 
-  const row = element.querySelector('.stats-scopes tr.data-row');
-  expect(row, 'the scope table must have a row to click').not.toBeNull();
+  const row = [...element.querySelectorAll('.stats-scopes tr.data-row')].find(
+    (each) => each.querySelector('td.row-id')?.textContent?.trim() === scopeStatsRow.scope_id,
+  );
+  expect(row, 'the scope table must have a row to click').not.toBeUndefined();
   (row as HTMLElement).click();
   await settle(element);
 
   expect(window.location.search).toBe('?scope=widgets');
+});
+
+test('the scope table opens in the order the server sent, or hides which way it is sorted', async () => {
+  // The server sends the rows by scope id; the table is a report of what things
+  // cost, so it opens on the costliest.
+  const element = await renderStats();
+
+  const scopes = element.querySelector('.stats-scopes');
+  const first = [...(scopes?.querySelectorAll('tr.data-row') ?? [])].map(
+    (row) => row.querySelector('td.row-id')?.textContent?.trim(),
+  );
+  expect(first).toEqual([scopeStatsRow.scope_id, cheaperScopeStatsRow.scope_id]);
+  const tokens = [...(scopes?.querySelectorAll('thead th') ?? [])].find(
+    (cell) => cell.textContent?.trim() === 'Tokens',
+  );
+  expect(tokens?.getAttribute('aria-sort')).toBe('descending');
+});
+
+test('a click on Tokens sorts it the way it already is, so the order does not change', async () => {
+  const element = await renderStats();
+  const scopes = element.querySelector('.stats-scopes');
+  const tokens = [...(scopes?.querySelectorAll('thead th') ?? [])].find(
+    (cell) => cell.textContent?.trim() === 'Tokens',
+  );
+
+  (tokens?.querySelector('button.sort') as HTMLElement).click();
+  await settle(element);
+
+  expect(tokens?.getAttribute('aria-sort')).toBe('ascending');
+  const order = [...(scopes?.querySelectorAll('tr.data-row') ?? [])].map(
+    (row) => row.querySelector('td.row-id')?.textContent?.trim(),
+  );
+  expect(order).toEqual([cheaperScopeStatsRow.scope_id, scopeStatsRow.scope_id]);
 });
 
 test('a memory row has no way to the memory it names', async () => {

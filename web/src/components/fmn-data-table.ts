@@ -17,7 +17,14 @@ import {
   type ColumnDef,
 } from '@tanstack/lit-table';
 import { PageElement } from '../lib/element';
-import { cellText, type TableColumn } from '../model/stats';
+import {
+  cellText,
+  columnBreakpoints,
+  hiddenColumns,
+  visibleColumns,
+  type TableColumn,
+  type TableSort,
+} from '../model/stats';
 
 /** A row of any shape, since the columns say what to read out of it. */
 export type DataRow = Record<string, unknown>;
@@ -41,6 +48,10 @@ export interface RowClick<Row> {
  * The rows of one report. `columns` says what each column holds and where it
  * leads, `expand` what a row opens below itself, and a click anywhere else on a
  * row is reported as `fmn-row-click`.
+ *
+ * A column is drawn while the viewport is wide enough for its priority; the
+ * narrower the screen, the fewer columns, and an open row lists what the width
+ * left out, so every figure is reachable at every size.
  */
 export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
   static override properties: PropertyDeclarations = {
@@ -48,10 +59,12 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
     rows: { attribute: false },
     rowKey: { attribute: false },
     expand: { attribute: false },
+    sort: { attribute: false },
     empty: { type: String },
     filterLabel: { type: String },
     filterText: { state: true },
     open: { state: true },
+    width: { state: true },
   };
 
   columns: TableColumn<Row>[] = [];
@@ -60,11 +73,37 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
   rowKey: (row: Row) => string = (row) => JSON.stringify(row);
   /** What an open row shows below itself; null when rows do not open. */
   expand: ((row: Row) => TemplateResult) | null = null;
+  /** What the table is sorted by until a header is clicked; unsorted when null. */
+  sort: TableSort | null = null;
   empty = 'Nothing in this range';
   filterLabel = 'Filter';
 
   private filterText = '';
   private open = new Set<string>();
+  /** The viewport width the columns are chosen against. */
+  private width = window.innerWidth;
+  private stopListening: (() => void)[] = [];
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.width = window.innerWidth;
+    // One listener per width at which the columns change, so the table is
+    // redrawn when a rotation or a resize crosses one of them.
+    this.stopListening = columnBreakpoints.map((breakpoint) => {
+      const media = window.matchMedia(`(min-width: ${breakpoint}px)`);
+      const crossed = (): void => {
+        this.width = window.innerWidth;
+      };
+      media.addEventListener('change', crossed);
+      return () => media.removeEventListener('change', crossed);
+    });
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    for (const stop of this.stopListening) stop();
+    this.stopListening = [];
+  }
 
   private readonly controller = new TableController<typeof features, Row>(this);
 
@@ -82,6 +121,9 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
       // by the number and filtering matches the text on screen.
       accessorFn: (row: Row) => column.value(row),
       sortingFn: column.numeric === true ? ('basic' as const) : ('alphanumeric' as const),
+      // A figure is read largest first, so the first click on one sorts down and
+      // the next click flips it.
+      sortDescFirst: column.numeric === true,
       filterFn: 'includesString' as const,
     }));
     return this.definitions;
@@ -106,13 +148,32 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
     );
   }
 
-  private renderCell(column: TableColumn<Row>, row: Row): TemplateResult {
+  /**
+   * What the width left out of the row, so no figure is out of reach on a narrow
+   * screen; nothing when every column is drawn.
+   */
+  private renderHiddenCells(hidden: TableColumn<Row>[], row: Row): TemplateResult | typeof nothing {
+    if (hidden.length === 0) return nothing;
+    return html`<dl class="hidden-cells">
+      ${hidden.map(
+        (column) => html`<dt>${column.header}</dt>
+          <dd>${cellText(column, row)}</dd>`,
+      )}
+    </dl>`;
+  }
+
+  /**
+   * One cell. `first` marks the cell that names the row, which stays in place
+   * while a narrow screen scrolls the rest of the row past it.
+   */
+  private renderCell(column: TableColumn<Row>, row: Row, first: boolean): TemplateResult {
     const shown = cellText(column, row);
     const text = column.mono === true ? html`<code>${shown}</code>` : shown;
     const target = column.link?.(row) ?? null;
     const classes = [
       column.numeric === true ? 'number' : '',
       column.moment === true ? 'moment nowrap' : '',
+      first ? 'row-id' : '',
     ]
       .join(' ')
       .trim();
@@ -132,9 +193,20 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
       state: { globalFilter: this.filterText },
       globalFilterFn: 'includesString' as const,
       onGlobalFilterChange: () => undefined,
+      // Read once, when the table is built: what it opens on, before anyone has
+      // clicked a header.
+      initialState: { sorting: this.sort === null ? [] : [this.sort] },
     });
     const shown = table.getRowModel().rows;
-    const width = this.columns.length + (this.expand === null ? 0 : 1);
+    const columns = visibleColumns(this.columns, this.width);
+    const hidden = hiddenColumns(this.columns, this.width);
+    // A row opens for what it holds as well as for what it leads to, so a table
+    // whose columns do not all fit still opens.
+    const opens = this.expand !== null || hidden.length > 0;
+    const width = columns.length + (opens ? 1 : 0);
+    const headers = (table.getHeaderGroups()[0]?.headers ?? []).filter((header) =>
+      columns.some((column) => column.id === header.column.id),
+    );
     return html`
       <div class="table-filter">
         <sl-input
@@ -151,15 +223,16 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
         <table class="data stats">
           <thead>
             <tr>
-              ${this.expand === null ? nothing : html`<th scope="col" class="expander"></th>`}
-              ${table.getHeaderGroups()[0]?.headers.map((header) => {
+              ${opens ? html`<th scope="col" class="expander"></th>` : nothing}
+              ${headers.map((header, index) => {
                 const sorted = header.column.getIsSorted();
+                const numeric =
+                  columns.find((column) => column.id === header.column.id)?.numeric === true;
                 return html`<th
                   scope="col"
-                  class=${this.columns.find((column) => column.id === header.column.id)?.numeric ===
-                  true
-                    ? 'number'
-                    : ''}
+                  class=${[numeric ? 'number' : '', index === 0 ? 'row-id' : '']
+                    .join(' ')
+                    .trim()}
                   aria-sort=${sorted === 'asc'
                     ? 'ascending'
                     : sorted === 'desc'
@@ -197,20 +270,24 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
                       class="data-row"
                       @click=${(event: MouseEvent) => this.clicked(event, row)}
                     >
-                      ${this.expand === null
-                        ? nothing
-                        : html`<td class="expander">
+                      ${opens
+                        ? html`<td class="expander">
                             <sl-icon-button
                               name=${isOpen ? 'chevron-down' : 'chevron-right'}
                               label=${isOpen ? 'Collapse' : 'Expand'}
                               @click=${() => this.toggle(key)}
                             ></sl-icon-button>
-                          </td>`}
-                      ${this.columns.map((column) => this.renderCell(column, row))}
+                          </td>`
+                        : nothing}
+                      ${columns.map((column, index) =>
+                        this.renderCell(column, row, index === 0),
+                      )}
                     </tr>
-                    ${isOpen && this.expand !== null
+                    ${isOpen && opens
                       ? html`<tr class="sub-row">
-                          <td colspan=${width}>${this.expand(row)}</td>
+                          <td colspan=${width}>
+                            ${this.renderHiddenCells(hidden, row)}${this.expand?.(row) ?? nothing}
+                          </td>
                         </tr>`
                       : nothing}`;
                 })}

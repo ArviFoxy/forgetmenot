@@ -17,9 +17,12 @@ import { Resource } from '../lib/resource';
 import {
   cellText,
   memoryColumns,
+  memorySort,
   scopeColumns,
+  scopeSort,
   sessionColumns,
   sessionRows,
+  sessionSort,
   statsAddress,
   statsFilterFromSearch,
   statsQueryOf,
@@ -381,6 +384,7 @@ export class FmnStatsView extends PageElement {
             <fmn-data-table
               class="stats-scopes"
               .columns=${scopeColumns}
+              .sort=${scopeSort}
               .rows=${rows}
               .rowKey=${(row: ScopeStatsRow) => row.scope_id}
               .expand=${(row: ScopeStatsRow) => this.renderScopeTriggers(row.scope_id)}
@@ -400,6 +404,7 @@ export class FmnStatsView extends PageElement {
           (rows) => html`<fmn-data-table
             class="stats-memories"
             .columns=${memoryColumns}
+            .sort=${memorySort}
             .rows=${rows}
             .rowKey=${(row: MemoryStatsRow) => row.memory}
             filterLabel="Filter memories"
@@ -416,6 +421,7 @@ export class FmnStatsView extends PageElement {
           (rows) => html`<fmn-data-table
             class="stats-sessions"
             .columns=${sessionColumns}
+            .sort=${sessionSort}
             .rows=${rows}
             .rowKey=${(row: SessionRow) => row.session_key}
             .expand=${(row: SessionRow) =>

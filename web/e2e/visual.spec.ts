@@ -367,6 +367,38 @@ for (const size of sizes) {
   }
 }
 
+// The per-scope table at the sizes that leave columns out. The section is captured
+// rather than the viewport, because at these sizes the tables are below the fold,
+// and its first row is open, because what the width left out of a row is listed
+// inside the row.
+
+for (const size of sizes.filter((each) => each.width <= 900)) {
+  for (const scheme of ['light', 'dark'] as const) {
+    test.describe(`look ${size.name} ${scheme} scopes`, () => {
+      // The images were recorded in the container, against the store the global
+      // setup seeds: an outside server named by FORGETMENOT_URL is not that store,
+      // and a run outside the container is not that machine.
+      test.skip(
+        process.env.FORGETMENOT_URL !== undefined || process.env.FMN_SKIP_SCREENSHOTS !== undefined,
+        'the images belong to the container and its fixture store',
+      );
+      test.use({ viewport: { width: size.width, height: size.height }, colorScheme: scheme });
+
+      test('the per-scope statistics table at this size looks as reviewed', async ({ page }) => {
+        await page.goto('/stats');
+        const scopes = page.locator('sl-details[data-section="scopes"]');
+        await expect(scopes.locator('table.stats')).toBeVisible();
+        await scopes.locator('tbody tr.data-row td.expander sl-icon-button').first().click();
+        await scopes.scrollIntoViewIfNeeded();
+        await settle(page);
+        await expect(scopes).toHaveScreenshot(`stats-scopes-${size.name}-${scheme}.png`, {
+          mask: clockValues(page),
+        });
+      });
+    });
+  }
+}
+
 test.describe('look phone drawer', () => {
   // The images were recorded in the container, against the store the global setup
   // seeds: an outside server named by FORGETMENOT_URL is not that store, and a run

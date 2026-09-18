@@ -143,6 +143,18 @@ export function summaryHeld(summary: Summary, window: string): number {
   return summary.windows.find((row) => row.name === window)?.held ?? 0;
 }
 
+/**
+ * How narrow a screen may be and still show a column: 1 is drawn at every width,
+ * 2 down to 600 px, 3 down to 900 px.
+ */
+export type ColumnPriority = 1 | 2 | 3;
+
+/** The least viewport width, in pixels, at which a column of each priority is drawn. */
+const priorityWidths: Record<ColumnPriority, number> = { 1: 0, 2: 600, 3: 900 };
+
+/** The widths at which the columns shown change, which is what a table listens for. */
+export const columnBreakpoints: number[] = [600, 900];
+
 /** One column of a table: what it is called, what it holds, and where it leads. */
 export interface TableColumn<Row> {
   id: string;
@@ -159,7 +171,35 @@ export interface TableColumn<Row> {
   mono?: boolean;
   /** A value the clock decides, which the recorded screenshots paint over. */
   moment?: boolean;
+  /** How narrow a screen may be and still show it; every width when absent. */
+  priority?: ColumnPriority;
 }
+
+/** The columns a screen `width` pixels across shows. */
+export function visibleColumns<Row>(
+  columns: TableColumn<Row>[],
+  width: number,
+): TableColumn<Row>[] {
+  return columns.filter((column) => width >= priorityWidths[column.priority ?? 1]);
+}
+
+/** The columns a screen `width` pixels across leaves out, which an open row lists. */
+export function hiddenColumns<Row>(columns: TableColumn<Row>[], width: number): TableColumn<Row>[] {
+  return columns.filter((column) => width < priorityWidths[column.priority ?? 1]);
+}
+
+/** What a table is sorted by until a header is clicked. */
+export interface TableSort {
+  /** The id of the column sorted by. */
+  id: string;
+  /** Largest first. */
+  desc: boolean;
+}
+
+/** The scope that cost the most is the row a reader of the table is looking for. */
+export const scopeSort: TableSort = { id: 'tokens', desc: true };
+export const memorySort: TableSort = { id: 'tokens', desc: true };
+export const sessionSort: TableSort = { id: 'tokens', desc: true };
 
 /** The text a cell shows, which is its own when it has one and its value otherwise. */
 export function cellText<Row>(column: TableColumn<Row>, row: Row): string {
@@ -174,17 +214,48 @@ export const scopeColumns: TableColumn<ScopeStatsRow>[] = [
     link: (row) => paths.scope(row.scope_id),
   },
   { id: 'tokens', header: 'Tokens', value: (row) => row.tokens, text: (row) => formatTokens(row.tokens), numeric: true },
-  { id: 'deliveries', header: 'Deliveries', value: (row) => row.deliveries, numeric: true },
-  { id: 'activations', header: 'Activations', value: (row) => row.activations, numeric: true },
-  { id: 'forgettings', header: 'Forgettings', value: (row) => row.forgettings, numeric: true },
-  { id: 'live', header: 'Live contexts', value: (row) => row.live_contexts, numeric: true },
-  { id: 'memories', header: 'Memories', value: (row) => row.memories, numeric: true },
+  {
+    id: 'deliveries',
+    header: 'Deliveries',
+    value: (row) => row.deliveries,
+    numeric: true,
+    priority: 2,
+  },
+  {
+    id: 'activations',
+    header: 'Activations',
+    value: (row) => row.activations,
+    numeric: true,
+    priority: 2,
+  },
+  {
+    id: 'forgettings',
+    header: 'Forgettings',
+    value: (row) => row.forgettings,
+    numeric: true,
+    priority: 3,
+  },
+  {
+    id: 'live',
+    header: 'Live contexts',
+    value: (row) => row.live_contexts,
+    numeric: true,
+    priority: 3,
+  },
+  {
+    id: 'memories',
+    header: 'Memories',
+    value: (row) => row.memories,
+    numeric: true,
+    priority: 3,
+  },
   {
     id: 'per-delivery',
     header: 'Tokens per delivery',
     value: (row) => row.tokens_per_delivery,
     text: (row) => row.tokens_per_delivery.toFixed(0),
     numeric: true,
+    priority: 3,
   },
 ];
 
@@ -196,13 +267,37 @@ export const memoryColumns: TableColumn<MemoryStatsRow>[] = [
     link: (row) => paths.memory(row.memory),
   },
   { id: 'tokens', header: 'Tokens', value: (row) => row.tokens, text: (row) => formatTokens(row.tokens), numeric: true },
-  { id: 'new', header: 'New', value: (row) => row.shown_full_new, numeric: true },
-  { id: 'changed', header: 'Changed', value: (row) => row.shown_full_changed, numeric: true },
-  { id: 'stale', header: 'Stale', value: (row) => row.shown_full_stale, numeric: true },
-  { id: 'shrunk', header: 'Shrunk', value: (row) => row.shrunk, numeric: true },
-  { id: 'fetched', header: 'Fetched', value: (row) => row.fetched_full, numeric: true },
-  { id: 'last-shown', header: 'Last shown', value: (row) => row.last_shown ?? '', moment: true },
-  { id: 'most-under', header: 'Printed under', value: (row) => row.most_under ?? '' },
+  { id: 'new', header: 'New', value: (row) => row.shown_full_new, numeric: true, priority: 3 },
+  {
+    id: 'changed',
+    header: 'Changed',
+    value: (row) => row.shown_full_changed,
+    numeric: true,
+    priority: 3,
+  },
+  {
+    id: 'stale',
+    header: 'Stale',
+    value: (row) => row.shown_full_stale,
+    numeric: true,
+    priority: 3,
+  },
+  { id: 'shrunk', header: 'Shrunk', value: (row) => row.shrunk, numeric: true, priority: 3 },
+  {
+    id: 'fetched',
+    header: 'Fetched',
+    value: (row) => row.fetched_full,
+    numeric: true,
+    priority: 2,
+  },
+  {
+    id: 'last-shown',
+    header: 'Last shown',
+    value: (row) => row.last_shown ?? '',
+    moment: true,
+    priority: 3,
+  },
+  { id: 'most-under', header: 'Printed under', value: (row) => row.most_under ?? '', priority: 3 },
 ];
 
 /** What a session row holds, which is the log's row and when the context was last seen. */
@@ -225,8 +320,15 @@ export const sessionColumns: TableColumn<SessionRow>[] = [
     value: (row) => row.last_context_tokens ?? 0,
     text: (row) => (row.last_context_tokens === null ? '' : formatTokens(row.last_context_tokens)),
     numeric: true,
+    priority: 2,
   },
-  { id: 'last-seen', header: 'Last seen', value: (row) => row.last_seen, moment: true },
+  {
+    id: 'last-seen',
+    header: 'Last seen',
+    value: (row) => row.last_seen,
+    moment: true,
+    priority: 3,
+  },
 ];
 
 export const triggerColumns: TableColumn<TriggerStatsRow>[] = [

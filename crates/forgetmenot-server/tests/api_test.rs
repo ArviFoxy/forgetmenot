@@ -20,7 +20,9 @@ mod common;
 
 use serde_json::{Value, json};
 
-use common::{TestServer, api_request, example_store_files, example_store_without_settings};
+use common::{
+    TestServer, api_request, example_store_files, example_store_without_settings, tool_json,
+};
 
 /// The author name a write carries; the frontend sends this one.
 const AUTHOR: &str = "wiki";
@@ -1556,6 +1558,122 @@ fn the_scopes_route_reports_what_a_scope_cost_beside_the_memories_it_holds_now()
         widgets["tokens_per_delivery"].as_f64(),
         Some(tokens as f64),
         "one delivery cost the whole of it: {widgets}"
+    );
+}
+
+/// Detects a per-scope report whose rows are whatever id the log and the live
+/// contexts name. A scope deleted while a context still works in it keeps a row
+/// of zeros for as long as that context lives, and a scope deleted after its
+/// memory was delivered loses the cost it was charged.
+///
+/// The expectation is the rule the page is drawn against: a row is a scope the
+/// index lists or a scope with a delivery, an activation or a forgetting in the
+/// window, and a context's active set only raises the live-context count of the
+/// rows that are there.
+#[test]
+fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_that_was_delivered()
+{
+    let server = server_with_a_session();
+    let (status, answer) = server.api(
+        "POST",
+        "/api/scopes",
+        Some(&json!({
+            "id": "sandbox",
+            "implies": [],
+            "triggers": [],
+            "author": AUTHOR,
+            "message": "add the sandbox scope",
+        })),
+    );
+    assert_eq!(status, 200, "the scope must be created, got {answer}");
+    let (status, answer) = server.api(
+        "POST",
+        "/api/memories",
+        Some(&json!({
+            "id": "sandbox-rule",
+            "description": "Nothing made in the sandbox outlives the session that made it",
+            "kind": "critical",
+            "scopes": ["sandbox"],
+            "source": "user",
+            "body": "# The sandbox is temporary\n\nNothing in it outlives the session.\n",
+            "author": AUTHOR,
+            "message": "record the sandbox rule",
+        })),
+    );
+    assert_eq!(status, 200, "the memory must be created, got {answer}");
+
+    // The session works in both scopes; only `sandbox` has anything to deliver,
+    // so `workshop` is charged nothing while it is on.
+    let session = server.mcp();
+    let turned_on = tool_json(&session.call(
+        "session_scope_on",
+        json!({ "session_key": "alpha/session-1", "scopes": ["sandbox", "workshop"] }),
+    ));
+    assert!(
+        turned_on["active"]
+            .as_array()
+            .is_some_and(|scopes| scopes.contains(&json!("sandbox"))),
+        "the session must be working in the scope, got {turned_on}"
+    );
+    server.hook("alpha", Some(12_000), &widget_prompt());
+
+    // Both scopes are then deleted, with the delivered memory, so nothing but
+    // the context's active set and the log still names them.
+    let (status, answer) = server.api(
+        "DELETE",
+        "/api/memories/sandbox-rule",
+        Some(&json!({
+            "base_version": document(&server, "sandbox-rule")["version"],
+            "author": AUTHOR,
+            "message": "the sandbox rule is written down elsewhere",
+        })),
+    );
+    assert_eq!(status, 200, "the memory must be deleted, got {answer}");
+    for id in ["sandbox", "workshop"] {
+        let (status, answer) = server.api(
+            "DELETE",
+            &format!("/api/scopes/{id}"),
+            Some(&json!({
+                "base_version": scope(&server, id)["version"],
+                "author": AUTHOR,
+                "message": format!("the {id} scope is no longer in use"),
+            })),
+        );
+        assert_eq!(status, 200, "the scope {id} must be deleted, got {answer}");
+    }
+    let (status, contexts) = server.api("GET", "/api/contexts", None);
+    assert_eq!(status, 200, "the contexts must be readable, got {contexts}");
+    let active = contexts
+        .as_array()
+        .unwrap_or_else(|| panic!("the contexts are a list: {contexts}"))
+        .iter()
+        .find(|row| row["key"] == json!("alpha/session-1"))
+        .map(|row| row["active_scopes"].clone())
+        .unwrap_or_else(|| panic!("the session must still be live: {contexts}"));
+    assert!(
+        active.as_array().is_some_and(
+            |scopes| scopes.contains(&json!("sandbox")) && scopes.contains(&json!("workshop"))
+        ),
+        "the context must still name both deleted scopes, or this proves nothing: {active}"
+    );
+
+    let (status, answer) = server.api("GET", "/api/stats/scopes", None);
+
+    assert_eq!(status, 200, "the scopes must be readable, got {answer}");
+    let rows = answer
+        .as_array()
+        .unwrap_or_else(|| panic!("the report is a list of rows: {answer}"));
+    assert!(
+        !rows.iter().any(|row| row["scope_id"] == json!("workshop")),
+        "a scope that was deleted and did nothing in the window must be no row, got {answer}"
+    );
+    let sandbox = rows
+        .iter()
+        .find(|row| row["scope_id"] == json!("sandbox"))
+        .unwrap_or_else(|| panic!("a deleted scope with deliveries must be a row: {answer}"));
+    assert!(
+        sandbox["tokens"].as_u64().unwrap_or(0) > 0 && sandbox["deliveries"].as_u64() == Some(1),
+        "the deleted scope must keep the one delivery it was charged: {sandbox}"
     );
 }
 

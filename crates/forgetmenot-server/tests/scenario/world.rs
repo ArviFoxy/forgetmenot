@@ -107,6 +107,13 @@ impl World {
             .clone()
     }
 
+    /// The scopes the index lists, which is what says a scope exists.
+    pub fn scope_index(&self) -> Vec<Value> {
+        let (status, body) = self.api("GET", "/api/scopes", None);
+        assert_eq!(status, 200, "the scope index must be readable, got {body}");
+        body.as_array().expect("the index is a JSON array").clone()
+    }
+
     /// One context by its session key, failing the test when the server has not
     /// seen it.
     pub fn context(&self, key: &str) -> Value {
@@ -168,7 +175,8 @@ impl World {
     /// What the statistics recorded about one scope: how often it was turned on
     /// and how often it turned itself off, with the live contexts working in it.
     ///
-    /// A scope nothing has happened to still has a row, with everything zero.
+    /// A scope the index lists still has a row when nothing has happened to it,
+    /// with everything zero; an id only a context's active set names has none.
     pub fn stats_scope(&self, scope_id: &str) -> Value {
         let active_sets: Vec<std::collections::BTreeSet<ScopeId>> = self
             .contexts()
@@ -184,10 +192,22 @@ impl World {
                     .collect()
             })
             .collect();
+        let existing: std::collections::BTreeSet<ScopeId> = self
+            .scope_index()
+            .iter()
+            .map(|row| {
+                ScopeId::new(
+                    row["id"]
+                        .as_str()
+                        .expect("a scope of the index has an id")
+                        .to_string(),
+                )
+            })
+            .collect();
         let rows = self
             .server
             .stats()
-            .scope_stats(&Filter::all(), &active_sets)
+            .scope_stats(&Filter::all(), &active_sets, &existing)
             .expect("the statistics are readable");
         rows.into_iter()
             .find(|row| row.scope_id == scope_id)

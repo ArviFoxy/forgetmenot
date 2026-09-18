@@ -24,6 +24,8 @@ html {
   --fmn-sidebar-width: 17rem;
   --fmn-measure: 70ch;
   --fmn-row-height: 1.9rem;
+  /* The column of chevrons, which the sticky first column is offset by. */
+  --fmn-expander-width: 1.8rem;
 
   /* One surface for the whole app; thin borders do the separating. */
   --fmn-bg: var(--sl-color-neutral-0);
@@ -1432,7 +1434,7 @@ table.data th button.sort sl-icon {
 
 table.data th.expander,
 table.data td.expander {
-  width: 1.8rem;
+  width: var(--fmn-expander-width);
   padding-inline: 2px;
 }
 
@@ -1453,6 +1455,28 @@ table.data table.data.sub {
   width: auto;
   min-width: 24rem;
   background-color: var(--fmn-bg);
+}
+
+/* What the width left out of the row, listed in the row it belongs to. */
+.hidden-cells {
+  display: grid;
+  gap: 2px var(--sl-spacing-small);
+  grid-template-columns: auto 1fr;
+  margin: 0 0 var(--sl-spacing-x-small);
+  font-size: 0.85rem;
+}
+
+.hidden-cells:last-child {
+  margin-bottom: 0;
+}
+
+.hidden-cells dt {
+  color: var(--fmn-fg-muted);
+}
+
+.hidden-cells dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- Phone and tablet ---------- */
@@ -1500,5 +1524,47 @@ table.data table.data.sub {
   .commit-bar {
     inset-inline: var(--sl-spacing-x-small);
     bottom: var(--sl-spacing-x-small);
+  }
+
+  /* The columns keep their own width and the box around them scrolls, rather
+     than the table being squeezed into the screen until only the first column
+     is readable. */
+  .table-wrap table.data {
+    width: auto;
+    min-width: 100%;
+  }
+
+  /* What names the row stays on screen while the figures scroll past it. */
+  table.data th.expander,
+  table.data td.expander,
+  table.data th.row-id,
+  table.data td.row-id {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+  }
+
+  table.data:has(th.expander) th.row-id,
+  table.data:has(th.expander) td.row-id {
+    left: var(--fmn-expander-width);
+  }
+
+  /* A sticky cell is drawn over the ones scrolling under it, so it carries the
+     surface its row has. */
+  table.data td.expander,
+  table.data td.row-id {
+    background-color: var(--fmn-bg);
+  }
+
+  table.data tbody tr:hover td.expander,
+  table.data tbody tr:hover td.row-id {
+    background-color: var(--fmn-raised);
+  }
+
+  /* Figures are read in a narrow column of digits, so they give up their
+     padding first. */
+  table.stats th.number,
+  table.stats td.number {
+    padding-inline: var(--sl-spacing-2x-small);
   }
 }

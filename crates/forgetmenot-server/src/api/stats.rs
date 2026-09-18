@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::context::ContextKey;
+use crate::operations;
 use crate::stats::{
     Bucket, Filter, MemoryStatsRow, ScopeStatsRow, SessionStatsRow, StatsError, StatsReader,
     SummaryRow, Window, tokens_of,
@@ -128,12 +129,21 @@ async fn triggers(
 
 /// What each scope did, what its sections cost, how many memories it holds and
 /// how many live contexts work in it.
+///
+/// The rows are the scopes the index lists and the scopes the window holds
+/// something of; the live contexts are counted over those. The index is the one
+/// source of which scopes exist, so an id a context's active set still names
+/// after the scope was deleted is not a row.
 async fn scopes(State(state): State<Arc<AppState>>, Query(query): Query<FilterQuery>) -> Response {
     let filter = match query.filter() {
         Ok(filter) => filter,
         Err(rejection) => return rejection.into_response(),
     };
     let active_sets = active_scope_sets(&state).await;
+    let existing: BTreeSet<ScopeId> = match operations::scope_index(&state).await {
+        Ok(rows) => rows.into_iter().map(|row| row.id).collect(),
+        Err(error) => return error.into_response(),
+    };
     let catalog = match state.store.snapshot().await {
         Ok(catalog) => catalog,
         Err(error) => {
@@ -152,7 +162,7 @@ async fn scopes(State(state): State<Arc<AppState>>, Query(query): Query<FilterQu
         }
     }
     let rows = read(&state, move |reader| {
-        reader.scope_stats(&filter, &active_sets)
+        reader.scope_stats(&filter, &active_sets, &existing)
     })
     .await;
     answer(rows.map(|rows| {

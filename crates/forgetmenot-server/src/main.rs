@@ -1,5 +1,6 @@
 //! The `forgetmenot` command.
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -205,11 +206,11 @@ struct StatsArgs {
 
 /// Every aggregate, as one JSON object.
 ///
-/// There is no live-context count here: which contexts are working in a scope
-/// right now is state a running server holds, and this command reads a file, so
-/// the scope report is the activations the log recorded and nothing else. The
-/// figures are the raw character counts the log holds; the tables below turn
-/// them into tokens.
+/// There is no live-context count here, and the scopes are the ones the log
+/// names rather than the ones the store has: which contexts are working in a
+/// scope right now and which scopes exist are state a running server holds, and
+/// this command reads a file. The figures are the raw character counts the log
+/// holds; the tables below turn them into tokens.
 #[derive(Serialize)]
 struct StatsReport {
     memories: Vec<MemoryStatsRow>,
@@ -239,13 +240,13 @@ fn stats(arguments: &StatsArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // No active scope sets: see StatsReport.
+    // No active scope sets and no scope index: see StatsReport.
     let report = (|| {
         Ok::<_, forgetmenot_server::stats::StatsError>(StatsReport {
             memories: reader.memory_stats(&Filter::all())?,
             triggers: reader.trigger_stats(&Filter::all())?,
             scopes: reader
-                .scope_stats(&Filter::all(), &[])?
+                .scope_stats(&Filter::all(), &[], &BTreeSet::new())?
                 .into_iter()
                 .map(|row| ScopeActivationsRow {
                     scope_id: row.scope_id,

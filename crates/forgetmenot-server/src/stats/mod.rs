@@ -635,12 +635,18 @@ impl StatsReader {
     /// What each scope did in the window, what its sections cost, and how many
     /// live contexts work in it.
     ///
-    /// `active_sets` is the active scope set of every live context, which only a
-    /// running server knows: it is the registry's state, not the log's.
+    /// A row is a scope of `existing` or a scope with a delivery, an activation
+    /// or a forgetting inside the window. `existing` is the scopes the index
+    /// lists and `active_sets` the active scope set of every live context, both
+    /// of which only a running server knows: they are the store's and the
+    /// registry's state, not the log's. An active set raises the live-context
+    /// count of the rows that are there and adds none, so an id a context still
+    /// names after the scope was deleted is not a row.
     pub fn scope_stats(
         &self,
         filter: &Filter,
         active_sets: &[BTreeSet<ScopeId>],
+        existing: &BTreeSet<ScopeId>,
     ) -> Result<Vec<ScopeStatsRow>, StatsError> {
         /// The row of one scope, added with nothing counted yet if absent.
         fn row_for<'a>(
@@ -714,11 +720,18 @@ impl StatsReader {
             row.chars = chars.max(0) as u64;
             row.deliveries = events.max(0) as u64;
         }
+        // A scope that exists has a row whatever the window holds, so a scope
+        // nothing happened to in this window is still on the page.
+        for scope in existing {
+            row_for(&mut rows, scope.as_str());
+        }
         // A scope can be live without ever having been activated by a trigger:
         // the implicit scopes are, and so is one a scope implies.
         for active in active_sets {
             for scope in active {
-                row_for(&mut rows, scope.as_str()).live_contexts += 1;
+                if let Some(row) = rows.get_mut(scope.as_str()) {
+                    row.live_contexts += 1;
+                }
             }
         }
         if let Some(scope) = &filter.scope {
@@ -1318,7 +1331,7 @@ mod tests {
         let reader = StatsReader::open(&path).expect("the database is readable");
 
         let scopes = reader
-            .scope_stats(&Filter::all(), &[])
+            .scope_stats(&Filter::all(), &[], &BTreeSet::new())
             .expect("the scopes are readable");
         assert_eq!(
             scopes

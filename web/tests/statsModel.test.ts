@@ -9,12 +9,16 @@ import type {
 } from '../src/api/types';
 import {
   defaultStatsFilter,
+  hiddenColumns,
   measuredSizes,
   memoryColumns,
+  memorySort,
   scopeColumns,
+  scopeSort,
   sessionColumns,
   sessionPoints,
   sessionRows,
+  sessionSort,
   statsAddress,
   statsFilterFromSearch,
   statsQueryOf,
@@ -23,8 +27,10 @@ import {
   summaryHeld,
   summaryTokens,
   tokenPoints,
+  visibleColumns,
   type StatsFilter,
   type TableColumn,
+  type TableSort,
 } from '../src/model/stats';
 
 // The source of these expectations is what the statistics page promises: the range
@@ -234,4 +240,62 @@ test('a session the registry no longer holds takes another session row time as i
   const size = column(sessionColumns, 'context');
   expect(size.text?.(rows[0]!)).toBe('4.8k');
   expect(size.text?.(rows[1]!)).toBe('');
+});
+
+// The source of the next three expectations is what the tables promise at a size:
+// on a phone every table shows what names the row and what it cost, on a tablet
+// the figures a reader compares rows by as well, and on a laptop all of them, with
+// nothing dropped on the way; and every table opens on its largest cost. The
+// widths are the ones the recorded screenshots are taken at.
+
+/** The three tables of the statistics page, each with what it opens on. */
+const tables: { name: string; columns: TableColumn<never>[]; sort: TableSort }[] = [
+  { name: 'scopes', columns: scopeColumns, sort: scopeSort },
+  { name: 'memories', columns: memoryColumns, sort: memorySort },
+  { name: 'sessions', columns: sessionColumns, sort: sessionSort },
+];
+
+/** The ids of the columns a table shows at `width`, in the order it draws them. */
+function shownAt<Row>(columns: TableColumn<Row>[], width: number): string[] {
+  return visibleColumns(columns, width).map((column) => column.id);
+}
+
+test('a table drawn on a phone shows a column the width cannot hold, or hides one it can', () => {
+  expect(shownAt(scopeColumns, 390)).toEqual(['scope', 'tokens']);
+  expect(shownAt(memoryColumns, 390)).toEqual(['memory', 'tokens']);
+  expect(shownAt(sessionColumns, 390)).toEqual(['session', 'tokens']);
+
+  expect(shownAt(scopeColumns, 820)).toEqual(['scope', 'tokens', 'deliveries', 'activations']);
+  expect(shownAt(memoryColumns, 820)).toEqual(['memory', 'tokens', 'fetched']);
+  expect(shownAt(sessionColumns, 820)).toEqual(['session', 'tokens', 'context']);
+
+  for (const table of tables) {
+    expect(shownAt(table.columns, 1440), table.name).toEqual(
+      table.columns.map((column) => column.id),
+    );
+  }
+});
+
+test('a column the width leaves out is in neither list, so its figure is nowhere to be read', () => {
+  for (const table of tables) {
+    for (const width of [390, 820, 1440]) {
+      const reachable = [
+        ...shownAt(table.columns, width),
+        ...hiddenColumns(table.columns, width).map((column) => column.id),
+      ];
+      expect(reachable.sort(), `${table.name} at ${width}px`).toEqual(
+        table.columns.map((column) => column.id).sort(),
+      );
+    }
+  }
+});
+
+test('a table opens on a column other than the cost, or on the smallest figure first', () => {
+  for (const table of tables) {
+    expect(table.sort, table.name).toEqual({ id: 'tokens', desc: true });
+    expect(
+      table.columns.find((column) => column.id === table.sort.id)?.numeric,
+      `${table.name} must sort by a column it has`,
+    ).toBe(true);
+  }
 });
