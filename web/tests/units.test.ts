@@ -26,7 +26,7 @@ test('a count whose decimal rounds up to 1024.0 keeps the smaller unit', () => {
   expect(formatBytes(1073689396)).toBe('1.0 GB');
 });
 
-// The source of these expectations is the form the statistics page shows a token
+// The source of these expectations is the form the dashboard shows a token
 // count in: three digits at most, so a plain count below 1000, one decimal while
 // the scaled figure is under ten, and a whole number above it, in steps of 1000.
 

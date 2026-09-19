@@ -240,7 +240,7 @@ export class FmnMemoryPage extends PageElement {
         this.deleteMessage = '';
         this.deleteOpen = false;
         announceStoreChange();
-        navigate(paths.home());
+        navigate(paths.dashboard());
         return;
       }
       this.deleteFailure =
@@ -472,7 +472,7 @@ export class FmnMemoryPage extends PageElement {
         this.change({ message: event.detail.message })}
       @fmn-save=${() => void this.save()}
       @fmn-discard=${() => {
-        if (this.creating) navigate(paths.home());
+        if (this.creating) navigate(paths.dashboard());
         else this.discard();
       }}
     ></fmn-commit-bar>`;

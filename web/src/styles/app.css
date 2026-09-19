@@ -93,12 +93,11 @@ fmn-validation-errors,
 fmn-diff,
 fmn-history-list,
 fmn-side-by-side,
-fmn-overview-view,
 fmn-history-view,
 fmn-memory-page,
 fmn-scope-page,
 fmn-contexts-view,
-fmn-stats-view,
+fmn-dashboard-view,
 fmn-settings-view,
 fmn-unknown-view {
   display: block;
@@ -1290,7 +1289,7 @@ pre.diff code.diff-changed {
   white-space: nowrap;
 }
 
-/* ---------- Statistics ---------- */
+/* ---------- Dashboard ---------- */
 
 /* The charts are laid out at the width of their element, which an inline element
    does not have. */

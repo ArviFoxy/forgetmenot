@@ -12,7 +12,7 @@ const commitOid = 'a'.repeat(40);
 
 /** Every link the app can show, with arguments that exercise the awkward ids. */
 const links: Record<keyof typeof paths, string> = {
-  home: paths.home(),
+  dashboard: paths.dashboard(),
   memory: paths.memory(memoryWithSlashes),
   memoryHistory: paths.memoryHistory(memoryWithSlashes),
   memoryCommit: paths.memoryCommit(memoryWithSlashes, commitOid),
@@ -23,9 +23,24 @@ const links: Record<keyof typeof paths, string> = {
   historyCommit: paths.historyCommit(commitOid),
   contexts: paths.contexts(),
   contextPrompt: paths.contextPrompt(subagentKey),
-  stats: paths.stats(),
   settings: paths.settings(),
 };
+
+test('the root address, /dashboard or /stats opens something other than the dashboard', () => {
+  // The root address is where the app is opened, /dashboard is the link the bar
+  // shows, and /stats is the address the page carried when it was called Statistics.
+  for (const address of ['/', '/dashboard', '/stats']) {
+    const view = resolve(address);
+    expect(view.name, address).toBe('dashboard');
+    expect(view.tag, address).toBe('fmn-dashboard-view');
+  }
+});
+
+test('an address resolves to the overview, which no element shows any more', () => {
+  for (const address of [...Object.values(links), '/', '/stats', '/not/an/address']) {
+    expect(resolve(address).tag, address).not.toBe('fmn-overview-view');
+  }
+});
 
 test('a link the app shows opens no view when its address is loaded directly', () => {
   for (const [name, path] of Object.entries(links)) {

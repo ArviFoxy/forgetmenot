@@ -4,13 +4,12 @@ import { currentPath, navigate, onLocationChange } from '../navigation';
 import { paths, resolve, type RouteName, type RouteView } from '../routes';
 import './fmn-sidebar';
 import './fmn-theme-toggle';
-import '../views/fmn-overview-view';
 import '../views/fmn-memory-page';
 import '../views/fmn-scope-page';
 import '../views/fmn-contexts-view';
 import '../views/fmn-history-view';
 import '../views/fmn-context-prompt-view';
-import '../views/fmn-stats-view';
+import '../views/fmn-dashboard-view';
 import '../views/fmn-settings-view';
 import '../views/fmn-unknown-view';
 
@@ -22,10 +21,9 @@ interface Section {
 }
 
 const sections: Section[] = [
-  { name: 'home', href: paths.home(), label: 'Overview', icon: 'file-text' },
+  { name: 'dashboard', href: paths.dashboard(), label: 'Dashboard', icon: 'chart-bar' },
   { name: 'contexts', href: paths.contexts(), label: 'Contexts', icon: 'activity' },
   { name: 'history', href: paths.history(), label: 'History', icon: 'clock' },
-  { name: 'stats', href: paths.stats(), label: 'Statistics', icon: 'chart-bar' },
   { name: 'settings', href: paths.settings(), label: 'Settings', icon: 'settings' },
 ];
 
@@ -95,7 +93,7 @@ export class FmnApp extends PageElement {
               }}
             ></sl-icon-button>`
           : nothing}
-        <a class="brand" href=${paths.home()}>
+        <a class="brand" href=${paths.dashboard()}>
           <img class="brand-mark" src="/logo-48.png" width="20" height="20" alt="" />
           <span>forgetmenot</span>
         </a>

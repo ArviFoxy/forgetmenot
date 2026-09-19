@@ -35,7 +35,7 @@ import {
   type TableSort,
 } from '../src/model/stats';
 
-// The source of these expectations is what the statistics page promises: the range
+// The source of these expectations is what the dashboard promises: the range
 // names a window ending now, the address carries the range and the two filters so a
 // reload and a shared link show the same thing, a chart reads instants and figures
 // rather than text, and a column sorts by the figure it shows.
@@ -84,9 +84,9 @@ test('a filter read back from the address is not the one written to it', () => {
 
 test('the address carries what the page would show anyway, so a plain link is not the default view', () => {
   expect(statsSearch(defaultStatsFilter)).toBe('');
-  expect(statsAddress(defaultStatsFilter)).toBe('/stats');
+  expect(statsAddress(defaultStatsFilter)).toBe('/dashboard');
   expect(statsAddress({ range: '7d', session: '', scope: 'widgets' })).toBe(
-    '/stats?range=7d&scope=widgets',
+    '/dashboard?range=7d&scope=widgets',
   );
 });
 
@@ -250,7 +250,7 @@ test('a session the registry no longer holds takes another session row time as i
 // nothing dropped on the way; and every table opens on its largest cost. The
 // widths are the ones the recorded screenshots are taken at.
 
-/** The three tables of the statistics page, each with what it opens on. */
+/** The three tables of the dashboard, each with what it opens on. */
 const tables: { name: string; columns: TableColumn<never>[]; sort: TableSort }[] = [
   { name: 'scopes', columns: scopeColumns, sort: scopeSort },
   { name: 'memories', columns: memoryColumns, sort: memorySort },

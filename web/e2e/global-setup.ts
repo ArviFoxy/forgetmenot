@@ -86,7 +86,7 @@ async function playHooks(base: string): Promise<void> {
 /**
  * The server records deliveries and trigger fires behind the request, so a page read
  * straight after the hooks can show a partial count. This waits until two reads in a
- * row report the same thing, which is what makes the statistics page comparable to
+ * row report the same thing, which is what makes the dashboard comparable to
  * an image.
  */
 async function settleStatistics(base: string): Promise<void> {

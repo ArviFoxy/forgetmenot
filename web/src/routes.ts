@@ -7,7 +7,7 @@ import type { RouteParams } from 'universal-router';
 import type { PromptMode } from './api/types';
 
 export type RouteName =
-  | 'home'
+  | 'dashboard'
   | 'memory'
   | 'memoryHistory'
   | 'memoryCommit'
@@ -18,7 +18,6 @@ export type RouteName =
   | 'historyCommit'
   | 'contexts'
   | 'contextPrompt'
-  | 'stats'
   | 'settings'
   | 'unknown';
 
@@ -43,7 +42,7 @@ function encodeId(id: string): string {
 
 /** Every link the app shows. No component builds a path of its own. */
 export const paths = {
-  home: (): string => '/',
+  dashboard: (): string => '/dashboard',
   memory: (id: string): string => `/memories/${encodeId(id)}`,
   memoryHistory: (id: string): string => `/memories/${encodeId(id)}/history`,
   memoryCommit: (id: string, oid: string): string =>
@@ -64,7 +63,6 @@ export const paths = {
     mode === 'due'
       ? `/contexts/${encodeId(key)}/prompt`
       : `/contexts/${encodeId(key)}/prompt?mode=${mode}`,
-  stats: (): string => '/stats',
   settings: (): string => '/settings',
 };
 
@@ -83,7 +81,12 @@ function view(name: RouteName, tag: string, properties: Record<string, string> =
 // history of <id> rather than a memory whose last segment is "history". There is no
 // edit route: an item's own page is where it is edited.
 const router = new UniversalRouterSync<RouteView>([
-  { path: '/', action: () => view('home', 'fmn-overview-view') },
+  // The root address, the name, and the address the page had when it was called
+  // Statistics, so a bookmark of it still opens the page.
+  {
+    path: ['/', '/dashboard', '/stats'],
+    action: () => view('dashboard', 'fmn-dashboard-view'),
+  },
   // The same views as an item that exists, in the state of one that does not: the
   // fields and the commit bar are the item's own, starting from nothing.
   { path: '/memories/new', action: () => view('memoryNew', 'fmn-memory-page', { mode: 'new' }) },
@@ -123,7 +126,6 @@ const router = new UniversalRouterSync<RouteView>([
   },
   { path: '/history', action: () => view('history', 'fmn-history-view', { mode: 'list' }) },
   { path: '/contexts', action: () => view('contexts', 'fmn-contexts-view') },
-  { path: '/stats', action: () => view('stats', 'fmn-stats-view') },
   { path: '/settings', action: () => view('settings', 'fmn-settings-view') },
   { path: '/*rest', action: () => view('unknown', 'fmn-unknown-view') },
 ]);

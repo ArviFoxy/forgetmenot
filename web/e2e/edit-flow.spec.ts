@@ -40,7 +40,7 @@ test('the built app cannot open a memory from the tree, edit it and show the edi
   const marker = `flow marker ${Date.now()}`;
   const commitMessage = `add ${marker}`;
 
-  await page.goto('/');
+  await page.goto('/dashboard');
   await page.getByRole('searchbox', { name: 'Search scopes and memories' }).fill('widget-naming');
   const treeItem = page.locator('sl-tree-item[data-target="/memories/widget-naming"]');
   await expect(treeItem).toBeVisible();
@@ -179,7 +179,7 @@ test('a scope trigger is not editable on the scope page itself', async ({ page }
 
 test('a scope created from the tree is missing from the tree and from the API', async ({ page }) => {
   const id = `probe-scope-${Date.now()}`;
-  await page.goto('/');
+  await page.goto('/dashboard');
   await page.getByRole('button', { name: 'New scope or memory' }).click();
   await page.getByRole('menuitem', { name: 'New scope' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('New scope');
@@ -198,7 +198,7 @@ test('a scope created from the tree is missing from the tree and from the API', 
 
 test('a memory created from a scope context menu is created outside that scope', async ({ page }) => {
   const id = `probe-memory-${Date.now()}`;
-  await page.goto('/');
+  await page.goto('/dashboard');
   await page
     .locator('sl-tree-item[data-target="/scopes/widgets"] > .tree-row')
     .click({ button: 'right' });
@@ -243,7 +243,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
   });
   test.skip(probe.status() === 405, 'the server has no delete route yet');
 
-  await page.goto('/');
+  await page.goto('/memories/widget-naming');
   await page.getByRole('searchbox', { name: 'Search scopes and memories' }).fill(id);
   await page
     .locator(`sl-tree-item[data-target="/memories/${id}"] > .tree-row`)
@@ -255,7 +255,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
   await panel.fill(`delete ${id}`);
   await page.getByRole('button', { name: 'Delete memory' }).click();
 
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/dashboard$/);
   const gone = await page.request.get(`/api/memories/${id}`);
   expect(gone.status()).toBe(404);
 });
@@ -304,7 +304,7 @@ test('a scope nothing refers to is kept when it is deleted from the tree', async
   expect(created.status()).toBe(200);
   test.skip(!(await scopeDeleteReady(page)), 'the server has no scope delete route yet');
 
-  await page.goto('/');
+  await page.goto('/memories/widget-naming');
   await page.getByRole('searchbox', { name: 'Search scopes and memories' }).fill(id);
   await page.locator(`sl-tree-item[data-target="/scopes/${id}"] > .tree-row`).click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Delete scope' }).click();
@@ -314,7 +314,7 @@ test('a scope nothing refers to is kept when it is deleted from the tree', async
   await field.fill(`delete ${id}`);
   await page.getByRole('button', { name: 'Delete scope' }).click();
 
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/dashboard$/);
   await expect(page.locator(`sl-tree-item[data-target="/scopes/${id}"]`)).toHaveCount(0);
   const scopes = (await (await page.request.get('/api/scopes')).json()) as { id: string }[];
   expect(scopes.map((scope) => scope.id)).not.toContain(id);

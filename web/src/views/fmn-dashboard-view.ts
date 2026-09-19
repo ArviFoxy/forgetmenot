@@ -44,7 +44,7 @@ import '../components/fmn-session-series';
 import '../components/fmn-token-series';
 import type { RowClick } from '../components/fmn-data-table';
 
-const openStorage = 'fmn-stats-open';
+const openStorage = 'fmn-dashboard-open';
 
 /** The sections of the page, in the order they are drawn. */
 const sections = [
@@ -104,7 +104,7 @@ function summaryCards(summary: Summary): Card[] {
  * range and the two filters are in the address, so a reload shows what is on
  * screen and a link to it shows the same, and every section reads the same window.
  */
-export class FmnStatsView extends PageElement {
+export class FmnDashboardView extends PageElement {
   static override properties: PropertyDeclarations = {
     filter: { state: true },
     open: { state: true },
@@ -355,8 +355,8 @@ export class FmnStatsView extends PageElement {
   override render(): TemplateResult {
     return html`
       <header class="page-header">
-        <div class="page-name"><sl-icon name="chart-bar"></sl-icon><span>statistics</span></div>
-        <h1>Statistics</h1>
+        <div class="page-name"><sl-icon name="chart-bar"></sl-icon><span>dashboard</span></div>
+        <h1>Dashboard</h1>
       </header>
       ${this.section(
         'summary',
@@ -443,4 +443,4 @@ export class FmnStatsView extends PageElement {
   }
 }
 
-customElements.define('fmn-stats-view', FmnStatsView);
+customElements.define('fmn-dashboard-view', FmnDashboardView);

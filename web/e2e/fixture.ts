@@ -54,7 +54,7 @@ export interface HookPlay {
 
 /**
  * The events the fixture plays, in this order. They decide which memories count as
- * delivered and which contexts exist, so the contexts and statistics pages show the
+ * delivered and which contexts exist, so the contexts page and the dashboard show the
  * same rows in every run.
  */
 export const hookSequence: HookPlay[] = [

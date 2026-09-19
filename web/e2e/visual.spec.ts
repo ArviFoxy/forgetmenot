@@ -91,12 +91,12 @@ for (const size of sizes) {
         await checkContrast(page, textSelectors);
         await checkNoOverflow(page);
 
-        await page.goto('/');
+        await page.goto('/contexts');
         await settle(page);
         await checkContrast(page, tableSelectors);
         await checkNoOverflow(page);
 
-        await page.goto('/stats');
+        await page.goto('/dashboard');
         await settle(page);
         await checkContrast(page, ['table.stats th', 'table.stats td']);
         await checkNoOverflow(page);
@@ -191,13 +191,6 @@ for (const scheme of ['light', 'dark'] as const) {
     );
     test.use({ viewport: laptop, colorScheme: scheme });
 
-    test('the overview looks as reviewed', async ({ page }) => {
-      await page.goto('/');
-      await expect(page.locator('table.data').first()).toBeVisible();
-      await settle(page);
-      await expect(page).toHaveScreenshot(`overview-laptop-${scheme}.png`);
-    });
-
     test('a memory page looks as reviewed', async ({ page }) => {
       await page.goto('/memories/rocket-stages');
       await expect(page.locator('.milkdown .ProseMirror')).toBeVisible();
@@ -280,26 +273,26 @@ for (const scheme of ['light', 'dark'] as const) {
       );
     });
 
-    test('the statistics look as reviewed', async ({ page }) => {
+    test('the dashboard looks as reviewed', async ({ page }) => {
       // The `all` range takes its window from the log, so the chart's points sit
       // where the data puts them rather than where the clock does.
-      await page.goto('/stats?range=all');
+      await page.goto('/dashboard?range=all');
       await expect(page.locator('table.stats').first()).toBeVisible();
       await settle(page);
-      await expect(page).toHaveScreenshot(`stats-laptop-${scheme}.png`, {
+      await expect(page).toHaveScreenshot(`dashboard-laptop-${scheme}.png`, {
         mask: clockValues(page),
       });
     });
 
-    test('an opened session row in the statistics looks as reviewed', async ({ page }) => {
+    test('an opened session row in the dashboard looks as reviewed', async ({ page }) => {
       // The chart of one context, which is drawn only for the row that is open.
-      await page.goto('/stats');
+      await page.goto('/dashboard');
       await expect(page.locator('table.stats').first()).toBeVisible();
       const sessions = page.locator('sl-details[data-section="sessions"]');
       await sessions.locator('tbody tr.data-row td.expander sl-icon-button').first().click();
       await expect(sessions.locator('fmn-session-series .chart-plot svg').first()).toBeVisible();
       await settle(page);
-      await expect(sessions).toHaveScreenshot(`stats-session-laptop-${scheme}.png`, {
+      await expect(sessions).toHaveScreenshot(`dashboard-session-laptop-${scheme}.png`, {
         mask: clockValues(page),
       });
     });
@@ -357,13 +350,13 @@ for (const size of sizes) {
         await expect(page).toHaveScreenshot(`layout-${size.name}-${scheme}.png`);
       });
 
-      test('the statistics at this size look as reviewed', async ({ page }) => {
+      test('the dashboard at this size looks as reviewed', async ({ page }) => {
         // The `all` range takes its window from the log, so the chart's points
         // sit where the data puts them rather than where the clock does.
-        await page.goto('/stats?range=all');
+        await page.goto('/dashboard?range=all');
         await expect(page.locator('table.stats').first()).toBeVisible();
         await settle(page);
-        await expect(page).toHaveScreenshot(`stats-${size.name}-${scheme}.png`, {
+        await expect(page).toHaveScreenshot(`dashboard-${size.name}-${scheme}.png`, {
           mask: clockValues(page),
         });
       });
@@ -388,14 +381,16 @@ for (const size of sizes.filter((each) => each.width <= 900)) {
       );
       test.use({ viewport: { width: size.width, height: size.height }, colorScheme: scheme });
 
-      test('the per-scope statistics table at this size looks as reviewed', async ({ page }) => {
-        await page.goto('/stats');
+      test('the per-scope table of the dashboard at this size looks as reviewed', async ({
+        page,
+      }) => {
+        await page.goto('/dashboard');
         const scopes = page.locator('sl-details[data-section="scopes"]');
         await expect(scopes.locator('table.stats')).toBeVisible();
         await scopes.locator('tbody tr.data-row td.expander sl-icon-button').first().click();
         await scopes.scrollIntoViewIfNeeded();
         await settle(page);
-        await expect(scopes).toHaveScreenshot(`stats-scopes-${size.name}-${scheme}.png`, {
+        await expect(scopes).toHaveScreenshot(`dashboard-scopes-${size.name}-${scheme}.png`, {
           mask: clockValues(page),
         });
       });

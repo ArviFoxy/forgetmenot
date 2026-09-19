@@ -222,7 +222,7 @@ export class FmnScopePage extends PageElement {
         this.deleteMessage = '';
         this.deleteOpen = false;
         announceStoreChange();
-        navigate(paths.home());
+        navigate(paths.dashboard());
         return;
       }
       if (outcome.kind === 'invalid') this.deleteErrors = outcome.failure.errors;
@@ -371,7 +371,7 @@ export class FmnScopePage extends PageElement {
             @fmn-save=${() => void this.save()}
             @fmn-discard=${() => {
               if (this.creating) {
-                navigate(paths.home());
+                navigate(paths.dashboard());
                 return;
               }
               this.draft = draftOf(scope);

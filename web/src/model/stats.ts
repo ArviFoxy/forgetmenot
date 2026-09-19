@@ -1,4 +1,4 @@
-// The parts of the statistics page that are arithmetic on values rather than
+// The parts of the dashboard that are arithmetic on values rather than
 // markup: the window a range name stands for, the address the controls are kept
 // in, the points the charts are drawn from, and what each table's columns hold.
 
@@ -89,7 +89,7 @@ export function statsSearch(filter: StatsFilter): string {
 
 /** The address that shows this filter, which is what a control changes to. */
 export function statsAddress(filter: StatsFilter): string {
-  return `${paths.stats()}${statsSearch(filter)}`;
+  return `${paths.dashboard()}${statsSearch(filter)}`;
 }
 
 /** One point of a chart: an instant and the figures drawn at it. */

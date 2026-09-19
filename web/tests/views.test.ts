@@ -16,8 +16,9 @@ import type {
 import type { TreeNode } from '../src/model/tree';
 
 // The source of these expectations is what the pages promise: every address the app
-// links to has an element to show it, the statistics keep index-line and full
-// deliveries in separate columns, and a rejected write shows both versions.
+// links to has an element to show it, the bar names the app's sections, the dashboard
+// keeps index-line and full deliveries in separate columns, and a rejected write shows
+// both versions.
 
 const serverDoc: MemoryDoc = {
   id: 'widget-naming',
@@ -248,7 +249,7 @@ async function settle(element: HTMLElement & { updateComplete?: Promise<unknown>
 beforeEach(() => {
   document.body.innerHTML = '';
   answers.statsRows = true;
-  window.history.replaceState(null, '', '/stats');
+  window.history.replaceState(null, '', '/dashboard');
   window.localStorage.clear();
   answers.contexts = [];
   answers.contextPrompt = contextPrompt;
@@ -359,7 +360,7 @@ function cellsOf(row: Element | undefined): string[] {
 
 test('an address the app links to has no element registered to show it', () => {
   const addresses = [
-    paths.home(),
+    paths.dashboard(),
     paths.memory('sessions/alpha/session-1/notes'),
     paths.memoryHistory('sessions/alpha/session-1/notes'),
     paths.memoryCommit('sessions/alpha/session-1/notes', 'a'.repeat(40)),
@@ -371,7 +372,6 @@ test('an address the app links to has no element registered to show it', () => {
     paths.historyCommit('c'.repeat(40)),
     paths.contexts(),
     paths.contextPrompt('alpha/session-1/agent-7f3a'),
-    paths.stats(),
     paths.settings(),
     '/no/such/address',
   ];
@@ -381,21 +381,32 @@ test('an address the app links to has no element registered to show it', () => {
   }
 });
 
-// The source of these four expectations is what the statistics page promises: five
+test('the bar offers the sections in another order, or leaves one of them out', async () => {
+  const element = document.createElement('fmn-app');
+  document.body.append(element);
+  await settle(element);
+
+  const labels = [...element.querySelectorAll('.app-menu a')].map((link) =>
+    link.textContent?.trim(),
+  );
+  expect(labels).toEqual(['Dashboard', 'Contexts', 'History', 'Settings']);
+});
+
+// The source of these four expectations is what the dashboard promises: five
 // figures across the top, a window with nothing in it said to be empty rather than
 // drawn as an empty table, a click on a scope row narrowing every section to that
 // scope through the address, and every memory row a way to that memory's page.
 
-/** The statistics page, rendered and settled. */
-async function renderStats(): Promise<HTMLElement> {
-  const element = document.createElement('fmn-stats-view');
+/** The dashboard, rendered and settled. */
+async function renderDashboard(): Promise<HTMLElement> {
+  const element = document.createElement('fmn-dashboard-view');
   document.body.append(element);
   await settle(element);
   return element;
 }
 
 test('the summary shows some other number of figures, or reports raw characters', async () => {
-  const element = await renderStats();
+  const element = await renderDashboard();
 
   const cards = [...element.querySelectorAll('.summary-card')];
   expect(cards).toHaveLength(5);
@@ -407,7 +418,7 @@ test('the summary shows some other number of figures, or reports raw characters'
 
 test('a range with nothing in it is drawn as an empty chart and empty tables', async () => {
   answers.statsRows = false;
-  const element = await renderStats();
+  const element = await renderDashboard();
 
   const empties = [...element.querySelectorAll('.empty')].map((node) => node.textContent?.trim());
   expect(empties.length).toBeGreaterThanOrEqual(4);
@@ -416,7 +427,7 @@ test('a range with nothing in it is drawn as an empty chart and empty tables', a
 });
 
 test('a click on a scope row leaves the address alone, so the other sections keep their window', async () => {
-  const element = await renderStats();
+  const element = await renderDashboard();
 
   const row = [...element.querySelectorAll('.stats-scopes tr.data-row')].find(
     (each) => each.querySelector('td.row-id')?.textContent?.trim() === scopeStatsRow.scope_id,
@@ -431,7 +442,7 @@ test('a click on a scope row leaves the address alone, so the other sections kee
 test('the scope table opens in the order the server sent, or hides which way it is sorted', async () => {
   // The server sends the rows by scope id; the table is a report of what things
   // cost, so it opens on the costliest.
-  const element = await renderStats();
+  const element = await renderDashboard();
 
   const scopes = element.querySelector('.stats-scopes');
   const first = [...(scopes?.querySelectorAll('tr.data-row') ?? [])].map(
@@ -445,7 +456,7 @@ test('the scope table opens in the order the server sent, or hides which way it 
 });
 
 test('a click on Tokens sorts it the way it already is, so the order does not change', async () => {
-  const element = await renderStats();
+  const element = await renderDashboard();
   const scopes = element.querySelector('.stats-scopes');
   const tokens = [...(scopes?.querySelectorAll('thead th') ?? [])].find(
     (cell) => cell.textContent?.trim() === 'Tokens',
@@ -469,7 +480,7 @@ test('the session select labels an option by its key, or offers a nameless sessi
   // session by what it was doing. A subagent is not a session, and a context
   // with no name has nothing to read as, so neither is on offer.
   answers.contexts = [subagent, namelessSession, session];
-  const element = await renderStats();
+  const element = await renderDashboard();
 
   const [sessions] = [...element.querySelectorAll('.series-filter')];
   const options = [...(sessions?.querySelectorAll('sl-option') ?? [])].map((option) => [
@@ -483,7 +494,7 @@ test('the session select labels an option by its key, or offers a nameless sessi
 });
 
 test('a memory row has no way to the memory it names', async () => {
-  const element = await renderStats();
+  const element = await renderDashboard();
 
   const link = element.querySelector('.stats-memories tr.data-row a');
   expect(link?.getAttribute('href')).toBe(paths.memory(memoryRow.memory));
