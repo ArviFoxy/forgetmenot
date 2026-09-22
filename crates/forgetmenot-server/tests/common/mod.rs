@@ -872,7 +872,7 @@ pub fn write_transcript_with_custom_title(
 // ---------------------------------------------------------------------------
 
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, ClientInfo, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig, Tool};
 use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -888,7 +888,7 @@ impl TestServer {
                 let transport = StreamableHttpClientTransport::from_config(
                     StreamableHttpClientTransportConfig::with_uri(url),
                 );
-                ClientInfo::default().serve(transport).await
+                ClientConfig::default().serve(transport).await
             })
             .expect("the MCP client initialises against /mcp");
         McpSession {
@@ -904,11 +904,11 @@ impl TestServer {
 /// shutting down waits for the connections it still holds.
 pub struct McpSession<'server> {
     server: &'server TestServer,
-    client: Option<RunningService<RoleClient, ClientInfo>>,
+    client: Option<RunningService<RoleClient, ClientConfig>>,
 }
 
 impl McpSession<'_> {
-    fn client(&self) -> &RunningService<RoleClient, ClientInfo> {
+    fn client(&self) -> &RunningService<RoleClient, ClientConfig> {
         self.client.as_ref().expect("the MCP session is open")
     }
 
