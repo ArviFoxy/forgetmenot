@@ -59,23 +59,19 @@ pub(crate) fn catalog_of(files: Vec<(String, Option<Vec<u8>>)>) -> (TestStore, C
     (store, catalog)
 }
 
-/// One memory file: `kind` is `critical` or `knowledge`, and `scopes` are the
-/// scope ids it belongs to.
+/// One memory file: `kind` is `critical` or `knowledge`, and `scope` is the
+/// scope id it belongs to.
 pub(crate) fn memory_file(
     name: &str,
     kind: &str,
-    scopes: &[&str],
+    scope: &str,
     description: &str,
     body: &str,
 ) -> (String, Option<Vec<u8>>) {
-    let mut text = format!(
-        "---\nname: {name}\ndescription: {description}\nmetadata:\n  kind: {kind}\n  scopes:\n"
+    let text = format!(
+        "---\nname: {name}\ndescription: {description}\n\
+         metadata:\n  kind: {kind}\n  scope: {scope}\n---\n{body}"
     );
-    for scope in scopes {
-        text.push_str(&format!("  - {scope}\n"));
-    }
-    text.push_str("---\n");
-    text.push_str(body);
     (format!("memories/{name}.md"), Some(text.into_bytes()))
 }
 

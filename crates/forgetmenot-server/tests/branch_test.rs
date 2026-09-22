@@ -41,14 +41,10 @@ const NEW_LINE: &str = "The binder lives on the shelf by the door.";
 // ---------------------------------------------------------------------------
 
 /// A memory file, built the way the store holds one.
-fn memory_file(name: &str, kind: &str, scopes: &[&str], body: &str) -> (String, Option<Vec<u8>>) {
-    let scopes: String = scopes
-        .iter()
-        .map(|scope| format!("  - {scope}\n"))
-        .collect();
+fn memory_file(name: &str, kind: &str, scope: &str, body: &str) -> (String, Option<Vec<u8>>) {
     let text = format!(
         "---\nname: {name}\ndescription: the index entry of {name}\nmetadata:\n  kind: {kind}\n  \
-         scopes:\n{scopes}  source: user\n---\n{body}"
+         scope: {scope}\n  source: user\n---\n{body}"
     );
     (format!("memories/{name}.md"), Some(text.into_bytes()))
 }
@@ -70,13 +66,13 @@ fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
     files.push(memory_file(
         "bracket-order",
         "knowledge",
-        &["global"],
+        "global",
         &bracket_order_body(FIRST_PARAGRAPH, SECOND_PARAGRAPH, THIRD_PARAGRAPH),
     ));
     files.push(memory_file(
         "stage-report",
         "knowledge",
-        &["rocketry"],
+        "rocketry",
         "# Stage reports\n\nA stage report files its numbers under [[rocket-stages]].\n",
     ));
     files
@@ -143,7 +139,7 @@ fn put_body(
         Some(&json!({
             "description": current["description"],
             "kind": current["kind"],
-            "scopes": current["scopes"],
+            "scope": current["scope"],
             "source": current["source"],
             "body": new_body,
             "base_version": base_version,
@@ -341,7 +337,7 @@ fn landing_three_writes_on_a_branch_makes_one_commit_on_main_with_all_three_chan
             "id": "bracket-jig",
             "description": "The bracket jig lives in the second drawer",
             "kind": "knowledge",
-            "scopes": ["global"],
+            "scope": "global",
             "source": "user",
             "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
             "author": AUTHOR,
@@ -831,7 +827,7 @@ fn landing_a_branch_whose_merged_tree_fails_validation_is_refused_and_nothing_la
             "id": "stage-audit",
             "description": "The stage audit checks the numbering of every stage",
             "kind": "knowledge",
-            "scopes": ["rocketry"],
+            "scope": "rocketry",
             "source": "user",
             "body": "# Stage audit\n\nThe audit reads [[rocket-stages]] first.\n",
             "author": AUTHOR,
@@ -1350,7 +1346,7 @@ fn the_branch_diff_names_each_file_with_its_status_and_its_diff() {
             "id": "bracket-jig",
             "description": "The bracket jig lives in the second drawer",
             "kind": "knowledge",
-            "scopes": ["global"],
+            "scope": "global",
             "source": "user",
             "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
             "author": AUTHOR,
@@ -1458,7 +1454,7 @@ fn eight_concurrent_lands_of_branches_touching_distinct_files_all_succeed() {
         memory_file(
             &format!("note-{index:02}"),
             "knowledge",
-            &["global"],
+            "global",
             &format!("# note-{index:02}\n\nthe first text of note {index}\n"),
         )
     }));
@@ -1602,7 +1598,7 @@ fn renaming_onto_an_id_that_exists_or_into_a_session_silo_is_refused() {
 fn create_memory(
     server: &TestServer,
     id: &str,
-    scopes: &[&str],
+    scope: &str,
     body: &str,
     branch: Option<&str>,
 ) -> (u16, Value) {
@@ -1613,7 +1609,7 @@ fn create_memory(
             "id": id,
             "description": format!("the index entry of {id}"),
             "kind": "knowledge",
-            "scopes": scopes,
+            "scope": scope,
             "source": "user",
             "body": body,
             "author": AUTHOR,
@@ -1659,9 +1655,9 @@ fn two_memories_that_link_to_each_other_are_written_on_a_branch_in_either_order_
         let branch = open_branch(&server, SESSION);
 
         let (first_status, first_answer) =
-            create_memory(&server, first.0, &["global"], first.1, Some(&branch));
+            create_memory(&server, first.0, "global", first.1, Some(&branch));
         let (second_status, second_answer) =
-            create_memory(&server, second.0, &["global"], second.1, Some(&branch));
+            create_memory(&server, second.0, "global", second.1, Some(&branch));
 
         assert_eq!(
             first_status, 200,
@@ -1701,7 +1697,7 @@ fn a_branch_link_to_a_name_nobody_writes_is_taken_but_stops_the_land() {
     let (status, written) = create_memory(
         &server,
         "north-shelf",
-        &["global"],
+        "global",
         "# North shelf\n\nThe north shelf faces [[no-such-shelf]].\n",
         Some(&branch),
     );
@@ -1741,7 +1737,7 @@ fn a_branch_memory_in_a_scope_that_has_no_file_is_taken_but_stops_the_land() {
     let (status, written) = create_memory(
         &server,
         "north-shelf",
-        &["no-such-scope"],
+        "no-such-scope",
         "# North shelf\n\nThe north shelf is by the door.\n",
         Some(&branch),
     );
@@ -1780,7 +1776,7 @@ fn the_same_dangling_link_written_straight_to_main_is_still_refused_at_write_tim
     let (status, refusal) = create_memory(
         &server,
         "north-shelf",
-        &["global"],
+        "global",
         "# North shelf\n\nThe north shelf faces [[no-such-shelf]].\n",
         None,
     );

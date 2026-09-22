@@ -3,8 +3,7 @@ name: notes
 description: Working notes for the bracket rework, measured in millimetres
 metadata:
   kind: knowledge
-  scopes:
-  - session:alpha/session-1
+  scope: session:alpha/session-1
   source: assistant
   created: 2026-01-08T14:00:00Z
 ---

@@ -172,7 +172,6 @@ const memoryRow: MemoryStatsRow = {
   retracted: 7,
   chars: 3500,
   tokens: 1000,
-  most_under: 'widgets',
   last_shown: null,
 };
 
@@ -191,10 +190,8 @@ test('a formatted figure sorts and filters by its text, so 9 comes after 10000',
   expect(perDelivery.text?.(scopeRow)).toBe('3000');
 });
 
-test('a missing time or scope is shown as the word null rather than as an empty cell', () => {
+test('a missing time is shown as the word null rather than as an empty cell', () => {
   expect(column(memoryColumns, 'last-shown').value(memoryRow)).toBe('');
-  expect(column(memoryColumns, 'most-under').value({ ...memoryRow, most_under: null })).toBe('');
-  expect(column(memoryColumns, 'most-under').value(memoryRow)).toBe('widgets');
 });
 
 test('a column leads somewhere other than the page of the thing it names', () => {

@@ -29,7 +29,12 @@ export interface MemorySummary {
   title: string;
   description: string;
   kind: MemoryKind;
-  scopes: string[];
+  /**
+   * The one scope this memory belongs to. A scope's cost is then exactly the text of
+   * its own memories; a rule two subjects need lives in a scope of its own that the
+   * scope of each subject implies.
+   */
+  scope: string;
   source: MemorySource;
   modified: string | null;
   version: string;
@@ -50,7 +55,7 @@ export interface MemoryDoc {
   title: string;
   description: string;
   kind: MemoryKind;
-  scopes: string[];
+  scope: string;
   source: MemorySource;
   /** The `metadata` keys forgetmenot does not interpret, Claude Code's own `type` among them. */
   metadata: Record<string, unknown>;
@@ -262,8 +267,6 @@ export interface MemoryStatsRow {
   chars: number;
   /** Tokens for those characters, as the server converted them. */
   tokens: number;
-  /** The scope this memory was printed under most often; null when never printed. */
-  most_under: string | null;
   last_shown: string | null;
 }
 
@@ -372,7 +375,7 @@ export interface MemoryIndexFilter {
 export interface WriteRequest {
   description: string;
   kind: MemoryKind;
-  scopes: string[];
+  scope: string;
   source: MemorySource;
   /**
    * The `metadata` keys forgetmenot does not interpret, replacing the ones the memory

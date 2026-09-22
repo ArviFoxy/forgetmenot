@@ -109,7 +109,7 @@ test('a write the server has already moved past is accepted, losing the other ve
     data: {
       description: doc.description,
       kind: doc.kind,
-      scopes: doc.scopes,
+      scope: doc.scope,
       source: doc.source,
       body: `${String(doc.body)}\nthe other writer version of the line\n`,
       base_version: doc.version,
@@ -205,7 +205,7 @@ test('a memory created from a scope context menu is created outside that scope',
   await page.getByRole('menuitem', { name: 'New memory in this scope' }).click();
   await expect(page.locator('.page-name')).toContainText('new memory');
 
-  // The scope the menu came from is already in the Scopes field.
+  // The scope the menu came from is already in the Scope field.
   await expect(page.locator('.infobox .chips sl-badge')).toHaveText(['widgets']);
   await page.getByRole('textbox', { name: 'Id', exact: true }).fill(id);
   await page.getByRole('button', { name: 'Edit Description' }).click();
@@ -216,8 +216,8 @@ test('a memory created from a scope context menu is created outside that scope',
   await page.getByRole('button', { name: 'Create', exact: true }).click();
 
   await expect(page).toHaveURL(new RegExp(`/memories/${id}$`));
-  const doc = (await (await page.request.get(`/api/memories/${id}`)).json()) as { scopes: string[] };
-  expect(doc.scopes).toEqual(['widgets']);
+  const doc = (await (await page.request.get(`/api/memories/${id}`)).json()) as { scope: string };
+  expect(doc.scope).toBe('widgets');
 });
 
 test('a memory deleted from the tree menu stays in the store', async ({ page }) => {
@@ -227,7 +227,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
       id,
       description: 'a memory made to be deleted',
       kind: 'knowledge',
-      scopes: ['global'],
+      scope: 'global',
       source: 'user',
       body: `# ${id}\n\nMade to be deleted.\n`,
       author: 'wiki',
@@ -269,31 +269,25 @@ async function scopeDeleteReady(page: Page): Promise<boolean> {
   return probe.status() !== 405;
 }
 
-test('a scope picked from the suggestions is not added to the memory', async ({ page }) => {
+test('a scope picked in the field is not the one the memory is written into', async ({ page }) => {
   await openMemory(page, 'bench-power');
-  await page.getByRole('button', { name: 'Edit Scopes' }).click();
+  await expect(page.locator('.infobox .chips sl-badge')).toHaveText(['global']);
+  await page.getByRole('button', { name: 'Edit Scope' }).click();
 
-  const field = page.locator('fmn-tag-field sl-input input');
+  const field = page.locator('sl-select.scope-select');
   await expect(field).toBeVisible();
-  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['global']);
+  await expect(field).toHaveJSProperty('value', 'global');
 
-  // Typed, chosen from the list with the keyboard.
-  await field.fill('rocket');
-  await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Enter');
-  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['global', 'rocketry']);
+  await field.click();
+  await field.locator('sl-option[value="rocketry"]').click();
+  await expect(field).toHaveJSProperty('value', 'rocketry');
 
-  await save(page, 'put bench-power in rocketry as well');
+  await save(page, 'move bench-power to rocketry');
   const doc = (await (await page.request.get('/api/memories/bench-power')).json()) as {
-    scopes: string[];
+    scope: string;
   };
-  expect(doc.scopes).toEqual(['global', 'rocketry']);
-
-  // Backspace takes the last chip back.
-  await page.getByRole('button', { name: 'Edit Scopes' }).click();
-  await page.locator('fmn-tag-field sl-input input').click();
-  await page.keyboard.press('Backspace');
-  await expect(page.locator('fmn-tag-field sl-tag')).toHaveText(['global']);
+  expect(doc.scope).toBe('rocketry');
+  await expect(page.locator('.infobox .chips sl-badge')).toHaveText(['rocketry']);
 });
 
 test('a scope nothing refers to is kept when it is deleted from the tree', async ({ page }) => {
@@ -447,11 +441,11 @@ test('creating a memory happens on a page of its own rather than the memory page
   await expect(page).toHaveURL(new RegExp(`/memories/${id}$`));
   const doc = (await (await page.request.get(`/api/memories/${id}`)).json()) as {
     description: string;
-    scopes: string[];
+    scope: string;
     body: string;
   };
   expect(doc.description).toBe('a memory made on the memory page');
-  expect(doc.scopes).toEqual(['widgets']);
+  expect(doc.scope).toBe('widgets');
   expect(doc.body).toContain('The merged page writes the body.');
 });
 

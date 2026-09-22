@@ -4,11 +4,13 @@
 //! same functions the JSON API calls, so a rule about writes or scopes is
 //! enforced in one place for both.
 //!
-//! The tools come in two families and the naming and the descriptions keep them
-//! apart, because the two do very different things:
+//! The tools come in five families and the naming and the descriptions keep them
+//! apart, because they do very different things:
 //!
 //! - `memory_*` changes the store. Every write is a git commit and affects every
-//!   context the memory's scopes cover.
+//!   context the memory's scope covers.
+//! - `scope_*` changes the scopes themselves, which is the same kind of change:
+//!   one git commit, and the scope's triggers then fire in every context.
 //! - `settings_*` reads and changes the store's behaviour settings, which is the
 //!   same kind of change: one git commit, in force for every context.
 //! - `branch_*` opens, inspects and lands a transaction, which is a git branch:
@@ -20,7 +22,6 @@
 
 pub mod params;
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -37,7 +38,7 @@ use crate::operations::branches::{self, LandRequest};
 use crate::operations::settings::{self as settings_operations, SettingsWriteRequest};
 use crate::operations::{
     self, CurrentDocument, DeleteRequest, DocumentKind, MemoryFilter, MemoryWriteRequest,
-    OperationError, RenameRequest, ReplaceTextRequest, SetFieldsRequest,
+    OperationError, RenameRequest, ReplaceTextRequest, ScopeWriteRequest, SetFieldsRequest,
 };
 use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord};
 use crate::store::branch::BranchName;
@@ -46,24 +47,31 @@ use crate::store::{MemoryId, ScopeId};
 use params::{
     BranchCreateParams, BranchLandParams, BranchParams, MemoryDeleteParams, MemoryGetParams,
     MemoryIdParams, MemoryIndexParams, MemoryPutParams, MemoryRenameParams,
-    MemoryReplaceTextParams, MemorySetFieldsParams, SessionInheritParams, SessionParams,
-    SessionScopeParams, SettingsSetParams, parse_session_key,
+    MemoryReplaceTextParams, MemorySetFieldsParams, ScopeDeleteParams, ScopeGetParams,
+    ScopePutParams, SessionInheritParams, SessionParams, SessionScopeParams, SettingsSetParams,
+    parse_session_key,
 };
 
 /// What the model is told about this server when it connects.
 ///
-/// Two sentences, one per family, because a model that mixes them up either
-/// commits to the store when it meant to change its own scopes, or expects a
-/// scope change to reach everyone.
+/// One passage per family, naming its tools, because a model that mixes them up
+/// either commits to the store when it meant to change its own scopes, or
+/// expects a scope change to reach everyone.
 const INSTRUCTIONS: &str = "\
 The memory management tools (memory_index, memory_get, memory_history, memory_blame, \
 memory_put, memory_replace_text, memory_set_fields, memory_rename, memory_delete) read and \
 change the shared store of memories, where every write is one git commit and takes effect in \
-every session the memory's scopes cover. memory_history and memory_blame are where the age of a \
+every session the memory's scope covers. memory_history and memory_blame are where the age of a \
 memory and the author of one of its lines come from, rather than any date written into its text. \
 A branch is how several changes land as one commit: branch_create opens one, every write \
 tool takes its name in branch and then changes nothing any session sees, and branch_land \
-squashes the whole branch onto main as a single commit. The settings management tools \
+squashes the whole branch onto main as a single commit. The scope management tools \
+(scope_index, scope_get, scope_put, scope_delete) read and change the scopes themselves. A \
+scope is a label that groups memories, turned on by its triggers, and every memory of the scope \
+is delivered to a session the moment one of them fires; a scope is part of the store, so \
+writing one is a git commit and its triggers then fire in every session. A memory has one \
+scope, so a rule two subjects need gets a scope of its own that both of them imply, rather than \
+being written twice. The settings management tools \
 (settings_get, settings_set) read and change the shared store's behaviour settings, which say \
 when memories are repeated, when a tool call is held and what a subagent starts with; a change \
 is one git commit and takes effect in every session. The session management tools \
@@ -90,6 +98,10 @@ pub const FORGETMENOT_TOOL_NAMES: &[&str] = &[
     "memory_replace_text",
     "memory_set_fields",
     "memory_rename",
+    "scope_index",
+    "scope_get",
+    "scope_put",
+    "scope_delete",
     "branch_create",
     "branch_list",
     "branch_diff",
@@ -140,9 +152,9 @@ impl ToolServer {
 impl ToolServer {
     #[tool(
         description = "Memory management family: the shared store of memories, where every write \
-                       is one git commit and takes effect in every session the memory's scopes \
-                       cover. This call only reads. Lists each memory's id, description, kind, \
-                       scopes and version as JSON, which is what memory_get takes."
+                       is one git commit and takes effect in every session the memory's scope \
+                       covers. This call only reads. Lists each memory's id, description, kind, \
+                       scope and version as JSON, which is what memory_get takes."
     )]
     async fn memory_index(
         &self,
@@ -153,22 +165,17 @@ impl ToolServer {
             Err(error) => return Ok(tool_failure(&OperationError::from(error))),
         };
         let filter = MemoryFilter {
-            scope: None,
+            scope: params.scope.map(ScopeId::new),
             kind: params.kind.map(Into::into),
         };
-        let mut summaries = operations::memory_index(&catalog, &filter);
-        if let Some(scopes) = params.scopes {
-            let wanted: BTreeSet<ScopeId> = scopes.into_iter().map(ScopeId::new).collect();
-            summaries.retain(|summary| summary.scopes.iter().any(|scope| wanted.contains(scope)));
-        }
-        json_text(&summaries)
+        json_text(&operations::memory_index(&catalog, &filter))
     }
 
     #[tool(
         description = "Memory management family: the shared store of memories, where every write \
-                       is one git commit and takes effect in every session the memory's scopes \
-                       cover. This call only reads. Returns the whole memory as JSON: body, \
-                       description, kind, scopes, version, links and backlinks. With session_key \
+                       is one git commit and takes effect in every session the memory's scope \
+                       covers. This call only reads. Returns the whole memory as JSON: body, \
+                       description, kind, scope, version, links and backlinks. With session_key \
                        the body counts as delivered to that session, so the next hook event does \
                        not repeat it until it changes."
     )]
@@ -205,8 +212,8 @@ impl ToolServer {
 
     #[tool(
         description = "Memory management family: the shared store of memories, where every write \
-                       is one git commit and takes effect in every session the memory's scopes \
-                       cover. This call only reads. Returns the commits that changed one memory \
+                       is one git commit and takes effect in every session the memory's scope \
+                       covers. This call only reads. Returns the commits that changed one memory \
                        as JSON, newest first, each with its oid, time, author and title. Read \
                        how old a memory is, when it last changed and who wrote it from here, \
                        never from a date written into its text."
@@ -223,8 +230,8 @@ impl ToolServer {
 
     #[tool(
         description = "Memory management family: the shared store of memories, where every write \
-                       is one git commit and takes effect in every session the memory's scopes \
-                       cover. This call only reads. Returns the memory's file line by line as \
+                       is one git commit and takes effect in every session the memory's scope \
+                       covers. This call only reads. Returns the memory's file line by line as \
                        JSON, each line with the commit that last changed it: oid, time and \
                        author, the way git blame does. The whole file as it is stored, \
                        frontmatter included, so a line number is the line number in the file. \
@@ -245,12 +252,14 @@ impl ToolServer {
     #[tool(
         description = "Memory management family: write one memory into the shared store. The \
                        write is one git commit, authored by session_key, and the memory is then \
-                       delivered to every session its scopes cover. Leave base_version out to \
-                       create a memory at an id that is free; to change one that exists, send \
-                       the version memory_get reported, and if it is no longer current the write \
-                       is refused and the current version is named. metadata carries the other \
-                       frontmatter keys of the memory's file, Claude Code's own type and any \
-                       other key a person or a tool keeps there."
+                       delivered to every session its scope covers. A memory has one scope, the \
+                       subject it is about; a rule two subjects need gets a scope of its own that \
+                       both of them imply. Leave base_version out to create a memory at an id \
+                       that is free; to change one that exists, send the version memory_get \
+                       reported, and if it is no longer current the write is refused and the \
+                       current version is named. metadata carries the other frontmatter keys of \
+                       the memory's file, Claude Code's own type and any other key a person or a \
+                       tool keeps there."
     )]
     async fn memory_put(
         &self,
@@ -277,7 +286,7 @@ impl ToolServer {
         let request = MemoryWriteRequest {
             description: params.description,
             kind: params.kind.into(),
-            scopes: params.scopes.into_iter().map(ScopeId::new).collect(),
+            scope: ScopeId::new(params.scope),
             source: params.source.into(),
             metadata: params.metadata,
             body: params.body,
@@ -346,7 +355,7 @@ impl ToolServer {
     #[tool(
         description = "Memory management family: replace one exact snippet of one memory's body \
                        in the shared store, as one git commit authored by session_key. Everything \
-                       else about the memory, its description, kind and scopes, is left alone. \
+                       else about the memory, its description, kind and scope, is left alone. \
                        old_string is matched literally and must appear exactly once unless \
                        replace_all is set; a snippet that is not there is refused, so read the \
                        body with memory_get and copy from it."
@@ -382,9 +391,11 @@ impl ToolServer {
         description = "Memory management family: set some of one memory's fields in the shared \
                        store, as one git commit authored by session_key. The body is not touched \
                        at all, and a field that is not sent keeps the value it has, so this is \
-                       how a memory changes scope or kind without its text being sent back. \
-                       metadata carries the other frontmatter keys of the memory's file, Claude \
-                       Code's own type and any other key a person or a tool keeps there."
+                       how a memory changes scope or kind without its text being sent back. A \
+                       memory has one scope, the subject it is about; a rule two subjects need \
+                       gets a scope of its own that both of them imply. metadata carries the \
+                       other frontmatter keys of the memory's file, Claude Code's own type and \
+                       any other key a person or a tool keeps there."
     )]
     async fn memory_set_fields(
         &self,
@@ -398,9 +409,7 @@ impl ToolServer {
         let request = SetFieldsRequest {
             description: params.description,
             kind: params.kind.map(Into::into),
-            scopes: params
-                .scopes
-                .map(|scopes| scopes.into_iter().map(ScopeId::new).collect()),
+            scope: params.scope.map(ScopeId::new),
             source: params.source.map(Into::into),
             metadata: params.metadata,
             base_version: params.base_version,
@@ -448,6 +457,146 @@ impl ToolServer {
                     .await;
                 json_text(&outcome)
             }
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Scope management family: a scope is a label that groups memories, turned \
+                       on by its triggers, and every memory of the scope is delivered to a \
+                       session the moment one of them fires. A scope is part of the shared \
+                       store, so the scopes read here are every session's; session_scope_on \
+                       turns a scope on for the calling session alone. This call only reads. Lists every scope that exists as JSON: its \
+                       id, its kind, the name of a session scope, and the file of a scope that \
+                       has one."
+    )]
+    async fn scope_index(&self) -> Result<CallToolResult, ErrorData> {
+        match operations::scope_index(&self.state).await {
+            Ok(rows) => json_text(&rows),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Scope management family: a scope is a label that groups memories, turned \
+                       on by its triggers, and every memory of the scope is delivered to a \
+                       session the moment one of them fires. A scope is part of the shared \
+                       store, so the scopes read here are every session's; session_scope_on \
+                       turns a scope on for the calling session alone. This call only reads. Returns one scope's file as JSON: implies, \
+                       triggers, message, forget and the version scope_put writes against. \
+                       global, machine:<name> and session:<machine>/<session-id> have no file, \
+                       so there is nothing to read for them."
+    )]
+    async fn scope_get(
+        &self,
+        Parameters(params): Parameters<ScopeGetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let catalog = match self.state.store.snapshot().await {
+            Ok(catalog) => catalog,
+            Err(error) => return Ok(tool_failure(&OperationError::from(error))),
+        };
+        match operations::scope_get(&catalog, &ScopeId::new(params.id)) {
+            Ok(document) => json_text(&document),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Scope management family: write one scope's file into the shared store. A \
+                       scope is a label that groups memories, turned on by its triggers, and \
+                       every memory of the scope is delivered to a session the moment one of \
+                       them fires. The write is one git commit, authored by session_key, and the \
+                       triggers then fire in every session; session_scope_on turns a scope on \
+                       for the calling session alone. A memory has one scope, the subject it is \
+                       about, so a rule two subjects need gets a scope of its own that both of \
+                       them imply. This is how a scope with no file yet is defined and how the \
+                       triggers of one that exists are changed. The file is written whole, so \
+                       implies and triggers are the lists the scope keeps. Leave base_version \
+                       out to create a scope at an id that has no file; to change one that \
+                       exists, send the version scope_get reported, and if it is no longer \
+                       current the write is refused and the current version is named."
+    )]
+    async fn scope_put(
+        &self,
+        Parameters(params): Parameters<ScopePutParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let id = ScopeId::new(params.id);
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(*failure),
+        };
+        let catalog = match operations::target_catalog(&self.state, branch.as_ref()).await {
+            Ok(catalog) => catalog,
+            Err(error) => return Ok(tool_failure(&error)),
+        };
+        // A call without a version is a creation only where there is no file to
+        // overwrite; at an id that has one it is an update missing its version,
+        // which the operation refuses rather than overwriting blind.
+        let mode = if params.base_version.is_none() && catalog.scope(&id).is_none() {
+            WriteMode::Create
+        } else {
+            WriteMode::Update
+        };
+        let request = ScopeWriteRequest {
+            implies: requested_scopes(params.implies),
+            triggers: params.triggers.into_iter().map(Into::into).collect(),
+            scope_message: params.message,
+            forget: params.forget.map(Into::into),
+            base_version: params.base_version,
+            author: author.to_string(),
+            message: params.message_title,
+        };
+        match operations::scope_put(&self.state, &id, &request, mode, branch.as_ref()).await {
+            Ok(outcome) => json_text(&outcome),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Scope management family: remove one scope's file from the shared store, \
+                       as one git commit authored by session_key. A scope is a label that groups \
+                       memories, turned on by its triggers, so the triggers stop firing in every \
+                       session at once and the history keeps every version the file had. A scope \
+                       that a memory is in, or that another scope implies, is refused, naming \
+                       those files: a memory has one scope, so move those memories to the scope \
+                       they are about first. This changes the store for every session; session_scope_off \
+                       turns a scope off for the calling session alone and leaves every file as \
+                       it is."
+    )]
+    async fn scope_delete(
+        &self,
+        Parameters(params): Parameters<ScopeDeleteParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let author = parse_session_key(&params.session_key)?;
+        let id = ScopeId::new(params.id);
+        let branch = match requested_branch(params.branch.as_deref()) {
+            Ok(branch) => branch,
+            Err(failure) => return Ok(*failure),
+        };
+        let base_version = match params.base_version {
+            Some(version) => version,
+            None => {
+                let catalog = match operations::target_catalog(&self.state, branch.as_ref()).await {
+                    Ok(catalog) => catalog,
+                    Err(error) => return Ok(tool_failure(&error)),
+                };
+                // A scope with no file has no version to send. The operation is
+                // called all the same, because it is what says whether the id
+                // names a scope that is implicit or one that is not there.
+                catalog
+                    .scope(&id)
+                    .map(|entry| entry.version.to_string())
+                    .unwrap_or_default()
+            }
+        };
+        let request = DeleteRequest {
+            base_version,
+            author: author.to_string(),
+            message: params.message_title,
+        };
+        match operations::scope_delete(&self.state, &id, &request, branch.as_ref()).await {
+            Ok(outcome) => json_text(&outcome),
             Err(error) => Ok(tool_failure(&error)),
         }
     }
@@ -716,10 +865,11 @@ fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, Box<Call
     }
 }
 
-/// The scopes a session tool is asked to change, in the order they were named.
+/// The scope ids a tool was given, in the order they were named.
 ///
-/// An id the store does not have is left for the operation to refuse, which is
-/// where the whole list is either applied or refused.
+/// An id the store does not have is left for the operation to refuse: a session
+/// tool refuses the whole list, and a scope write is refused naming the implied
+/// scope that is not there.
 fn requested_scopes(scopes: Vec<String>) -> Vec<ScopeId> {
     scopes.into_iter().map(ScopeId::new).collect()
 }
@@ -798,6 +948,8 @@ const NO_VERSION: &str = "none";
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     /// Detects [`FORGETMENOT_TOOL_NAMES`] drifting from the tools the router

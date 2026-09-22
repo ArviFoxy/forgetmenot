@@ -134,7 +134,9 @@ pub fn parse_body<Body: DeserializeOwned>(bytes: &Bytes) -> Result<Body, Rejecti
 impl IntoResponse for OperationError {
     fn into_response(self) -> Response {
         match self {
-            OperationError::NotFound(_) => error_response(StatusCode::NOT_FOUND, &self.to_string()),
+            OperationError::NotFound(_) | OperationError::ScopeHasNoFile(_) => {
+                error_response(StatusCode::NOT_FOUND, &self.to_string())
+            }
             OperationError::Conflict { ref current, .. } => (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({ "current": current })),

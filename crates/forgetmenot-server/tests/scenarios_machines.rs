@@ -61,7 +61,7 @@ fn a_machine_qualified_trigger_activates_its_scope_on_that_machine_only() {
                 .memory(LAB_RULE, |memory| {
                     memory
                         .critical()
-                        .scopes([LAB])
+                        .scope(LAB)
                         .description("The lab bench supply is switched at the wall")
                         .body(LAB_RULE_BODY);
                 }),
@@ -108,7 +108,7 @@ fn a_machine_memory_reaches_only_that_machines_sessions() {
         .store(Store::example().memory(BETA_ONLY, |memory| {
             memory
                 .critical()
-                .scopes([format!("machine:{BETA}")])
+                .scope(format!("machine:{BETA}"))
                 .description("Captures live on the second disk, which is not backed up")
                 .body(BETA_ONLY_BODY);
         }))

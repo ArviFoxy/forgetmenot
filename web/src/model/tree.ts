@@ -1,5 +1,5 @@
 // The navigation tree: one node per scope the server lists, then the memories in
-// each scope. A memory in several scopes appears under each of them.
+// each scope. A memory belongs to one scope, so it hangs under one node.
 
 import type { MemorySummary, ScopeRow } from '../api/types';
 
@@ -18,7 +18,7 @@ export interface TreeNode {
   /** The memory this node opens, for a memory node. */
   memory?: MemorySummary;
   children: TreeNode[];
-  /** Memories below this node, counting one per place it appears. */
+  /** Memories below this node. */
   count: number;
 }
 
@@ -32,10 +32,10 @@ function byLabel(left: TreeNode, right: TreeNode): number {
   return left.label.localeCompare(right.label);
 }
 
-function memoryNode(scopeId: string, memory: MemorySummary): TreeNode {
+function memoryNode(memory: MemorySummary): TreeNode {
   return {
     kind: 'memory',
-    key: `memory:${scopeId}/${memory.id}`,
+    key: `memory:${memory.id}`,
     label: memory.name,
     memory,
     children: [],
@@ -46,7 +46,7 @@ function memoryNode(scopeId: string, memory: MemorySummary): TreeNode {
 function scopeNode(row: ScopeRow, memories: MemorySummary[], label: string): TreeNode {
   const children = [...memories]
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    .map((memory) => memoryNode(row.id, memory));
+    .map(memoryNode);
   return {
     kind: 'scope',
     key: `scope:${row.id}`,
@@ -100,15 +100,13 @@ function sessionNodes(
 
 /**
  * Builds the tree from the scope index and the memory index: one scope node per
- * row and nothing else, holding the memories whose `scopes` name that row. A
+ * row and nothing else, holding the memories whose `scope` names that row. A
  * memory that names no listed row is in the tree nowhere.
  */
 export function buildTree(rows: ScopeRow[], memories: MemorySummary[]): TreeNode[] {
   const held = new Map<string, MemorySummary[]>();
   for (const row of rows) held.set(row.id, []);
-  for (const memory of memories) {
-    for (const scope of memory.scopes) held.get(scope)?.push(memory);
-  }
+  for (const memory of memories) held.get(memory.scope)?.push(memory);
   const memoriesOf = (id: string): MemorySummary[] => held.get(id) ?? [];
 
   const flat: TreeNode[] = [];

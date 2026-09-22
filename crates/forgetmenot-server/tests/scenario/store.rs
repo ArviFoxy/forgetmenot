@@ -99,7 +99,7 @@ pub struct MemoryBuilder {
     id: MemoryId,
     description: String,
     kind: MemoryKind,
-    scopes: Vec<ScopeId>,
+    scope: ScopeId,
     source: String,
     body: String,
 }
@@ -110,7 +110,7 @@ impl MemoryBuilder {
             id,
             description: String::new(),
             kind: MemoryKind::Knowledge,
-            scopes: vec![ScopeId::global()],
+            scope: ScopeId::global(),
             source: "assistant".to_string(),
             body: String::new(),
         }
@@ -128,11 +128,9 @@ impl MemoryBuilder {
         self
     }
 
-    pub fn scopes<Id: AsRef<str>>(&mut self, scopes: impl IntoIterator<Item = Id>) -> &mut Self {
-        self.scopes = scopes
-            .into_iter()
-            .map(|scope| ScopeId::new(scope.as_ref()))
-            .collect();
+    /// The one scope this memory is delivered in.
+    pub fn scope(&mut self, id: impl AsRef<str>) -> &mut Self {
+        self.scope = ScopeId::new(id.as_ref());
         self
     }
 
@@ -163,8 +161,8 @@ impl MemoryBuilder {
         self.kind
     }
 
-    pub(crate) fn scope_ids(&self) -> &[ScopeId] {
-        &self.scopes
+    pub(crate) fn scope_id(&self) -> &ScopeId {
+        &self.scope
     }
 
     pub(crate) fn source_text(&self) -> &str {
@@ -186,11 +184,9 @@ impl MemoryBuilder {
                 extra: yaml_serde::Mapping::new(),
                 metadata: MemoryMetadata {
                     kind: Some(self.kind),
-                    scopes: Some(self.scopes.clone()),
+                    scope: Some(self.scope.clone()),
                     source: Some(MemorySource::new(self.source.clone())),
-                    created: None,
-                    author: None,
-                    extra: yaml_serde::Mapping::new(),
+                    ..MemoryMetadata::default()
                 },
             },
             body: self.body.clone(),

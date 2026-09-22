@@ -67,7 +67,7 @@ fn rewrite_bench_power(writer: &Session<'_>) {
         .mcp()
         .memory_put("bench-power", |memory| {
             memory.critical();
-            memory.scopes(["global"]);
+            memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
             memory.body(REWRITTEN_BENCH_POWER);
@@ -289,7 +289,7 @@ fn a_landed_branch_is_delivered_to_others_and_not_to_the_session_that_landed_it(
     branch
         .memory_put("bench-power", |memory| {
             memory.critical();
-            memory.scopes(["global"]);
+            memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
             memory.body(REWRITTEN_BENCH_POWER);
@@ -298,7 +298,7 @@ fn a_landed_branch_is_delivered_to_others_and_not_to_the_session_that_landed_it(
     branch
         .memory_put("reading-list", |memory| {
             memory.knowledge();
-            memory.scopes(["global"]);
+            memory.scope("global");
             memory.source("assistant");
             memory.description("The workshop references are in the binder on the bench");
             memory.body("# Where the workshop references live\n\nAll of it is on paper.\n");
@@ -358,7 +358,7 @@ fn an_abandoned_branch_delivers_nothing_to_anyone() {
     branch
         .memory_put("bench-power", |memory| {
             memory.critical();
-            memory.scopes(["global"]);
+            memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
             memory.body(REWRITTEN_BENCH_POWER);

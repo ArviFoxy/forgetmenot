@@ -153,13 +153,11 @@ async fn scopes(State(state): State<Arc<AppState>>, Query(query): Query<FilterQu
     };
     let divisor = catalog.settings().characters_per_token;
     // The memories a scope holds now, which is the catalog's answer and not the
-    // log's: a memory moved out of a scope stops being one of its memories at
+    // log's: a memory moved to another scope stops being one of its memories at
     // once, however many times it was delivered under it.
     let mut held: BTreeMap<String, u64> = BTreeMap::new();
     for memory in catalog.memories() {
-        for scope in memory.scopes() {
-            *held.entry(scope.to_string()).or_default() += 1;
-        }
+        *held.entry(memory.scope().to_string()).or_default() += 1;
     }
     let rows = read(&state, move |reader| {
         reader.scope_stats(&filter, &active_sets, &existing)

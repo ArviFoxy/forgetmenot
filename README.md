@@ -4,7 +4,7 @@ Trigger-based, scoped LLM memory.
 
 forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
 
-- **Scopes.** Every memory belongs to one or more scopes, such as a project/topic, the global scope (always active), or a scope bound to a specific machine or conversation session. The agent is shown only the memories in currently active scopes to reduce context bloat.
+- **Scopes.** Every memory belongs to one scope, such as a project/topic, the global scope (always active), or a scope bound to a specific machine or conversation session. The agent is shown only the memories in currently active scopes to reduce context bloat.
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
 - **Critical memories.** Critical memories are delivered in full whenever in scope so that the agent can't miss them. Non-critical memories work the usual way to save tokens: the agent is shown an index with a one-line description of each memory and has to actively read the full text via MCP.
 - **Interception.** A tool call that brings a critical memory into scope is temporarily blocked, requesting the agent to read the memory before it continues.
@@ -27,15 +27,15 @@ One server serves every machine on a network, and subagents receive the same mem
 
 ## Concepts
 
-**Memory.** A markdown note with a one-line description, stored as a file in a git repository. There are two kinds. A *critical* memory holds a rule the agent must follow; whenever it applies, its full text is placed in the agent's context. A *knowledge* memory holds facts the agent may need; the agent sees only its description and reads the full text when it wants it. Memories can link to each other with `[[name]]`.
+**Memory.** A markdown note with a one-line description, stored as a file in a git repository. There are two kinds. A *critical* memory holds a rule the agent must follow; whenever it applies, its full text is placed in the agent's context. A *knowledge* memory holds facts the agent may need; the agent sees only its description and reads the full text when it wants it. Memories can link to each other with `[[name]]`. A memory belongs to exactly one scope, the subject it is about; a rule two subjects need gets a scope of its own that both of them imply, so what that rule costs is counted once and in one place.
 
-**Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one or more scopes, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers. A scope file may also carry a short `message`, which is delivered in full whenever the scope is active, under the same rules as a critical memory of that scope: a scope with one rule needs no memory file for it. Under `forget` a scope says when it turns itself off in a session: `tokens_since_trigger` is the number of context tokens since the scope was last activated, by a trigger match or by the agent, after which the scope is turned off there and the memories only it delivered are withdrawn. A scope with a file exists by its file, and `global` exists always. A `machine:` or `session:` scope exists once the server has seen that machine or that session, or a store file names it; naming a scope in a memory, in another scope's `implies` or in a session's active set does not by itself make that scope exist.
+**Scope.** A label that groups memories: a project, a topic, a machine, a session. A memory belongs to one scope, and a session receives only the memories of the scopes that are active in it. Three scopes exist without being defined anywhere: `global` is active in every session, `machine:<name>` in every session on that machine, and `session:<machine>/<id>` in one session only, for its private notes. Every other scope is defined by a small file naming the scopes it implies and its triggers. A scope file may also carry a short `message`, which is delivered in full whenever the scope is active, under the same rules as a critical memory of that scope: a scope with one rule needs no memory file for it. Under `forget` a scope says when it turns itself off in a session: `tokens_since_trigger` is the number of context tokens since the scope was last activated, by a trigger match or by the agent, after which the scope is turned off there and the memories only it delivered are withdrawn. A scope with a file exists by its file, and `global` exists always. A `machine:` or `session:` scope exists once the server has seen that machine or that session, or a store file names it; naming a scope in a memory, in another scope's `implies` or in a session's active set does not by itself make that scope exist.
 
 **Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its directories; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. The inputs and results of the store's own MCP tools, and of any tool named in `trigger_exempt_tools`, are not matched, because they carry the memory system's own scope ids, memory ids and bodies rather than anything about the work. Triggers only turn scopes on; the agent can turn a scope off with a tool call, and a scope with a `forget` rule turns itself off once the declared number of context tokens has passed since its last match.
 
 **Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A session start begins that record afresh and keeps the scopes the session is working in; a session id seen for the first time starts with the three implicit scopes. A subagent starts with the scopes its parent had active. A subagent's reminders and forgetting count from its own context size, starting at its first own event: the size the event that opens it reports is the parent's, read from the parent's transcript.
 
-**Delivery.** At every hook event the server compares what is due, the memories of the active scopes, with what the context has already seen, and sends the difference: memories never shown, memories changed since they were shown, memories shown more than a configurable number of context tokens ago, and notices for memories that were deleted or whose scope was turned off. A new version whose delivered text is the old one with lines removed and nothing added is not sent again: the context has already been given every line of it, so the new version is recorded as seen and the statistics record the skip as its own outcome. If a tool call is about to run while a critical memory is due that the context has not seen, the call is held, the memory is delivered, and the agent reissues the call. After a compaction or a resume, everything due arrives once, at that session start. The answer is built one section per scope, each holding that scope's critical bodies and then its index lines, and a memory that several active scopes hold is printed once, under the first of them; the length of each section and of each memory inside it is recorded as the answer is sent, so what a scope or a memory costs is the text the model was given for it and never a figure derived afterwards.
+**Delivery.** At every hook event the server compares what is due, the memories of the active scopes, with what the context has already seen, and sends the difference: memories never shown, memories changed since they were shown, memories shown more than a configurable number of context tokens ago, and notices for memories that were deleted or whose scope was turned off. A new version whose delivered text is the old one with lines removed and nothing added is not sent again: the context has already been given every line of it, so the new version is recorded as seen and the statistics record the skip as its own outcome. If a tool call is about to run while a critical memory is due that the context has not seen, the call is held, the memory is delivered, and the agent reissues the call. After a compaction or a resume, everything due arrives once, at that session start. The answer is built one section per scope, each holding that scope's critical bodies and then its index lines, and a memory is printed in the section of the one scope it belongs to; the length of each section and of each memory inside it is recorded as the answer is sent, so what a scope or a memory costs is the text the model was given for it and never a figure derived afterwards.
 
 **Branch.** Several changes to the store can be made on a git branch and landed as one commit. Nothing on a branch is delivered until it lands. See [Branches](#branches).
 
@@ -78,14 +78,14 @@ name: widgets-release-rule
 description: Releases of widgets are cut from main only, after the full test suite
 metadata:
   kind: critical
-  scopes: [widgets]
+  scope: widgets
   source: user
 ---
 Cut releases from `main` only, and only after `cargo test --workspace` is green.
 See [[rocketry-notes]].
 ```
 
-`kind` is `critical` or `knowledge` and defaults to `knowledge`; `scopes` defaults to `[global]`; `source` records who wrote the memory, `user` or `assistant` by convention; any other value is kept. Any other key is preserved untouched, so an existing Claude Code memory directory becomes a valid store the moment it is a git repository.
+`kind` is `critical` or `knowledge` and defaults to `knowledge`; `scope` defaults to `global`; `source` records who wrote the memory, `user` or `assistant` by convention; any other value is kept. A file written when a memory could name several scopes carries a `scopes` list instead; it is read as the first entry of that list, reported by `forgetmenot check` when it names more than one, and written back as `scope` the next time anything writes the file. Any other key is preserved untouched, so an existing Claude Code memory directory becomes a valid store the moment it is a git repository.
 
 Every change to the store is a git commit with a title line. A write carries the version of the file it was based on, and is refused if someone else changed the file in between.
 
@@ -135,11 +135,22 @@ Memory tools read and change the store; every change is one commit.
 | `memory_blame` | Read one memory's file line by line, each line with the oid, time and author of the commit that last changed it |
 | `memory_put` | Create a memory or replace one whole, including any extra metadata keys |
 | `memory_replace_text` | Replace one exact snippet in a body, leaving the rest as it is |
-| `memory_set_fields` | Change the description, kind, scopes, source or extra metadata keys without touching the body |
+| `memory_set_fields` | Change the description, kind, scope, source or extra metadata keys without touching the body |
 | `memory_rename` | Move a memory to a new id and update every `[[link]]` to it |
 | `memory_delete` | Remove a memory; its history stays in git |
 
 A write through these tools records the writer's own session as having seen the new version, the same way `memory_get` does, so the change is delivered to every other session and subagent but not back to its writer; a write on a branch does this when the branch lands.
+
+Scope tools read and change the scopes themselves, so the agent defines a scope and its triggers without leaving the session; every change is one commit and the triggers then fire in every session.
+
+| Tool | What it does |
+|---|---|
+| `scope_index` | List every scope that exists with its kind, the name of a session scope and the file of a scope that has one |
+| `scope_get` | Read one scope's file: its implies, triggers, message, forget rule and version |
+| `scope_put` | Create a scope or replace its file whole, with the triggers, implies, message and forget rule it keeps |
+| `scope_delete` | Remove a scope's file; refused while a memory is in the scope or another scope implies it, naming those files |
+
+`global`, `machine:<name>` and `session:<machine>/<id>` have no file: `scope_index` lists them, and `scope_get` and `scope_delete` refuse them as having none.
 
 Settings tools read and change the store's behaviour settings; a change is one commit and is in force for every session.
 

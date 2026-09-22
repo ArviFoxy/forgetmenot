@@ -303,7 +303,6 @@ fn print_report(report: &StatsReport) {
             "shrunk",
             "retracted",
             "tokens",
-            "most_under",
             "last_shown",
         ],
         report
@@ -320,7 +319,6 @@ fn print_report(report: &StatsReport) {
                     row.shrunk.to_string(),
                     row.retracted.to_string(),
                     tokens(row.chars),
-                    row.most_under.clone().unwrap_or_default(),
                     row.last_shown.clone().unwrap_or_default(),
                 ]
             })

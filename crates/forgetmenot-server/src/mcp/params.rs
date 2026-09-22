@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::context::ContextKey;
 use crate::store::memory::{MemoryKind, MemorySource};
+use crate::store::scope::{Forget, Trigger, TriggerField};
 
 /// Which kind a memory is delivered as.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
@@ -56,10 +57,9 @@ pub type RequestedMetadata = serde_json::Map<String, serde_json::Value>;
 /// Which memories to list.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MemoryIndexParams {
-    /// Only memories carrying at least one of these scope ids; every memory when
-    /// this is absent.
+    /// Only memories in this scope; every memory when this is absent.
     #[serde(default)]
-    pub scopes: Option<Vec<String>>,
+    pub scope: Option<String>,
     /// Only memories of this kind; both kinds when this is absent.
     #[serde(default)]
     pub kind: Option<RequestedKind>,
@@ -97,9 +97,9 @@ pub struct MemoryPutParams {
     /// The one-line description that is this memory's index entry.
     pub description: String,
     pub kind: RequestedKind,
-    /// The scope ids this memory is delivered in. A memory under
-    /// `sessions/<machine>/<session-id>/` takes exactly its own session scope.
-    pub scopes: Vec<String>,
+    /// The one scope id this memory is delivered in. A memory under
+    /// `sessions/<machine>/<session-id>/` takes its own session scope.
+    pub scope: String,
     /// Who the memory came from: `user` or `assistant` by convention, and any
     /// other value is kept as it was written.
     pub source: RequestedSource,
@@ -185,9 +185,9 @@ pub struct MemorySetFieldsParams {
     pub description: Option<String>,
     #[serde(default)]
     pub kind: Option<RequestedKind>,
-    /// The scope ids this memory is delivered in, replacing the ones it has.
+    /// The one scope id this memory is delivered in, replacing the one it has.
     #[serde(default)]
-    pub scopes: Option<Vec<String>>,
+    pub scope: Option<String>,
     /// Who the memory came from: `user` or `assistant` by convention, and any
     /// other value is kept as it was written.
     #[serde(default)]
@@ -227,6 +227,163 @@ pub struct MemoryRenameParams {
     pub base_version: Option<String>,
     /// A branch from `branch_create`. With it the move is committed to that
     /// branch instead of to main.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Which scope's file to read.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScopeGetParams {
+    /// The scope id, as `scope_index` reports it. `global`, `machine:<name>`
+    /// and `session:<machine>/<session-id>` have no file, so there is nothing
+    /// to read for them.
+    pub id: String,
+}
+
+/// Which text a trigger's pattern is matched against.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestedTriggerField {
+    /// What the user wrote.
+    UserMessage,
+    /// What the agent wrote.
+    AssistantMessage,
+    /// The name of a tool the agent called.
+    ToolName,
+    /// The parameters a tool was called with.
+    ToolInput,
+    /// What a tool answered.
+    ToolResult,
+    /// The working directory of the session's shell, wherever the agent's `cd`
+    /// last took it.
+    ShellDirectory,
+    /// The directory `claude` was started in, which never moves.
+    SessionDirectory,
+    /// Every one of the texts above.
+    Any,
+}
+
+impl From<RequestedTriggerField> for TriggerField {
+    fn from(field: RequestedTriggerField) -> Self {
+        match field {
+            RequestedTriggerField::UserMessage => TriggerField::UserMessage,
+            RequestedTriggerField::AssistantMessage => TriggerField::AssistantMessage,
+            RequestedTriggerField::ToolName => TriggerField::ToolName,
+            RequestedTriggerField::ToolInput => TriggerField::ToolInput,
+            RequestedTriggerField::ToolResult => TriggerField::ToolResult,
+            RequestedTriggerField::ShellDirectory => TriggerField::ShellDirectory,
+            RequestedTriggerField::SessionDirectory => TriggerField::SessionDirectory,
+            RequestedTriggerField::Any => TriggerField::Any,
+        }
+    }
+}
+
+/// One regex that turns a scope on.
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+pub struct RequestedTrigger {
+    /// The text this trigger is matched against: `user_message`,
+    /// `assistant_message`, `tool_name`, `tool_input`, `tool_result`,
+    /// `shell_directory`, `session_directory` or `any`. Leave it out to match
+    /// every one of them, which is what `any` means.
+    #[serde(default)]
+    pub on: Option<RequestedTriggerField>,
+    /// The pattern, in the syntax of Rust's `regex` crate. A pattern that does
+    /// not compile is refused and nothing is written.
+    pub pattern: String,
+    /// The machine this trigger is limited to: it fires when the session runs
+    /// on that machine and the pattern matches. Leave it out to fire on every
+    /// machine.
+    #[serde(default)]
+    pub machine: Option<String>,
+}
+
+impl From<RequestedTrigger> for Trigger {
+    fn from(trigger: RequestedTrigger) -> Self {
+        Self {
+            on: trigger.on.map(Into::into),
+            pattern: trigger.pattern,
+            machine: trigger.machine,
+        }
+    }
+}
+
+/// When a scope turns itself off in a session.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+pub struct RequestedForget {
+    /// The context tokens since the scope was last turned on, by a trigger
+    /// match or by `session_scope_on`, after which it is turned off there. At
+    /// least 1; a scope that stays on until the agent turns it off carries no
+    /// forget rule at all.
+    pub tokens_since_trigger: u64,
+}
+
+impl From<RequestedForget> for Forget {
+    fn from(forget: RequestedForget) -> Self {
+        Self {
+            tokens_since_trigger: forget.tokens_since_trigger,
+        }
+    }
+}
+
+/// One scope's file to write.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScopePutParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The scope id, which is the file the scope lives in: lowercase letters,
+    /// digits and dashes. An id with no file creates a scope; an id that has
+    /// one replaces the version named by `base_version`.
+    pub id: String,
+    /// The scopes that are on whenever this one is, each of which has to be a
+    /// scope of this store. The whole file is written, so this is the list the
+    /// scope keeps, not an addition to it; send an empty list for a scope that
+    /// implies nothing.
+    pub implies: Vec<String>,
+    /// The regexes that turn this scope on. The whole file is written, so this
+    /// is the list the scope keeps, not an addition to it; send an empty list
+    /// for a scope only the agent turns on.
+    pub triggers: Vec<RequestedTrigger>,
+    /// The scope's own message: a short text delivered in full whenever the
+    /// scope becomes active, like a critical memory of the scope, so that a
+    /// scope with one rule needs no memory file for it. Leave it out for a
+    /// scope that delivers nothing of its own.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// When the scope turns itself off in a session. Leave it out for a scope
+    /// that stays on until the agent turns it off.
+    #[serde(default)]
+    pub forget: Option<RequestedForget>,
+    /// The commit's title line: one line, at most 72 characters, saying what
+    /// changed and why. Named apart from `message`, which is the scope's own.
+    pub message_title: String,
+    /// The version this write replaces, as `scope_get` reported it. Absent
+    /// creates a scope at an id that has no file.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the write is committed to that
+    /// branch instead of to main, so the scope reaches no session until the
+    /// branch is landed.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// One scope's file to delete.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScopeDeleteParams {
+    /// The calling session's key, recorded as the commit's author.
+    pub session_key: String,
+    /// The scope id to delete.
+    pub id: String,
+    /// The commit's title line: one line, at most 72 characters, saying why the
+    /// scope is gone.
+    pub message_title: String,
+    /// The version this write removes, as `scope_get` reported it. Absent
+    /// deletes whatever version the store holds now.
+    #[serde(default)]
+    pub base_version: Option<String>,
+    /// A branch from `branch_create`. With it the deletion is committed to that
+    /// branch instead of to main, so the scope keeps working until the branch
+    /// is landed.
     #[serde(default)]
     pub branch: Option<String>,
 }

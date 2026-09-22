@@ -3,7 +3,6 @@
 // editor's serializer.
 
 import type { MemoryDoc, MemoryKind, MemorySource, ValidationError } from '../api/types';
-import { parseIdList } from './triggers';
 
 export interface MemoryDraft {
   /** The version the edit started from, and the body as it was loaded. */
@@ -11,7 +10,8 @@ export interface MemoryDraft {
   originalBody: string;
   description: string;
   kind: MemoryKind;
-  scopesText: string;
+  /** The one scope the memory belongs to, empty while a new memory has none. */
+  scope: string;
   source: MemorySource;
   /** The markdown the editor holds, once the reader has edited it. */
   editedBody: string | null;
@@ -28,7 +28,7 @@ export function draftOf(doc: MemoryDoc): MemoryDraft {
     originalBody: doc.body,
     description: doc.description,
     kind: doc.kind,
-    scopesText: doc.scopes.join(', '),
+    scope: doc.scope,
     source: doc.source,
     editedBody: null,
     message: '',
@@ -76,21 +76,21 @@ export function isDirty(draft: MemoryDraft, doc: MemoryDoc): boolean {
   if (draft.description !== doc.description) return true;
   if (draft.kind !== doc.kind) return true;
   if (draft.source !== doc.source) return true;
-  return parseIdList(draft.scopesText).join(',') !== doc.scopes.join(',');
+  return draft.scope !== doc.scope;
 }
 
 /** The fields and the body as one text, so the two sides of a conflict compare. */
 export function memoryText(fields: {
   description: string;
   kind: string;
-  scopes: string[];
+  scope: string;
   source: string;
   body: string;
 }): string {
   return [
     `description: ${fields.description}`,
     `kind: ${fields.kind}`,
-    `scopes: ${fields.scopes.join(', ')}`,
+    `scope: ${fields.scope}`,
     `source: ${fields.source}`,
     '',
     fields.body,

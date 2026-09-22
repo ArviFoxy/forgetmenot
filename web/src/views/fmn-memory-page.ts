@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { RequestFailed, api } from '../api/client';
-import type { Commit, HistoryEntry, MemoryDoc, MemoryKind } from '../api/types';
+import type { Commit, HistoryEntry, MemoryDoc, MemoryKind, ScopeRow } from '../api/types';
 import { suggestScopes } from '../model/tagField';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
@@ -12,7 +12,7 @@ import {
   memoryText,
   type MemoryDraft,
 } from '../model/memoryDraft';
-import { memoryKinds, memorySources, parseIdList } from '../model/triggers';
+import { memoryKinds, memorySources } from '../model/triggers';
 import { announceStoreChange, navigate, onStoreChange } from '../navigation';
 import { takeDeleteIntent } from '../intent';
 import { paths, scopeFromSearch } from '../routes';
@@ -37,7 +37,7 @@ export function blankMemory(scope: string): MemoryDoc {
     title: '',
     description: '',
     kind: 'knowledge',
-    scopes: scope === '' ? [] : [scope],
+    scope,
     source: 'user',
     metadata: {},
     created: null,
@@ -83,9 +83,9 @@ export class FmnMemoryPage extends PageElement {
   });
   private readonly commits = new Resource<Commit[]>(() => this.requestUpdate());
   private readonly entry = new Resource<HistoryEntry>(() => this.requestUpdate());
-  /** The scope ids the Scopes field offers. */
-  private readonly scopeOptions = new Resource<string[]>(() => this.requestUpdate());
-  private loadedOptions = false;
+  /** Every scope the server lists, from which the Scope field offers one. */
+  private readonly scopeRows = new Resource<ScopeRow[]>(() => this.requestUpdate());
+  private loadedScopes = false;
 
   /** The id of the memory being created, which is its path under memories/. */
   private newId = '';
@@ -123,11 +123,9 @@ export class FmnMemoryPage extends PageElement {
   }
 
   override updated(): void {
-    if (!this.loadedOptions) {
-      this.loadedOptions = true;
-      void this.scopeOptions.load(async () =>
-        suggestScopes(await api.scopeIndex(), this.doc.value?.scopes ?? []),
-      );
+    if (!this.loadedScopes) {
+      this.loadedScopes = true;
+      void this.scopeRows.load(() => api.scopeIndex());
     }
     // The key a load is remembered by: a new memory is loaded once, from nothing.
     const wanted = this.creating ? 'new' : this.memoryId;
@@ -185,7 +183,7 @@ export class FmnMemoryPage extends PageElement {
     const fields = {
       description: draft.description,
       kind: draft.kind,
-      scopes: parseIdList(draft.scopesText),
+      scope: draft.scope,
       source: draft.source,
       // Straight from the editor when it has been typed in, because its own report
       // of the text arrives a moment after the keystroke that caused it.
@@ -346,26 +344,28 @@ export class FmnMemoryPage extends PageElement {
         </sl-select>`,
       )}
       ${this.renderField(
-        'scopes',
-        'Scopes',
-        parseIdList(draft.scopesText).length === 0
+        'scope',
+        'Scope',
+        draft.scope === ''
           ? html`<span class="empty">none</span>`
           : html`<span class="chips"
-          >${parseIdList(draft.scopesText).map(
-            (scope) =>
-              html`<a href=${paths.scope(scope)}
-                ><sl-badge variant="neutral" pill>${scope}</sl-badge></a
-              >`,
-          )}</span
-        >`,
-        () => html`<fmn-tag-field
-          label="Scopes"
-          placeholder="Add a scope"
-          .value=${parseIdList(draft.scopesText)}
-          .suggestions=${this.scopeOptions.value ?? []}
-          @fmn-tags-change=${(event: CustomEvent<TagsChange>) =>
-            this.change({ scopesText: event.detail.value.join(', ') })}
-        ></fmn-tag-field>`,
+              ><a href=${paths.scope(draft.scope)}
+                ><sl-badge variant="neutral" pill>${draft.scope}</sl-badge></a
+              ></span
+            >`,
+        () => html`<sl-select
+          class="scope-select"
+          size="small"
+          placeholder="Pick a scope"
+          value=${draft.scope}
+          hoist
+          @sl-change=${(event: Event) =>
+            this.change({ scope: (event.target as HTMLInputElement).value })}
+        >
+          ${suggestScopes(this.scopeRows.value ?? [], draft.scope).map(
+            (scope) => html`<sl-option value=${scope}>${scope}</sl-option>`,
+          )}
+        </sl-select>`,
       )}
       ${this.renderField(
         'source',
@@ -490,14 +490,14 @@ export class FmnMemoryPage extends PageElement {
     const mine = memoryText({
       description: draft.description,
       kind: draft.kind,
-      scopes: parseIdList(draft.scopesText),
+      scope: draft.scope,
       source: draft.source,
       body: bodyToSave(draft),
     });
     const theirs = memoryText({
       description: current.description,
       kind: current.kind,
-      scopes: current.scopes,
+      scope: current.scope,
       source: current.source,
       body: current.body,
     });

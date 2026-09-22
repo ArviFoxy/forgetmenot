@@ -26,7 +26,7 @@ const serverDoc: MemoryDoc = {
   title: 'Widget part numbers are immutable',
   description: 'a widget part number is never reused',
   kind: 'critical',
-  scopes: ['widgets'],
+  scope: 'widgets',
   source: 'user',
   metadata: {},
   created: null,
@@ -74,7 +74,6 @@ const memoryRow: MemoryStatsRow = {
   retracted: 7,
   chars: 3500,
   tokens: 1000,
-  most_under: 'widgets',
   last_shown: '2026-01-02T03:04:05+00:00',
 };
 
@@ -155,6 +154,7 @@ const answers = vi.hoisted(() => ({
   statsRows: true,
   contexts: [] as unknown[],
   contextPrompt: null as unknown,
+  memoryWrites: [] as { scope: string }[],
   scopeWrites: [] as { scope_message: string | null; forget: { tokens_since_trigger: number } | null }[],
   storeHistory: null as unknown,
   storeCommit: null as unknown,
@@ -175,7 +175,10 @@ vi.mock('../src/api/client', () => ({
   api: {
     memoryIndex: () => Promise.resolve([]),
     memory: () => Promise.resolve(serverDoc),
-    putMemory: () => Promise.resolve({ kind: 'written' }),
+    putMemory: (_id: string, request: { scope: string }) => {
+      answers.memoryWrites.push(request);
+      return Promise.resolve({ kind: 'written' });
+    },
     createMemory: () => Promise.resolve({ kind: 'written' }),
     deleteMemory: () => Promise.resolve({ kind: 'written' }),
     memoryHistory: () => Promise.resolve([]),
@@ -253,6 +256,7 @@ beforeEach(() => {
   window.localStorage.clear();
   answers.contexts = [];
   answers.contextPrompt = contextPrompt;
+  answers.memoryWrites = [];
   answers.scopeWrites = [];
   answers.storeHistory = storeHistory;
   answers.storeCommit = storeCommit;
@@ -672,6 +676,51 @@ test('the scope page shows the forget count the scope carries and writes back an
   expect(answers.scopeWrites.map((request) => request.forget)).toEqual([
     { tokens_since_trigger: 1200 },
   ]);
+});
+
+// The source of this expectation is the data model: a memory belongs to exactly one
+// scope, so the page has one scope to show and writes back the one that was picked.
+
+test('the memory page shows more than one scope, or writes a scope it was not given', async () => {
+  const page = document.createElement('fmn-memory-page') as HTMLElement & {
+    memoryId: string;
+    mode: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.memoryId = serverDoc.id;
+  page.mode = 'document';
+  document.body.append(page);
+  await settle(page);
+
+  const badges = [...page.querySelectorAll('.infobox .chips sl-badge')];
+  expect(badges.map((badge) => badge.textContent?.trim())).toEqual([serverDoc.scope]);
+  expect(page.querySelector('.infobox .chips a')?.getAttribute('href')).toBe(
+    paths.scope(serverDoc.scope),
+  );
+
+  page.querySelector<HTMLElement>('sl-icon-button[label="Edit Scope"]')?.click();
+  await settle(page);
+  const select = page.querySelector('sl-select.scope-select');
+  expect(select, 'the Scope field must be editable').not.toBeNull();
+  expect(select?.getAttribute('value')).toBe(serverDoc.scope);
+  const offered = [...(select?.querySelectorAll('sl-option') ?? [])].map((option) =>
+    option.getAttribute('value'),
+  );
+  expect([...offered].sort()).toEqual(scopeRows.map((row) => row.id).sort());
+
+  const picked = 'global';
+  (select as HTMLInputElement).value = picked;
+  select!.dispatchEvent(new CustomEvent('sl-change'));
+  await settle(page);
+  const bar = page.querySelector('fmn-commit-bar');
+  expect(bar, 'a memory moved to another scope must offer to be saved').not.toBeNull();
+  bar?.dispatchEvent(
+    new CustomEvent('fmn-message-change', { detail: { message: 'move it' }, bubbles: true }),
+  );
+  bar?.dispatchEvent(new CustomEvent('fmn-save', { bubbles: true }));
+  await settle(page);
+
+  expect(answers.memoryWrites.map((request) => request.scope)).toEqual([picked]);
 });
 
 // The source of these two expectations is what the tree menu can act on: the file is

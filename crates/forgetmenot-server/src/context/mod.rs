@@ -558,21 +558,21 @@ mod tests {
             memory_file(
                 "bench-power",
                 "critical",
-                &["global"],
+                "global",
                 "Cut bench power at the wall before rewiring",
                 THREE_RULES,
             ),
             memory_file(
                 "reading-list",
                 "knowledge",
-                &["global"],
+                "global",
                 BINDER,
                 "# The binder\n\nThe bench notes and the parts catalogue are in it.\n",
             ),
             memory_file(
                 "widget-naming",
                 "critical",
-                &["widgets"],
+                "widgets",
                 "A widget part number is never reused",
                 "# Widget part numbers are immutable\n\nDownstream drawings cite them.\n",
             ),
@@ -803,7 +803,7 @@ mod tests {
         store.commit(vec![memory_file(
             "bench-power",
             "critical",
-            &["global"],
+            "global",
             "Cut bench power at the wall before rewiring",
             TWO_RULES,
         )]);
@@ -822,7 +822,7 @@ mod tests {
         store.commit(vec![memory_file(
             "bench-power",
             "critical",
-            &["global"],
+            "global",
             "Cut bench power at the wall before rewiring",
             THREE_RULES_REWORDED,
         )]);
@@ -848,7 +848,7 @@ mod tests {
         store.commit(vec![memory_file(
             "bench-power",
             "critical",
-            &["global"],
+            "global",
             "Cut bench power at the wall before rewiring",
             TWO_RULES,
         )]);
@@ -864,7 +864,7 @@ mod tests {
         store.commit(vec![memory_file(
             "bench-power",
             "critical",
-            &["global"],
+            "global",
             "Cut bench power at the wall before rewiring",
             &format!("{TWO_RULES}Keep the meter on the bench.\n"),
         )]);
@@ -891,7 +891,7 @@ mod tests {
         store.commit(vec![memory_file(
             "reading-list",
             "knowledge",
-            &["global"],
+            "global",
             BINDER,
             "# The binder\n",
         )]);

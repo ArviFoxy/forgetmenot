@@ -39,7 +39,9 @@ use crate::store::memory::{
     MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource, rewrite_links,
 };
 use crate::store::scope::{Forget, ScopeDocument, Trigger, TriggerField};
-use crate::store::validate::{self, Candidate, CrossDocumentRules, ValidationError, WriteMode};
+use crate::store::validate::{
+    self, Candidate, CrossDocumentRules, ValidationError, ValidationWarning, WriteMode,
+};
 use crate::store::{MemoryId, ScopeId, ScopeKind};
 
 // ---------------------------------------------------------------------------
@@ -84,6 +86,13 @@ pub enum OperationError {
 
     #[error("`{0}` is implicit and has no file, so there is nothing to delete")]
     ImplicitScopeHasNoFile(ScopeId),
+
+    /// The scope named exists but keeps nothing in a file, so the document the
+    /// caller asked for is not there. Asking is reasonable, which is why this
+    /// is answered the way a missing document is and not the way a request the
+    /// server cannot read is.
+    #[error("the scope `{0}` has no file to read")]
+    ScopeHasNoFile(ScopeId),
 
     #[error("no session `{0}` has been seen by this server")]
     UnknownSession(String),
@@ -152,6 +161,13 @@ impl ValidationMessage {
             message: error.to_string(),
         }
     }
+
+    pub(crate) fn of_warning(warning: &ValidationWarning) -> Self {
+        Self {
+            path: warning.path().to_string(),
+            message: warning.to_string(),
+        }
+    }
 }
 
 /// One file a land could not merge, with the three versions of it a resolution
@@ -210,7 +226,7 @@ pub struct MemorySummary {
     pub title: String,
     pub description: String,
     pub kind: MemoryKind,
-    pub scopes: Vec<ScopeId>,
+    pub scope: ScopeId,
     pub source: MemorySource,
     /// ISO 8601, or absent when the file carries no `modified` stamp.
     pub modified: Option<String>,
@@ -249,7 +265,7 @@ pub struct MemoryDoc {
     pub title: String,
     pub description: String,
     pub kind: MemoryKind,
-    pub scopes: Vec<ScopeId>,
+    pub scope: ScopeId,
     pub source: MemorySource,
     /// The `metadata` keys this server does not interpret, Claude Code's own
     /// `type` among them, as the file carries them.
@@ -454,8 +470,12 @@ pub struct ContextPrompt {
 #[derive(Clone, Debug, Serialize)]
 pub struct ReviewReport {
     pub errors: Vec<ValidationMessage>,
-    /// Critical memories whose only scope is `global`: they are delivered in
-    /// full to every session on every machine, which is worth a second look.
+    /// What is worth seeing but does not make the store invalid: a file that is
+    /// not a memory, a memory with no index entry, a memory whose file names
+    /// several scopes.
+    pub warnings: Vec<ValidationMessage>,
+    /// Critical memories whose scope is `global`: they are delivered in full
+    /// to every session on every machine, which is worth a second look.
     pub global_only_critical: Vec<MemoryId>,
 }
 
@@ -545,7 +565,7 @@ impl MemoryFilter {
             return false;
         }
         if let Some(scope) = &self.scope
-            && !entry.scopes().contains(scope)
+            && entry.scope() != scope
         {
             return false;
         }
@@ -558,7 +578,7 @@ impl MemoryFilter {
 pub struct MemoryWriteRequest {
     pub description: String,
     pub kind: MemoryKind,
-    pub scopes: Vec<ScopeId>,
+    pub scope: ScopeId,
     pub source: MemorySource,
     /// The `metadata` keys this server does not interpret, which replace the
     /// ones the memory carries. Absent leaves them as they are, so a caller
@@ -611,7 +631,7 @@ pub struct SetFieldsRequest {
     #[serde(default)]
     pub kind: Option<MemoryKind>,
     #[serde(default)]
-    pub scopes: Option<Vec<ScopeId>>,
+    pub scope: Option<ScopeId>,
     #[serde(default)]
     pub source: Option<MemorySource>,
     /// The `metadata` keys this server does not interpret, merged into the ones
@@ -632,7 +652,7 @@ impl SetFieldsRequest {
     fn sets_nothing(&self) -> bool {
         self.description.is_none()
             && self.kind.is_none()
-            && self.scopes.is_none()
+            && self.scope.is_none()
             && self.source.is_none()
             && self.metadata.as_ref().is_none_or(serde_json::Map::is_empty)
     }
@@ -838,7 +858,7 @@ pub async fn memory_put(
                 return Err(OperationError::missing_memory(id));
             };
             let Some(base_version) = request.base_version.as_deref() else {
-                return Err(OperationError::invalid(&path, MISSING_BASE_VERSION));
+                return Err(missing_base_version(&path, entry.version));
             };
             match Oid::from_str(base_version) {
                 Ok(version) if version == entry.version => Some(version),
@@ -860,7 +880,7 @@ pub async fn memory_put(
     document.frontmatter.description = Some(request.description.clone());
     document.frontmatter.modified = Some(now);
     document.frontmatter.metadata.kind = Some(request.kind);
-    document.frontmatter.metadata.scopes = Some(request.scopes.clone());
+    document.frontmatter.metadata.scope = Some(request.scope.clone());
     document.frontmatter.metadata.source = Some(request.source.clone());
     document.frontmatter.metadata.author = Some(request.author.clone());
     if let Some(metadata) = &request.metadata {
@@ -1038,8 +1058,8 @@ pub async fn memory_set_fields(
     if let Some(kind) = request.kind {
         document.frontmatter.metadata.kind = Some(kind);
     }
-    if let Some(scopes) = &request.scopes {
-        document.frontmatter.metadata.scopes = Some(scopes.clone());
+    if let Some(scope) = &request.scope {
+        document.frontmatter.metadata.scope = Some(scope.clone());
     }
     if let Some(source) = &request.source {
         document.frontmatter.metadata.source = Some(source.clone());
@@ -1312,7 +1332,7 @@ fn memory_summary(entry: &MemoryEntry) -> MemorySummary {
         title: entry.document.title().to_string(),
         description: entry.document.description().to_string(),
         kind: entry.kind(),
-        scopes: entry.scopes().to_vec(),
+        scope: entry.scope().clone(),
         source: entry.document.source(),
         modified: entry.document.modified().map(iso8601),
         version: entry.version.to_string(),
@@ -1331,7 +1351,7 @@ async fn memory_doc(
         title: entry.document.title().to_string(),
         description: entry.document.description().to_string(),
         kind: entry.kind(),
-        scopes: entry.scopes().to_vec(),
+        scope: entry.scope().clone(),
         source: entry.document.source(),
         metadata: entry.document.frontmatter.metadata.extra_as_json(),
         created: entry.document.created().map(iso8601),
@@ -1402,7 +1422,7 @@ fn empty_memory(id: &MemoryId, now: DateTime<Utc>) -> MemoryDocument {
 /// A scope with a file exists by its file; `global` exists always; a machine or
 /// a session scope exists once the server has seen that machine or that
 /// session, or a store file names it. A reference alone creates no scope of the
-/// file kind, so a memory's `scopes`, a scope's `implies` and a context's active
+/// file kind, so a memory's `scope`, a scope's `implies` and a context's active
 /// set may all name a scope that is not here.
 ///
 /// One catalog snapshot and one registry snapshot answer the whole index, so
@@ -1456,7 +1476,7 @@ pub async fn scope_index(state: &AppState) -> Result<Vec<ScopeRow>, OperationErr
     // scope file, and a file is the only thing that can create that scope.
     let named = catalog
         .memories()
-        .flat_map(|memory| memory.scopes())
+        .map(|memory| memory.scope())
         .chain(catalog.scopes().flat_map(|entry| &entry.document.implies));
     for id in named {
         match id.kind() {
@@ -1474,8 +1494,17 @@ fn note_scope(rows: &mut BTreeMap<ScopeId, ScopeRow>, id: ScopeId) -> &mut Scope
     rows.entry(id.clone()).or_insert_with(|| ScopeRow::of(id))
 }
 
-/// One scope. The implicit scopes have no file and so are not readable here.
+/// One scope's file.
+///
+/// `global`, `machine:<name>` and `session:<machine>/<session-id>` exist without
+/// a file, so the refusal says the file is what is missing rather than the
+/// scope: the scope does exist, and there is nothing about it to read or edit.
+/// The request itself is a reasonable one, so it is answered as a document that
+/// is not there and not as a request the server cannot read.
 pub fn scope_get(catalog: &Catalog, id: &ScopeId) -> Result<ScopeDoc, OperationError> {
+    if id.is_implicit() {
+        return Err(OperationError::ScopeHasNoFile(id.clone()));
+    }
     catalog
         .scope(id)
         .map(ScopeDoc::of)
@@ -1506,7 +1535,7 @@ pub async fn scope_put(
                 return Err(OperationError::missing_scope(id));
             };
             let Some(base_version) = request.base_version.as_deref() else {
-                return Err(OperationError::invalid(&path, MISSING_BASE_VERSION));
+                return Err(missing_base_version(&path, entry.version));
             };
             match Oid::from_str(base_version) {
                 Ok(version) if version == entry.version => Some(version),
@@ -1573,7 +1602,7 @@ pub async fn scope_put(
 /// keeps every version it had.
 ///
 /// The implicit scopes have no file and cannot be deleted. A scope any memory
-/// still lists, or any other scope still implies, is refused with one problem
+/// is still in, or any other scope still implies, is refused with one problem
 /// per file that names it: deleting it would leave those files naming a scope
 /// that does not exist, which is a store `forgetmenot check` calls invalid, so
 /// the caller edits them first.
@@ -1652,11 +1681,11 @@ pub async fn scope_delete(
 fn scope_references(catalog: &Catalog, id: &ScopeId) -> Vec<ValidationMessage> {
     let mut errors = Vec::new();
     for memory in catalog.memories() {
-        if memory.scopes().contains(id) {
+        if memory.scope() == id {
             errors.push(ValidationMessage {
                 path: memory.path.clone(),
                 message: format!(
-                    "lists the scope `{id}`, which cannot be deleted while a memory names it"
+                    "is in the scope `{id}`, which cannot be deleted while a memory is in it"
                 ),
             });
         }
@@ -1982,7 +2011,6 @@ pub async fn context_prompt(
         key,
         catalog: &catalog,
         needs: &needs,
-        active: &held.active,
         activated: &[],
         announce_empty_scopes: false,
         session_start: matches!(mode, PromptMode::All),
@@ -2115,11 +2143,16 @@ pub fn review(catalog: &Catalog) -> ReviewReport {
     let global_only_critical = catalog
         .memories()
         .filter(|entry| entry.kind() == MemoryKind::Critical)
-        .filter(|entry| entry.scopes() == [ScopeId::global()])
+        .filter(|entry| entry.scope() == &ScopeId::global())
         .map(|entry| entry.id.clone())
         .collect();
     ReviewReport {
         errors: report.errors().iter().map(ValidationMessage::of).collect(),
+        warnings: report
+            .warnings()
+            .iter()
+            .map(ValidationMessage::of_warning)
+            .collect(),
         global_only_critical,
     }
 }
@@ -2315,6 +2348,16 @@ async fn record_tool_call(
 const MISSING_BASE_VERSION: &str =
     "base_version is required: a write replaces the version it was read from";
 
+/// That refusal about a document that exists, naming the version the store
+/// holds, so that a caller which sent none can read that version and write
+/// against it instead of asking for it in a call of its own.
+fn missing_base_version(path: &str, current: Oid) -> OperationError {
+    OperationError::invalid(
+        path,
+        &format!("{MISSING_BASE_VERSION}; the current version is {current}"),
+    )
+}
+
 /// What a write is refused for when its `base_version` is not a version at all.
 pub(crate) const UNREADABLE_BASE_VERSION: &str = "base_version is not a version of this document";
 
@@ -2327,7 +2370,7 @@ const SNIPPET_NOT_FOUND: &str =
 
 /// What a field write is refused for when it names no field.
 const NO_FIELDS_TO_SET: &str =
-    "no field was given: send at least one of description, kind, scopes or source";
+    "no field was given: send at least one of description, kind, scope or source";
 
 /// What a rename is refused for when it moves a memory to where it already is.
 const SAME_RENAME_TARGET: &str = "the memory already has this id, so there is nothing to move";

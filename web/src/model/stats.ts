@@ -298,7 +298,6 @@ export const memoryColumns: TableColumn<MemoryStatsRow>[] = [
     moment: true,
     priority: 3,
   },
-  { id: 'most-under', header: 'Printed under', value: (row) => row.most_under ?? '', priority: 3 },
 ];
 
 /** What a session row holds, which is the log's row and when the context was last seen. */

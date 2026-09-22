@@ -10,7 +10,7 @@
 //! a session's own writes do to the sessions around it is
 //! `scenarios_own_writes.rs`. What is asserted here is only visible through MCP.
 //!
-//! The expectations come from the plan's four tool families and from the example
+//! The expectations come from the plan's tool families and from the example
 //! store committed in this repository.
 
 mod common;
@@ -47,16 +47,21 @@ const BRANCH_TOOLS: [&str; 5] = [
     "branch_abandon",
 ];
 
+/// The scope tools, which read and change the scopes themselves.
+const SCOPE_TOOLS: [&str; 4] = ["scope_index", "scope_get", "scope_put", "scope_delete"];
+
 /// The settings tools, which read and change the store's behaviour settings.
 const SETTINGS_TOOLS: [&str; 2] = ["settings_get", "settings_set"];
 
 /// The tools that write to the store, each of which takes an optional branch.
-const WRITE_TOOLS: [&str; 6] = [
+const WRITE_TOOLS: [&str; 8] = [
     "memory_put",
     "memory_replace_text",
     "memory_set_fields",
     "memory_rename",
     "memory_delete",
+    "scope_put",
+    "scope_delete",
     "settings_set",
 ];
 
@@ -72,6 +77,9 @@ const BRANCH_FAMILY_PHRASE: &str = "one commit on main";
 /// What a settings tool's description has to say: what these settings are.
 const SETTINGS_FAMILY_PHRASE: &str = "behaviour settings";
 
+/// What a scope tool's description has to say: what a scope is.
+const SCOPE_FAMILY_PHRASE: &str = "label that groups memories";
+
 /// A line of `bench-power`'s body of the example store and of no other memory,
 /// so that "the whole body came back" can be told apart from "an index line
 /// did".
@@ -83,9 +91,10 @@ const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 /// matched against the triggers and turns scopes on from the memory system's own
 /// chatter. Detects a tool that drifted between the families as well: a memory
 /// tool whose description does not say that the call is a commit in the shared
-/// store, a branch tool that does not say what a branch is for, or a session
-/// tool that does not say the store is untouched, would have the model
-/// committing to everyone's store when it meant to change its own scopes.
+/// store, a scope tool that does not say what a scope is, a branch tool that
+/// does not say what a branch is for, or a session tool that does not say the
+/// store is untouched, would have the model committing to everyone's store when
+/// it meant to change its own scopes.
 #[test]
 fn tools_list_offers_exactly_the_tools_the_hook_knows_and_each_description_names_its_family() {
     let server = TestServer::start(example_store_files(), |_| {});
@@ -106,6 +115,8 @@ fn tools_list_offers_exactly_the_tools_the_hook_knows_and_each_description_names
         let description = tool.description.as_deref().unwrap_or_default();
         let phrase = if MEMORY_TOOLS.contains(&tool.name.as_ref()) {
             MEMORY_FAMILY_PHRASE
+        } else if SCOPE_TOOLS.contains(&tool.name.as_ref()) {
+            SCOPE_FAMILY_PHRASE
         } else if BRANCH_TOOLS.contains(&tool.name.as_ref()) {
             BRANCH_FAMILY_PHRASE
         } else if SETTINGS_TOOLS.contains(&tool.name.as_ref()) {
@@ -186,6 +197,7 @@ fn the_server_says_which_families_it_has_and_where_the_session_key_comes_from() 
     );
     for family in [
         "memory management",
+        "scope management",
         "settings management",
         "session management",
     ] {
@@ -220,7 +232,7 @@ fn a_memory_written_through_mcp_is_authored_by_the_calling_session_and_answers_w
             "id": "bracket-torque",
             "description": "Bracket bolts are torqued to 9 Nm, in two passes",
             "kind": "critical",
-            "scopes": ["global"],
+            "scope": "global",
             "source": "assistant",
             "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
             "message": "record the bracket torque"
@@ -269,17 +281,16 @@ fn a_memory_written_through_mcp_is_authored_by_the_calling_session_and_answers_w
     );
 }
 
-/// Detects a `scopes` filter that is ignored or inverted. The index is the only
+/// Detects a `scope` filter that is ignored or inverted. The index is the only
 /// way the model finds a memory it has not been given, and a filter that answers
 /// with the memories of every other scope, or with nothing, makes it useless for
-/// the one scope it asked about. The tool takes several scopes where the JSON
-/// API takes one, so this is the MCP adapter's own filtering.
+/// the one scope it asked about.
 #[test]
-fn the_memory_index_filtered_by_scopes_lists_the_memories_of_those_scopes_only() {
+fn the_memory_index_filtered_by_scope_lists_the_memories_of_that_scope_only() {
     let server = TestServer::start(example_store_files(), |_| {});
     let session = server.mcp();
 
-    let listed = tool_json(&session.call("memory_index", json!({ "scopes": ["widgets"] })));
+    let listed = tool_json(&session.call("memory_index", json!({ "scope": "widgets" })));
 
     let ids: BTreeSet<String> = listed
         .as_array()
@@ -290,12 +301,451 @@ fn the_memory_index_filtered_by_scopes_lists_the_memories_of_those_scopes_only()
     assert_eq!(
         ids,
         BTreeSet::from(["widget-naming".to_string()]),
-        "only the memories carrying the named scope may be listed"
+        "only the memories in the named scope may be listed"
     );
     let all = tool_json(&session.call("memory_index", json!({})));
     assert!(
         all.as_array().is_some_and(|summaries| summaries.len() > 1),
         "without a filter every memory must be listed, got {all}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The scope tools, which define the scopes the memories are grouped by.
+// ---------------------------------------------------------------------------
+
+/// The id of the scope the tests below define, which the example store does not
+/// have.
+const NEW_SCOPE: &str = "lathe";
+
+/// The file that scope is written to, which is what a refusal names.
+const NEW_SCOPE_PATH: &str = "scopes/lathe.yaml";
+
+/// A line of the memory written into the new scope, in no other memory of the
+/// store and in no description, so that "the new scope delivered its memory" can
+/// be told apart from "something the example store already had arrived".
+const LATHE_RULE: &str = "The chuck key never stays in the chuck";
+
+/// The scope ids `scope_index` reports.
+fn indexed_scopes(session: &common::McpSession<'_>) -> BTreeSet<String> {
+    tool_json(&session.call("scope_index", json!({})))
+        .as_array()
+        .expect("the index is an array")
+        .iter()
+        .map(|row| row["id"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// The version `scope_get` reports for one scope, which is what a write is made
+/// against.
+fn scope_version(session: &common::McpSession<'_>, id: &str) -> String {
+    let document = tool_json(&session.call("scope_get", json!({ "id": id })));
+    document["version"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a scope reports the version to write against, got {document}"))
+        .to_string()
+}
+
+/// How many commits the store has on main, for the assertions that a refused
+/// write left the store as it was.
+fn commit_count(server: &TestServer) -> usize {
+    let (status, answer) = server.api("GET", "/api/history", None);
+    assert_eq!(status, 200, "the history must be readable, got {answer}");
+    answer["commits"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the history lists its commits, got {answer}"))
+        .len()
+}
+
+/// Detects a scope written through MCP that the server never acts on: the file
+/// would be in the store, its trigger would never fire, and the memory the agent
+/// filed under the scope it had just defined would reach no session, with both
+/// calls answered as done. Nothing short of a hook event after the write sees
+/// this, because a scope only does anything when a trigger matches.
+///
+/// Source: issue 22, where a scope created with a `user_message` trigger
+/// activates at the next matching prompt and its memory is delivered.
+#[test]
+fn a_scope_created_through_mcp_fires_at_the_next_matching_prompt_and_delivers_its_memory() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    // Written by another session than the one the prompt comes from: a writer is
+    // recorded as holding what it wrote, and this is about what the trigger
+    // delivers, not about what a writer is spared.
+    let session_key = "alpha/session-9";
+
+    let written = session.call(
+        "scope_put",
+        json!({
+            "session_key": session_key,
+            "id": NEW_SCOPE,
+            "implies": [],
+            "triggers": [{ "on": "user_message", "pattern": "\\blathe\\b" }],
+            "message_title": "add a scope for the lathe",
+        }),
+    );
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "the scope must be written, got {}",
+        tool_text(&written)
+    );
+    let filed = session.call(
+        "memory_put",
+        json!({
+            "session_key": session_key,
+            "id": "lathe-chuck-key",
+            "description": "How the chuck key is handled at the lathe",
+            "kind": "critical",
+            "scope": NEW_SCOPE,
+            "source": "assistant",
+            "body": format!("# Chuck key\n\n{LATHE_RULE}.\n"),
+            "message": "record what happens to the chuck key",
+        }),
+    );
+    assert_ne!(
+        filed.is_error,
+        Some(true),
+        "a memory must be filable under the new scope, got {}",
+        tool_text(&filed)
+    );
+
+    server.hook(
+        "alpha",
+        Some(10_000),
+        &common::hook_fixture("session_start"),
+    );
+    let (status, answer) = server.hook(
+        "alpha",
+        Some(10_000),
+        &json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-1",
+            "cwd": "/home/dev/widgets",
+            "prompt": "face the end of the bar on the lathe"
+        }),
+    );
+
+    assert_eq!(status, 200, "the prompt must be answered, got {answer}");
+    let delivered = common::additional_context(&answer).unwrap_or_default();
+    assert!(
+        delivered.contains(LATHE_RULE),
+        "the prompt matched the new scope's trigger, so its memory must be delivered, got \
+         {delivered:?}"
+    );
+}
+
+/// Detects a create at an id that already has a file being written anyway: a
+/// scope somebody else defined would be replaced whole, triggers and implies and
+/// all, by a caller that never read it. The refusal has to name the version the
+/// store holds, which is what the caller sends back to write against.
+///
+/// Source: issue 22, where a create at an existing id without `base_version` is
+/// refused with the current version.
+#[test]
+fn creating_a_scope_at_an_id_that_has_a_file_is_refused_and_names_the_version_the_store_holds() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let before = tool_json(&session.call("scope_get", json!({ "id": "widgets" })));
+    let version = scope_version(&session, "widgets");
+
+    let refused = session.call(
+        "scope_put",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "widgets",
+            "implies": [],
+            "triggers": [],
+            "message_title": "take the widgets scope over",
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a create at an id that has a file must be refused, got {}",
+        tool_text(&refused)
+    );
+    let text = tool_text(&refused);
+    assert!(
+        text.contains(&version),
+        "the refusal must name the version the store holds, {version} is not in {text:?}"
+    );
+    assert_eq!(
+        tool_json(&session.call("scope_get", json!({ "id": "widgets" }))),
+        before,
+        "a refused create must leave the scope exactly as it was"
+    );
+}
+
+/// Detects a write made against a version that is no longer current: the change
+/// somebody else committed in between would be overwritten silently, and the
+/// caller would be told its write was done. The refusal names the current
+/// version, which is what the caller reads and writes against to try again.
+///
+/// Source: issue 22, where an update from a stale `base_version` is refused with
+/// the current document.
+#[test]
+fn updating_a_scope_from_a_version_that_is_no_longer_current_is_refused_with_the_current_one() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-7";
+    let stale = scope_version(&session, "widgets");
+    let meanwhile = session.call(
+        "scope_put",
+        json!({
+            "session_key": session_key,
+            "id": "widgets",
+            "implies": [],
+            "triggers": [{ "on": "user_message", "pattern": "\\bwidget\\b" }],
+            "base_version": stale,
+            "message_title": "match widgets in prompts only",
+        }),
+    );
+    assert_ne!(
+        meanwhile.is_error,
+        Some(true),
+        "the first update must be accepted, got {}",
+        tool_text(&meanwhile)
+    );
+    let current = scope_version(&session, "widgets");
+
+    let refused = session.call(
+        "scope_put",
+        json!({
+            "session_key": session_key,
+            "id": "widgets",
+            "implies": ["rocketry"],
+            "triggers": [],
+            "base_version": stale,
+            "message_title": "drop the widget triggers",
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a write against a version that has moved on must be refused, got {}",
+        tool_text(&refused)
+    );
+    let text = tool_text(&refused);
+    assert!(
+        text.contains(&current),
+        "the refusal must name the version the store holds now, {current} is not in {text:?}"
+    );
+    let document = tool_json(&session.call("scope_get", json!({ "id": "widgets" })));
+    assert_eq!(
+        document["triggers"].as_array().map(Vec::len),
+        Some(1),
+        "the refused write must not have replaced what the accepted one wrote, got {document}"
+    );
+}
+
+/// Detects a trigger pattern that reaches the store without being compiled: the
+/// scope file would hold a pattern that can never match, so the scope would
+/// never turn on and the store would need a hand edit to fix. The refusal names
+/// the file, because that is what the caller is being told is unwritable, and a
+/// refused write commits nothing at all.
+///
+/// Source: issue 22, where a pattern that does not compile is refused the way
+/// the API refuses it, which is the store's validation rule that every trigger
+/// pattern compiles.
+#[test]
+fn a_scope_whose_trigger_pattern_does_not_compile_is_refused_naming_the_file_and_commits_nothing() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let before = commit_count(&server);
+
+    let refused = session.call(
+        "scope_put",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": NEW_SCOPE,
+            "implies": [],
+            "triggers": [{ "on": "user_message", "pattern": "(lathe" }],
+            "message_title": "add a scope for the lathe",
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a pattern that does not compile must be refused, got {}",
+        tool_text(&refused)
+    );
+    let text = tool_text(&refused);
+    assert!(
+        text.contains(NEW_SCOPE_PATH),
+        "the refusal must name the file it would not write, got {text:?}"
+    );
+    assert_eq!(
+        commit_count(&server),
+        before,
+        "a refused write must leave the store without a commit"
+    );
+    assert!(
+        !indexed_scopes(&session).contains(NEW_SCOPE),
+        "the refused scope must not exist"
+    );
+}
+
+/// Detects a scope deleted out from under the memories that are in it: every one
+/// of them would name a scope that is not there, which makes the whole store
+/// invalid, and the memories would be delivered to nobody. The refusal names the
+/// memory, because moving it is what the caller has to do first.
+///
+/// Source: issue 22, where a delete of a referenced scope is refused naming the
+/// memory, as `DELETE /api/scopes/{id}` refuses it.
+#[test]
+fn deleting_a_scope_a_memory_is_in_is_refused_naming_that_memory() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let refused = session.call(
+        "scope_delete",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "widgets",
+            "message_title": "drop the widgets scope",
+        }),
+    );
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "deleting a scope a memory is in must be refused, got {}",
+        tool_text(&refused)
+    );
+    let text = tool_text(&refused);
+    assert!(
+        text.contains("widget-naming"),
+        "the refusal must name the memory that is in the scope, got {text:?}"
+    );
+    assert!(
+        indexed_scopes(&session).contains("widgets"),
+        "the refused delete must leave the scope where it was"
+    );
+}
+
+/// Detects a delete that answers as done and leaves the file in place, which
+/// would keep the scope's triggers firing in every session after the caller was
+/// told the scope was gone.
+///
+/// Source: issue 22, where deleting an unreferenced scope removes it and
+/// `scope_index` stops listing it. `workshop` is the example store's scope that
+/// no memory is in and no other scope implies.
+#[test]
+fn deleting_a_scope_nothing_names_removes_it_and_the_index_stops_listing_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    assert!(
+        indexed_scopes(&session).contains("workshop"),
+        "the scope to delete must exist first"
+    );
+
+    let deleted = session.call(
+        "scope_delete",
+        json!({
+            "session_key": "alpha/session-7",
+            "id": "workshop",
+            "message_title": "drop the workshop scope, nothing is in it",
+        }),
+    );
+
+    assert_ne!(
+        deleted.is_error,
+        Some(true),
+        "a scope nothing names must be deletable, got {}",
+        tool_text(&deleted)
+    );
+    assert!(
+        !indexed_scopes(&session).contains("workshop"),
+        "a deleted scope must stop being listed"
+    );
+}
+
+/// Detects `global`, `machine:<name>` and `session:<machine>/<id>` answered with
+/// a document or reported as not existing: they are scopes that do exist and
+/// have no file, so a model told "no such scope" would try to create one, and a
+/// model given a document would try to edit a file nothing reads.
+///
+/// Source: issue 22, where a scope with no file is refused saying it has none.
+#[test]
+fn reading_a_scope_that_has_no_file_is_refused_as_having_none_rather_than_as_missing() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let refused = session.call("scope_get", json!({ "id": "global" }));
+
+    assert_eq!(
+        refused.is_error,
+        Some(true),
+        "a scope with no file has nothing to read, got {}",
+        tool_text(&refused)
+    );
+    let text = tool_text(&refused);
+    assert!(
+        text.contains("global") && text.contains("no file"),
+        "the refusal must name the scope and say it has no file, got {text:?}"
+    );
+}
+
+/// Detects a scope write that ignores the branch it was given: the scope would
+/// be in force in every session at once, which is exactly what a branch is for
+/// avoiding, and the land would have nothing left to do.
+///
+/// Source: issue 22, where a scope written on a branch is invisible until the
+/// branch lands.
+#[test]
+fn a_scope_written_on_a_branch_is_invisible_until_the_branch_lands() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-12";
+    let branch =
+        tool_json(&session.call("branch_create", json!({ "session_key": session_key })))["branch"]
+            .as_str()
+            .expect("branch_create names the branch")
+            .to_string();
+
+    let written = session.call(
+        "scope_put",
+        json!({
+            "session_key": session_key,
+            "id": NEW_SCOPE,
+            "implies": [],
+            "triggers": [{ "on": "user_message", "pattern": "\\blathe\\b" }],
+            "message_title": "add a scope for the lathe",
+            "branch": branch,
+        }),
+    );
+
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "a scope must be writable on a branch, got {}",
+        tool_text(&written)
+    );
+    assert!(
+        !indexed_scopes(&session).contains(NEW_SCOPE),
+        "a scope written on a branch must not exist on main"
+    );
+    let landed = session.call(
+        "branch_land",
+        json!({
+            "session_key": session_key,
+            "branch": branch,
+            "message": "add a scope for the lathe",
+        }),
+    );
+    assert_ne!(
+        landed.is_error,
+        Some(true),
+        "the branch must land, got {}",
+        tool_text(&landed)
+    );
+    assert!(
+        indexed_scopes(&session).contains(NEW_SCOPE),
+        "the landed scope must exist on main"
     );
 }
 

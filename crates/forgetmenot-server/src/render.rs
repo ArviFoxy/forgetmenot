@@ -2,10 +2,10 @@
 //!
 //! The answer is built scope by scope: one section per scope that has something
 //! to deliver, holding that scope's critical bodies and then its index lines. A
-//! memory in several active scopes is printed once, under the first of them, so
-//! every character of a section belongs to that scope alone. The lines that
-//! belong to no scope, the context line, the notice, the withdrawals, the
-//! activated scopes and the session start's lines, are the answer's overhead.
+//! memory belongs to one scope, so every character of a section belongs to that
+//! scope alone. The lines that belong to no scope, the context line, the notice,
+//! the withdrawals, the activated scopes and the session start's lines, are the
+//! answer's overhead.
 //!
 //! Inside a section what the model must act on comes before what it may look up:
 //! the critical bodies, then the index lines. The section labels are wording,
@@ -32,8 +32,6 @@ pub struct Delivery<'a> {
     pub key: &'a ContextKey,
     pub catalog: &'a Catalog,
     pub needs: &'a Needs,
-    /// The context's scopes after this event's triggers were applied.
-    pub active: &'a BTreeSet<ScopeId>,
     /// The scopes this event turned on, ordered by id: the ones its triggers
     /// named and the ones those imply alike.
     pub activated: &'a [ScopeId],
@@ -135,7 +133,7 @@ impl Delivery<'_> {
             .needs
             .delivered_ids()
             .filter_map(|id| self.catalog.memory(id))
-            .flat_map(|memory| memory.scopes())
+            .map(|memory| memory.scope())
             .collect();
         self.activated
             .iter()
@@ -151,14 +149,14 @@ impl Delivery<'_> {
         let mut grouped: Grouped<'_> = BTreeMap::new();
         for memory in self.critical() {
             grouped
-                .entry(section_key(&self.section_of(memory)))
+                .entry(section_key(memory.scope()))
                 .or_default()
                 .0
                 .push(memory);
         }
         for memory in self.knowledge() {
             grouped
-                .entry(section_key(&self.section_of(memory)))
+                .entry(section_key(memory.scope()))
                 .or_default()
                 .1
                 .push(memory);
@@ -167,29 +165,6 @@ impl Delivery<'_> {
             .into_iter()
             .map(|((_, scope), (critical, knowledge))| (scope, critical, knowledge))
             .collect()
-    }
-
-    /// The scope one memory is printed under: the first of its active scopes in
-    /// section order.
-    ///
-    /// A memory belongs to as many scopes as its file names, and the context
-    /// works in as many as its triggers turned on; printing it once, under the
-    /// first of the scopes it is delivered for, is what makes every character of
-    /// the answer belong to exactly one scope. A memory whose scopes are all off
-    /// is not delivered by the state machine, so the fall back to its own first
-    /// scope only covers a rendering asked for outside an event.
-    fn section_of(&self, memory: &MemoryEntry) -> ScopeId {
-        let first = |scopes: &mut dyn Iterator<Item = &ScopeId>| -> Option<ScopeId> {
-            scopes.min_by_key(|scope| section_key(scope)).cloned()
-        };
-        first(
-            &mut memory
-                .scopes()
-                .iter()
-                .filter(|scope| self.active.contains(scope)),
-        )
-        .or_else(|| first(&mut memory.scopes().iter()))
-        .unwrap_or_else(ScopeId::global)
     }
 }
 
@@ -362,22 +337,21 @@ mod tests {
     const BROAD_EXCEPT: &str =
         "Do not catch Exception broadly; catch the exception type the code can handle.";
 
-    /// A store with one critical memory in `global` and `workshop`, one
-    /// knowledge memory in `global`, and one scope whose only content is a
-    /// message.
+    /// A store with one critical and one knowledge memory in `global`, and one
+    /// scope whose only content is a message.
     fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
         vec![
             memory_file(
                 "bench-power",
                 "critical",
-                &["global", "workshop"],
+                "global",
                 "Cut bench power at the wall before rewiring",
                 &format!("# Cut bench power before rewiring\n\n{RULE_BODY}\n"),
             ),
             memory_file(
                 "reading-list",
                 "knowledge",
-                &["global"],
+                "global",
                 BINDER,
                 "# The binder\n\nThe bench notes and the parts catalogue are in it.\n",
             ),
@@ -415,13 +389,12 @@ mod tests {
         }
     }
 
-    /// The answer rendered for `needs` in a context whose scopes are `active`,
-    /// where `activated` is what this event turned on and the store's
-    /// `announce_empty_scopes` is `announce`, with its accounting checked.
+    /// The answer rendered for `needs`, where `activated` is what this event
+    /// turned on and the store's `announce_empty_scopes` is `announce`, with its
+    /// accounting checked.
     fn render_of(
         catalog: &Catalog,
         needs: &Needs,
-        active: &BTreeSet<ScopeId>,
         activated: &[ScopeId],
         announce: bool,
     ) -> Rendered {
@@ -430,7 +403,6 @@ mod tests {
             key: &key,
             catalog,
             needs,
-            active,
             activated,
             announce_empty_scopes: announce,
             session_start: false,
@@ -441,14 +413,8 @@ mod tests {
     }
 
     /// The text of the answer rendered for those arguments.
-    fn text_of(
-        catalog: &Catalog,
-        needs: &Needs,
-        active: &BTreeSet<ScopeId>,
-        activated: &[ScopeId],
-        announce: bool,
-    ) -> String {
-        render_of(catalog, needs, active, activated, announce).text
+    fn text_of(catalog: &Catalog, needs: &Needs, activated: &[ScopeId], announce: bool) -> String {
+        render_of(catalog, needs, activated, announce).text
     }
 
     /// What is owed when `new` has never been delivered here.
@@ -471,7 +437,6 @@ mod tests {
         let text = text_of(
             &catalog,
             &owed(&["bench-power", "reading-list"]),
-            &BTreeSet::from([ScopeId::global()]),
             &[],
             false,
         );
@@ -503,13 +468,7 @@ mod tests {
             ..Needs::default()
         };
 
-        let text = text_of(
-            &catalog,
-            &needs,
-            &BTreeSet::from([ScopeId::global()]),
-            &[],
-            false,
-        );
+        let text = text_of(&catalog, &needs, &[], false);
 
         let rule = text.find(RULE_BODY).expect("the rule is rendered");
         let index = text.find(BINDER).expect("the index line is rendered");
@@ -544,7 +503,6 @@ mod tests {
                 new: vec![id.clone()],
                 ..Needs::default()
             },
-            &BTreeSet::from([scope.clone()]),
             &[],
             false,
         );
@@ -579,51 +537,10 @@ mod tests {
         );
     }
 
-    /// Detects a memory in several active scopes printed once per scope, which
-    /// would send the model the same rule twice, and one accounted to a scope
-    /// it was not printed under, which would charge two scopes for one text.
-    ///
-    /// Source: `bench-power` is in `global` and `workshop` and both are active,
-    /// and sections are printed with `global` first, so it belongs to `global`.
-    #[test]
-    fn a_memory_in_two_active_scopes_is_printed_once_under_the_first_of_them() {
-        let (_store, catalog) = catalog_of(store_files());
-        let workshop = ScopeId::new("workshop");
-
-        let rendered = render_of(
-            &catalog,
-            &owed(&["bench-power"]),
-            &BTreeSet::from([ScopeId::global(), workshop.clone()]),
-            &[],
-            false,
-        );
-
-        assert_eq!(
-            rendered.text.matches(RULE_BODY).count(),
-            1,
-            "the rule must be sent once, got {:?}",
-            rendered.text
-        );
-        assert_eq!(
-            rendered
-                .sections
-                .iter()
-                .map(|section| section.scope.clone())
-                .collect::<Vec<_>>(),
-            vec![ScopeId::global()],
-            "the memory belongs to the first of its active scopes, so `workshop` has no section"
-        );
-        assert!(
-            !rendered.text.contains(workshop.as_str()),
-            "a scope nothing was printed under must not be named, got {:?}",
-            rendered.text
-        );
-    }
-
     /// Detects sections printed in the order the catalog happened to be walked,
-    /// and `global` printed among the subjects alphabetically: the order is what
-    /// decides which scope a shared memory is charged to, so it has to be the
-    /// same for every answer.
+    /// and `global` printed among the subjects alphabetically: the rules every
+    /// session works under have to open the answer, and a preview that cuts the
+    /// answer has to cut the same end of it every time.
     ///
     /// Source: the rule that sections are in scope id order with `global` first.
     /// `alpha-scope` sorts before `global`, `zeta-scope` after it.
@@ -633,35 +550,29 @@ mod tests {
             memory_file(
                 "global-rule",
                 "critical",
-                &["global"],
+                "global",
                 "A rule for every session",
                 "# Global\n\nThe global rule.\n",
             ),
             memory_file(
                 "alpha-rule",
                 "critical",
-                &["alpha-scope"],
+                "alpha-scope",
                 "A rule for alpha",
                 "# Alpha\n\nThe alpha rule.\n",
             ),
             memory_file(
                 "zeta-rule",
                 "critical",
-                &["zeta-scope"],
+                "zeta-scope",
                 "A rule for zeta",
                 "# Zeta\n\nThe zeta rule.\n",
             ),
-        ]);
-        let active = BTreeSet::from([
-            ScopeId::global(),
-            ScopeId::new("alpha-scope"),
-            ScopeId::new("zeta-scope"),
         ]);
 
         let rendered = render_of(
             &catalog,
             &owed(&["alpha-rule", "global-rule", "zeta-rule"]),
-            &active,
             &[],
             false,
         );
@@ -708,12 +619,10 @@ mod tests {
         let (_store, catalog) = catalog_of(store_files());
         let global = ScopeId::global();
         let paperwork = ScopeId::new("paperwork");
-        let active = BTreeSet::from([global.clone(), paperwork.clone()]);
 
         let silent = text_of(
             &catalog,
             &Needs::default(),
-            &active,
             std::slice::from_ref(&paperwork),
             false,
         );
@@ -725,7 +634,6 @@ mod tests {
         let announced = text_of(
             &catalog,
             &Needs::default(),
-            &active,
             std::slice::from_ref(&paperwork),
             true,
         );
@@ -735,7 +643,7 @@ mod tests {
             "a scope that came on with nothing to deliver must be named, got {announced:?}"
         );
 
-        let delivering = text_of(&catalog, &owed(&["bench-power"]), &active, &[global], true);
+        let delivering = text_of(&catalog, &owed(&["bench-power"]), &[global], true);
         assert!(
             !delivering.contains("== scopes activated =="),
             "a scope whose memory just arrived speaks for itself, got {delivering:?}"
@@ -748,7 +656,7 @@ mod tests {
         let store = TestStore::with(vec![memory_file(
             "long-rule",
             "critical",
-            &["global"],
+            "global",
             "A rule long enough to test the answer notice",
             body,
         )]);
@@ -758,7 +666,6 @@ mod tests {
             key: &key,
             catalog: &catalog,
             needs: &owed(&["long-rule"]),
-            active: &BTreeSet::from([ScopeId::global()]),
             activated: &[],
             announce_empty_scopes: false,
             session_start: false,

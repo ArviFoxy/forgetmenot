@@ -59,7 +59,7 @@ fn write_of(document: &Value, body: &str, message: &str) -> Value {
     json!({
         "description": document["description"],
         "kind": document["kind"],
-        "scopes": document["scopes"],
+        "scope": document["scope"],
         "source": document["source"],
         "body": body,
         "base_version": document["version"],
@@ -155,7 +155,7 @@ fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_it
             "id": "bracket-tolerances",
             "description": "Bracket holes are reamed after welding, not before",
             "kind": "knowledge",
-            "scopes": ["widgets"],
+            "scope": "widgets",
             "source": "user",
             "body": "# Bracket tolerances\n\nReam the holes after welding.\n",
             "author": AUTHOR,
@@ -171,9 +171,9 @@ fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_it
     );
     let created = document(&server, "bracket-tolerances");
     assert_eq!(
-        (created["kind"].as_str(), created["scopes"].clone()),
-        (Some("knowledge"), json!(["widgets"])),
-        "the memory must read back with the kind and the scopes the body gave, got {created}"
+        (created["kind"].as_str(), created["scope"].clone()),
+        (Some("knowledge"), json!("widgets")),
+        "the memory must read back with the kind and the scope the body gave, got {created}"
     );
 }
 
@@ -894,7 +894,7 @@ fn the_review_route_answers_the_stores_problems_and_its_global_only_critical_mem
         vec![(
             "memories/bench-checks.md".to_string(),
             Some(
-                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  kind: knowledge\n  scopes:\n  - global\n---\n# Bench checks\n\nSee [[meter-calibration]] for the meter.\n"
+                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  kind: knowledge\n  scope: global\n---\n# Bench checks\n\nSee [[meter-calibration]] for the meter.\n"
                     .to_vec(),
             ),
         )],
@@ -911,6 +911,47 @@ fn the_review_route_answers_the_stores_problems_and_its_global_only_critical_mem
                 error["path"] == json!("memories/bench-checks.md") && error["message"].is_string()
             }),
         "a problem must be reported with the file it is in and a message, got {answer}"
+    );
+}
+
+/// Detects a review route that answers a store's errors and drops its
+/// warnings: a memory whose file names several scopes is delivered in one of
+/// them alone, and a page that never says so leaves the author believing it
+/// still reaches all of them.
+#[test]
+fn the_review_route_answers_a_warning_about_a_file_naming_several_scopes() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.commit(
+        "add a memory written in the list form",
+        vec![(
+            "memories/bench-checks.md".to_string(),
+            Some(
+                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  kind: knowledge\n  scopes:\n  - widgets\n  - rocketry\n---\n# Bench checks\n\nRead the meter first.\n"
+                    .to_vec(),
+            ),
+        )],
+    );
+
+    let (status, answer) = server.api("GET", "/api/review", None);
+
+    assert_eq!(status, 200, "the review must be readable, got {answer}");
+    assert_eq!(
+        answer["errors"],
+        json!([]),
+        "a file in the list form must not make the store invalid, got {answer}"
+    );
+    assert!(
+        answer["warnings"]
+            .as_array()
+            .expect("the report lists warnings")
+            .iter()
+            .any(|warning| {
+                warning["path"] == json!("memories/bench-checks.md")
+                    && warning["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("widgets"))
+            }),
+        "the warning must name the file and the scope the memory is delivered in, got {answer}"
     );
 }
 
@@ -1190,7 +1231,7 @@ fn sixteen_concurrent_writes_to_different_memories_all_land_in_one_line_of_histo
                         Some(&json!({
                             "description": format!("Generated note {index}, rewritten by writer {index}"),
                             "kind": "knowledge",
-                            "scopes": ["global"],
+                            "scope": "global",
                             "source": "user",
                             "body": format!("# note-{index:02}\n\ntext from writer {index}\n"),
                             "base_version": base_version,
@@ -1260,7 +1301,7 @@ fn concurrent_writes_to_one_memory_from_one_version_admit_exactly_one() {
                         Some(&json!({
                             "description": "The workshop references are all on paper in the binder, nothing online",
                             "kind": "knowledge",
-                            "scopes": ["global"],
+                            "scope": "global",
                             "source": "assistant",
                             "body": format!("# Where the workshop references live\n\ntext from writer {index}\n"),
                             "base_version": base_version,
@@ -1729,7 +1770,7 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
             "id": "sandbox-rule",
             "description": "Nothing made in the sandbox outlives the session that made it",
             "kind": "critical",
-            "scopes": ["sandbox"],
+            "scope": "sandbox",
             "source": "user",
             "body": "# The sandbox is temporary\n\nNothing in it outlives the session.\n",
             "author": AUTHOR,
@@ -1813,11 +1854,10 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
     );
 }
 
-/// Detects a memories report that loses the scope a memory was printed under,
-/// which is what says where a memory's cost is charged, or that reports no cost
-/// at all.
+/// Detects a memories report that carries no cost at all, which is the figure
+/// the page ranks the memories by.
 #[test]
-fn the_memories_route_reports_what_each_memory_cost_and_the_scope_it_was_printed_under() {
+fn the_memories_route_reports_what_each_memory_cost() {
     let server = server_with_a_session();
 
     let (status, answer) = server.api("GET", "/api/stats/memories", None);
@@ -1830,11 +1870,6 @@ fn the_memories_route_reports_what_each_memory_cost_and_the_scope_it_was_printed
         .find(|row| row["memory"] == json!("widget-naming"))
         .unwrap_or_else(|| panic!("the delivered memory must have a row: {answer}"))
         .clone();
-    assert_eq!(
-        row["most_under"],
-        json!("widgets"),
-        "the memory's only scope is the section it was printed in: {row}"
-    );
     assert!(
         row["tokens"].as_u64().unwrap_or(0) > 0,
         "a memory delivered in full cost tokens: {row}"

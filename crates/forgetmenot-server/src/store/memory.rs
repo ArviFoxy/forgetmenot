@@ -10,10 +10,13 @@
 //! `metadata.archived`, which a memory used to be retired with before retiring
 //! one meant deleting its file.
 //!
-//! `kind`, `scopes` and `source` are optional because a file Claude Code wrote
+//! `kind`, `scope` and `source` are optional because a file Claude Code wrote
 //! has none of them. Each is read through an accessor that applies its
 //! documented default, and an absent key is never written back, so reading a
-//! file and writing it again changes nothing.
+//! file and writing it again changes nothing. The one exception is the legacy
+//! `metadata.scopes` list, which is read as the single scope its first entry
+//! names and written back as `scope`, so a file in the list form reshapes itself
+//! the first time anything writes it.
 
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -34,11 +37,14 @@ pub const DEFAULT_SOURCE: &str = "assistant";
 
 /// The `metadata` keys this server owns. Each has a field of its own on every
 /// write, so a write that carries one inside `metadata` is refused rather than
-/// setting it twice from two places.
-pub const OWNED_METADATA_KEYS: [&str; 5] = ["kind", "scopes", "source", "created", "author"];
+/// setting it twice from two places. `scopes` is here because the reader still
+/// takes a memory's scope from it: a write that put it back inside `metadata`
+/// would leave a file carrying two spellings of the same field.
+pub const OWNED_METADATA_KEYS: [&str; 6] =
+    ["kind", "scope", "scopes", "source", "created", "author"];
 
-/// The scopes of a memory with no `metadata.scopes`.
-static DEFAULT_SCOPES: LazyLock<[ScopeId; 1]> = LazyLock::new(|| [ScopeId::global()]);
+/// The scope of a memory whose file names none.
+static DEFAULT_SCOPE: LazyLock<ScopeId> = LazyLock::new(ScopeId::global);
 
 /// A `metadata` key earlier versions of this server maintained, when a memory
 /// could be retired by a flag instead of being deleted. It means nothing now:
@@ -89,8 +95,15 @@ impl std::fmt::Display for MemorySource {
 pub struct MemoryMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<MemoryKind>,
+    /// The one scope this memory is delivered in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<ScopeId>>,
+    pub scope: Option<ScopeId>,
+    /// The list earlier versions of this server wrote, when a memory could name
+    /// several scopes. Read so that a file in that shape is still delivered, and
+    /// never written: [`MemoryDocument::parse`] takes the scope from its first
+    /// entry into `scope`, which is the key every write emits.
+    #[serde(default, skip_serializing, rename = "scopes")]
+    pub legacy_scopes: Option<Vec<ScopeId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<MemorySource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,9 +199,12 @@ impl MemoryMetadata {
     }
 
     /// Whether the block holds nothing, in which case it is not written at all.
+    ///
+    /// The legacy list is not counted: nothing writes it, so a block that holds
+    /// only that holds nothing a write would put in the file.
     pub fn is_empty(&self) -> bool {
         self.kind.is_none()
-            && self.scopes.is_none()
+            && self.scope.is_none()
             && self.source.is_none()
             && self.created.is_none()
             && self.author.is_none()
@@ -259,9 +275,23 @@ impl MemoryDocument {
     /// The legacy `metadata.archived` key is dropped here rather than kept as
     /// an unknown key, so that a file that carries it is read like any other
     /// and writing the file back does not put the key in again.
+    ///
+    /// A file that names its scope in the legacy `scopes` list is read as
+    /// carrying the first entry of that list, so everything downstream sees one
+    /// scope and the next write of the file emits `scope`. The list itself stays
+    /// on the metadata, unwritten, for [`legacy_scope_list`] to report.
     pub fn parse(id: MemoryId, bytes: &[u8]) -> Result<Self, FrontmatterError> {
         let (mut frontmatter, body): (MemoryFrontmatter, String) = frontmatter::parse(bytes)?;
         frontmatter.metadata.extra.shift_remove(LEGACY_ARCHIVED_KEY);
+        if frontmatter.metadata.scope.is_none()
+            && let Some(first) = frontmatter
+                .metadata
+                .legacy_scopes
+                .as_ref()
+                .and_then(|scopes| scopes.first())
+        {
+            frontmatter.metadata.scope = Some(first.clone());
+        }
         Ok(Self {
             id,
             frontmatter,
@@ -316,11 +346,25 @@ impl MemoryDocument {
         }
     }
 
-    pub fn scopes(&self) -> &[ScopeId] {
-        match &self.frontmatter.metadata.scopes {
-            Some(scopes) => scopes,
-            None => &*DEFAULT_SCOPES,
-        }
+    /// The one scope this memory is delivered in.
+    pub fn scope(&self) -> &ScopeId {
+        self.frontmatter
+            .metadata
+            .scope
+            .as_ref()
+            .unwrap_or(&DEFAULT_SCOPE)
+    }
+
+    /// The scopes of the legacy `scopes` list when the file names more than one,
+    /// which is the shape the store reports so that nothing quietly stops being
+    /// delivered: the memory is in the first of them and the rest are dropped by
+    /// the next write.
+    pub fn legacy_scope_list(&self) -> Option<&[ScopeId]> {
+        self.frontmatter
+            .metadata
+            .legacy_scopes
+            .as_deref()
+            .filter(|scopes| scopes.len() > 1)
     }
 
     pub fn source(&self) -> MemorySource {
@@ -569,9 +613,9 @@ mod tests {
             "the default kind is wrong"
         );
         assert_eq!(
-            document.scopes(),
-            [ScopeId::global()],
-            "the default scopes are wrong"
+            document.scope(),
+            &ScopeId::global(),
+            "the default scope is wrong"
         );
         assert_eq!(
             document.source(),
@@ -583,7 +627,7 @@ mod tests {
 
     /// Detects a write that adds the keys the defaults stand for: an existing
     /// Claude Code memory directory must survive being used as a store without
-    /// every file gaining `kind`, `scopes` and `source` lines.
+    /// every file gaining `kind`, `scope` and `source` lines.
     #[test]
     fn a_file_in_claudes_plain_format_round_trips_byte_for_byte() {
         let rendered = parse(CLAUDE_PLAIN).render().expect("the memory renders");
@@ -597,6 +641,37 @@ mod tests {
     /// memory as a global knowledge line whatever its file said.
     #[test]
     fn metadata_keys_override_the_defaults() {
+        let text = concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: Releases are cut from main only\n",
+            "metadata:\n",
+            "  kind: critical\n",
+            "  scope: widgets\n",
+            "  source: user\n",
+            "---\n",
+            "Body.\n",
+        );
+        let document = parse(text);
+        assert_eq!(document.kind(), MemoryKind::Critical);
+        assert_eq!(document.scope(), &ScopeId::new("widgets"));
+        assert_eq!(document.source(), MemorySource::new("user"));
+        assert_eq!(
+            document.render().expect("the memory renders"),
+            text,
+            "the scope must be written back as the file had it"
+        );
+    }
+
+    /// Detects a reader that ignores the legacy `scopes` list, which would
+    /// deliver every memory whose file is in the list form in `global` instead
+    /// of its own scope, and a write that leaves the list in the file, which
+    /// would leave the two spellings of the field to drift apart.
+    ///
+    /// Source: the documented reading rule, `scope` when present and else the
+    /// first entry of the legacy list.
+    #[test]
+    fn a_legacy_one_entry_scopes_list_is_read_as_that_scope_and_written_back_as_scope() {
         let document = parse(concat!(
             "---\n",
             "name: widget-release\n",
@@ -605,13 +680,69 @@ mod tests {
             "  kind: critical\n",
             "  scopes:\n",
             "  - widgets\n",
-            "  source: user\n",
             "---\n",
             "Body.\n",
         ));
-        assert_eq!(document.kind(), MemoryKind::Critical);
-        assert_eq!(document.scopes(), [ScopeId::new("widgets")]);
-        assert_eq!(document.source(), MemorySource::new("user"));
+
+        assert_eq!(document.scope(), &ScopeId::new("widgets"));
+        let rendered = document.render().expect("the memory renders");
+        assert!(
+            rendered.contains("scope: widgets") && !rendered.contains("scopes:"),
+            "the file must be written back with the single-scope key alone, got {rendered}"
+        );
+    }
+
+    /// Detects a legacy list read as any entry but its first, which would
+    /// deliver a memory somewhere its author never put it, and a list of several
+    /// entries that is read without being reported, which would silently stop
+    /// delivering the memory in every scope but one.
+    ///
+    /// Source: the documented reading rule, the first entry of the list.
+    #[test]
+    fn a_legacy_scopes_list_of_several_entries_is_read_as_its_first_and_reported_whole() {
+        let document = parse(concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: Releases are cut from main only\n",
+            "metadata:\n",
+            "  kind: critical\n",
+            "  scopes:\n",
+            "  - widgets\n",
+            "  - rocketry\n",
+            "---\n",
+            "Body.\n",
+        ));
+
+        assert_eq!(document.scope(), &ScopeId::new("widgets"));
+        assert_eq!(
+            document.legacy_scope_list(),
+            Some(&[ScopeId::new("widgets"), ScopeId::new("rocketry")][..]),
+            "a file naming several scopes must be reported with all of them"
+        );
+    }
+
+    /// Detects a one-entry list reported as a file that names several, which
+    /// would put a warning on every memory whose file is in the list form,
+    /// although such a file names exactly the one scope it is delivered in.
+    #[test]
+    fn a_file_naming_one_scope_is_not_reported_as_naming_several() {
+        let one_entry = concat!(
+            "---\n",
+            "name: widget-release\n",
+            "description: Releases are cut from main only\n",
+            "metadata:\n",
+            "  scopes:\n",
+            "  - widgets\n",
+            "---\n",
+            "Body.\n",
+        );
+        for text in [CLAUDE_PLAIN, one_entry] {
+            assert_eq!(
+                parse(text).legacy_scope_list(),
+                None,
+                "a file naming at most one scope has nothing to report, got {text}"
+            );
+        }
     }
 
     /// Detects a `source` that only accepts the two conventional values: a

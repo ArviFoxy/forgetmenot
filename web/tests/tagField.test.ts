@@ -86,13 +86,13 @@ test('a machine the index lists is left out of the list', () => {
 
 test('a session scope is offered although nothing is in it', () => {
   expect(suggestScopes([globalRow, sessionRow])).not.toContain('session:alpha/session-1');
-  // Unless the item already carries it, in which case it stays on the list.
-  expect(suggestScopes([globalRow, sessionRow], ['session:alpha/session-1'])).toContain(
+  // Unless the memory already carries it, in which case it stays on the list.
+  expect(suggestScopes([globalRow, sessionRow], 'session:alpha/session-1')).toContain(
     'session:alpha/session-1',
   );
 });
 
-test('the same id is offered twice when a row and the chosen ids both name it', () => {
-  const offered = suggestScopes([globalRow], ['global']);
+test('the same id is offered twice when a row and the carried scope both name it', () => {
+  const offered = suggestScopes([globalRow], 'global');
   expect(offered.filter((id) => id === 'global')).toHaveLength(1);
 });

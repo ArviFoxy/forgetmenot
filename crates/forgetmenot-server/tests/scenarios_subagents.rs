@@ -210,7 +210,7 @@ fn a_subagents_write_reaches_its_parent_and_another_session_but_not_itself() {
         .mcp()
         .memory_put("bench-power", |memory| {
             memory.critical();
-            memory.scopes(["global"]);
+            memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
             memory.body(

@@ -18,7 +18,7 @@ const doc: MemoryDoc = {
   title: 'Where the workshop references live',
   description: 'the workshop references are on paper',
   kind: 'knowledge',
-  scopes: ['global'],
+  scope: 'global',
   source: 'user',
   metadata: {},
   created: null,
@@ -57,11 +57,7 @@ test('a changed field leaves the page reporting no change', () => {
   expect(isDirty({ ...draftOf(doc), description: 'something else' }, doc)).toBe(true);
   expect(isDirty({ ...draftOf(doc), kind: 'critical' }, doc)).toBe(true);
   expect(isDirty({ ...draftOf(doc), source: 'assistant' }, doc)).toBe(true);
-  expect(isDirty({ ...draftOf(doc), scopesText: 'global, widgets' }, doc)).toBe(true);
-});
-
-test('the same scopes written with other spacing count as a change', () => {
-  expect(isDirty({ ...draftOf(doc), scopesText: ' global ' }, doc)).toBe(false);
+  expect(isDirty({ ...draftOf(doc), scope: 'widgets' }, doc)).toBe(true);
 });
 
 test('a wiki link stays escaped after the editor serializes the document', () => {

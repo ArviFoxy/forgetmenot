@@ -40,7 +40,7 @@ fn memory_with_metadata(name: &str, metadata_lines: &[&str], body: &str) -> Vec<
 fn global_memory(name: &str, body: &str) -> Vec<u8> {
     memory_with_metadata(
         name,
-        &["kind: critical", "scopes: [global]", "source: user"],
+        &["kind: critical", "scope: global", "source: user"],
         body,
     )
 }
@@ -51,7 +51,7 @@ fn session_memory(name: &str, session_key: &str, body: &str) -> Vec<u8> {
         name,
         &[
             "kind: knowledge",
-            &format!("scopes: ['session:{session_key}']"),
+            &format!("scope: 'session:{session_key}'"),
             "source: assistant",
         ],
         body,
@@ -93,8 +93,7 @@ const MEMORY_WITH_UNKNOWN_KEYS: &str = concat!(
     "review-by: 2026-12-01\n",
     "metadata:\n",
     "  kind: critical\n",
-    "  scopes:\n",
-    "  - global\n",
+    "  scope: global\n",
     "  source: user\n",
     "  type: feedback\n",
     "  strength: hard\n",
@@ -562,7 +561,7 @@ fn store_for_due() -> TempStore {
             "memories/b-critical.md",
             &memory_with_metadata(
                 "b-critical",
-                &["kind: critical", "scopes: [global]"],
+                &["kind: critical", "scope: global"],
                 "# B\n\nB.\n",
             ),
         ),
@@ -570,7 +569,7 @@ fn store_for_due() -> TempStore {
             "memories/a-knowledge.md",
             &memory_with_metadata(
                 "a-knowledge",
-                &["kind: knowledge", "scopes: [global]"],
+                &["kind: knowledge", "scope: global"],
                 "# A\n\nA.\n",
             ),
         ),
@@ -578,7 +577,7 @@ fn store_for_due() -> TempStore {
             "memories/d-widgets.md",
             &memory_with_metadata(
                 "d-widgets",
-                &["kind: critical", "scopes: [widgets]"],
+                &["kind: critical", "scope: widgets"],
                 "# D\n\nD.\n",
             ),
         ),
@@ -607,18 +606,76 @@ fn due_lists_critical_memories_before_knowledge_memories() {
 }
 
 /// Detects a selection that ignores scopes and delivers the whole store to
-/// every context.
+/// every context, and one that delivers a memory to a context whose active
+/// scopes merely include something the memory's scope is not.
+///
+/// Source: a memory is due exactly when its own scope is active, so the memory
+/// in `widgets` is due in a context working in `widgets` and in no other.
 #[test]
-fn due_omits_memories_whose_scopes_are_not_active() {
+fn a_memory_is_due_exactly_where_its_own_scope_is_active() {
     let store = store_for_due();
-    let due = due_ids(&store, &[ScopeId::global()]);
+    let widgets = "d-widgets".to_string();
+
+    let global_only = due_ids(&store, &[ScopeId::global()]);
     assert!(
-        !due.contains(&"d-widgets".to_string()),
-        "a memory of an inactive scope is due: {due:?}"
+        !global_only.contains(&widgets),
+        "a memory whose scope is off is due: {global_only:?}"
     );
     assert!(
-        due_ids(&store, &[ScopeId::new("widgets")]).contains(&"d-widgets".to_string()),
-        "a memory of an active scope is not due"
+        due_ids(&store, &[ScopeId::new("widgets")]).contains(&widgets),
+        "a memory whose scope is on is not due"
+    );
+    assert!(
+        due_ids(&store, &[ScopeId::global(), ScopeId::new("widgets")]).contains(&widgets),
+        "a memory whose scope is one of several on is not due"
+    );
+    assert!(
+        due_ids(&store, &[ScopeId::new("rocketry")]).is_empty(),
+        "a context working only in a scope no memory is in is owed nothing"
+    );
+}
+
+/// Detects a legacy `scopes` list read as anything but its first entry, which
+/// would deliver a memory whose file is in the list form to a scope its author
+/// never filed it under, and a list of several read without a word, which would
+/// leave a memory quietly out of every scope of its list but one.
+///
+/// Source: the documented reading rule for the legacy list, and the rule that a
+/// warning does not make a store invalid.
+#[test]
+fn a_memory_naming_several_scopes_is_due_in_the_first_and_the_file_is_reported() {
+    let store = store_with(&[
+        ("scopes/widgets.yaml", b"id: widgets\n"),
+        ("scopes/rocketry.yaml", b"id: rocketry\n"),
+        (
+            "memories/d-widgets.md",
+            &memory_with_metadata(
+                "d-widgets",
+                &["kind: critical", "scopes: [widgets, rocketry]"],
+                "# D\n\nD.\n",
+            ),
+        ),
+    ]);
+
+    assert_eq!(
+        due_ids(&store, &[ScopeId::new("widgets")]),
+        vec!["d-widgets".to_string()],
+        "the memory must be due in the first scope its list names"
+    );
+    assert!(
+        due_ids(&store, &[ScopeId::new("rocketry")]).is_empty(),
+        "the memory must not be due in a later scope of its list"
+    );
+    let report = validate(&store.catalog());
+    assert!(
+        !report.has_errors(),
+        "a file in the legacy list form must still be a valid store: {:#?}",
+        report.errors()
+    );
+    assert_warns(
+        &report,
+        "several scopes named",
+        |warning| matches!(warning, ValidationWarning::SeveralScopesNamed { memory, scope, .. } if memory.as_str() == "d-widgets" && scope.as_str() == "widgets"),
     );
 }
 
@@ -658,11 +715,7 @@ fn the_example_store_has_no_validation_errors() {
 fn an_unknown_scope_in_a_memory_is_reported() {
     let store = store_with(&[(
         "memories/bench-power.md",
-        &memory_with_metadata(
-            "bench-power",
-            &["scopes: [no-such-scope]"],
-            "# One\n\nOne.\n",
-        ),
+        &memory_with_metadata("bench-power", &["scope: no-such-scope"], "# One\n\nOne.\n"),
     )]);
     assert_reports(
         &validate(&store.catalog()),
@@ -672,7 +725,7 @@ fn an_unknown_scope_in_a_memory_is_reported() {
 }
 
 /// Detects an implicit scope being treated as unknown, which would report an
-/// error on every memory in `global` or in a session.
+/// error on every memory in `global`, on a machine or in a session.
 #[test]
 fn an_implicit_scope_is_not_reported_as_unknown() {
     let store = store_with(&[
@@ -680,9 +733,13 @@ fn an_implicit_scope_is_not_reported_as_unknown() {
             "memories/bench-power.md",
             &memory_with_metadata(
                 "bench-power",
-                &["kind: critical", "scopes: [global, 'machine:alpha']"],
+                &["kind: critical", "scope: 'machine:alpha'"],
                 "# One\n\nOne.\n",
             ),
+        ),
+        (
+            "memories/reading-list.md",
+            &global_memory("reading-list", "# Two\n\nTwo.\n"),
         ),
         (
             "memories/sessions/alpha/session-1/notes.md",
@@ -1034,22 +1091,23 @@ fn a_link_inside_one_session_silo_is_not_reported() {
     );
 }
 
-/// Detects a session memory carrying scopes beyond its own session, which would
-/// deliver a silo's notes to contexts that cannot resolve the links in them.
+/// Detects a session memory filed under a scope other than its own session's,
+/// which would deliver a silo's notes to contexts that cannot resolve the links
+/// in them.
 #[test]
-fn a_session_memory_with_scopes_beyond_its_session_is_reported() {
+fn a_session_memory_in_another_sessions_scope_is_reported() {
     let store = store_with(&[(
         "memories/sessions/alpha/session-1/notes.md",
         &memory_with_metadata(
             "notes",
-            &["scopes: ['session:alpha/session-1', global]"],
+            &["scope: 'session:alpha/session-2'"],
             "# Notes\n\nNotes.\n",
         ),
     )]);
     assert_reports(
         &validate(&store.catalog()),
-        "session memory scopes",
-        |error| matches!(error, ValidationError::SessionMemoryScopes { expected, .. } if expected.as_str() == "session:alpha/session-1"),
+        "session memory scope",
+        |error| matches!(error, ValidationError::SessionMemoryScope { expected, found, .. } if expected.as_str() == "session:alpha/session-1" && found.as_str() == "session:alpha/session-2"),
     );
 }
 

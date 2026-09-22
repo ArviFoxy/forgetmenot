@@ -1,4 +1,5 @@
-// The rules a tag field follows, apart from the controls that show them.
+// The rules a tag field follows, apart from the controls that show them, and the
+// scope ids a field that picks one scope offers.
 
 import type { ScopeRow } from '../api/types';
 
@@ -44,15 +45,15 @@ export function filterSuggestions(all: string[], chosen: string[], text: string)
 }
 
 /**
- * The scope ids worth offering: the scopes with a file, `global` and the machines,
- * as the index lists them, together with the ids the item already carries. There is
- * one session scope per session, so a session is offered only when it is carried.
+ * The scope ids worth offering: the scopes with a file, `global` and the machines, as
+ * the index lists them, together with the one `carried` names. There is one session
+ * scope per session, so a session is offered only when it is the carried one.
  */
-export function suggestScopes(rows: ScopeRow[], chosen: string[] = []): string[] {
+export function suggestScopes(rows: ScopeRow[], carried = ''): string[] {
   const offered = new Set<string>();
   for (const row of rows) {
     if (row.kind !== 'session') offered.add(row.id);
   }
-  for (const scope of chosen) offered.add(scope);
+  if (carried !== '') offered.add(carried);
   return [...offered].sort((left, right) => left.localeCompare(right));
 }

@@ -47,8 +47,9 @@ impl MemoryEntry {
         self.document.kind()
     }
 
-    pub fn scopes(&self) -> &[ScopeId] {
-        self.document.scopes()
+    /// The one scope this memory is delivered in.
+    pub fn scope(&self) -> &ScopeId {
+        self.document.scope()
     }
 }
 
@@ -141,6 +142,22 @@ impl Catalog {
                 match MemoryDocument::parse(id.clone(), &entry.bytes) {
                     Ok(document) => {
                         let links = document.links();
+                        // A file whose legacy list names several scopes is
+                        // delivered in the first of them, so the ones it is not
+                        // delivered in are reported rather than dropped in
+                        // silence.
+                        if let Some(scopes) = document.legacy_scope_list() {
+                            load_warnings.push(ValidationWarning::SeveralScopesNamed {
+                                path: entry.path.clone(),
+                                memory: id.clone(),
+                                named: scopes
+                                    .iter()
+                                    .map(ScopeId::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                scope: document.scope().clone(),
+                            });
+                        }
                         let replaced = memories.insert(
                             id.clone(),
                             MemoryEntry {
@@ -272,7 +289,7 @@ impl Catalog {
             .memories
             .values()
             .chain(self.scope_messages.values())
-            .filter(|memory| memory.scopes().iter().any(|scope| active.contains(scope)))
+            .filter(|memory| active.contains(memory.scope()))
             .collect();
         due.sort_by(|left, right| left.kind().cmp(&right.kind()).then(left.id.cmp(&right.id)));
         due
@@ -363,7 +380,7 @@ pub fn scope_message_document(scope: &ScopeId, message: &str) -> MemoryDocument 
             extra: yaml_serde::Mapping::new(),
             metadata: MemoryMetadata {
                 kind: Some(MemoryKind::Critical),
-                scopes: Some(vec![scope.clone()]),
+                scope: Some(scope.clone()),
                 ..MemoryMetadata::default()
             },
         },

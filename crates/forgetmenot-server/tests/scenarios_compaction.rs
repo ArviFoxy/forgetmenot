@@ -28,7 +28,7 @@ fn store_with_a_workshop_rule() -> StoreBuilder {
     Store::example().memory("workshop-bench", |memory| {
         memory
             .critical()
-            .scopes(["workshop"])
+            .scope("workshop")
             .description("The bench is cleared and wiped before a new job starts")
             .body(
                 "# Clear the bench between jobs\n\n\

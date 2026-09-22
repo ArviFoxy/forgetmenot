@@ -335,9 +335,6 @@ pub struct MemoryStatsRow {
     /// UTF-16 units of the text delivered for this memory, over every delivery
     /// of it in the window.
     pub chars: u64,
-    /// The scope this memory was printed under most often, `None` when it was
-    /// never printed or every row of it predates the column.
-    pub most_under: Option<String>,
     /// When this memory was last delivered in any form, as the log wrote it.
     pub last_shown: Option<String>,
 }
@@ -354,7 +351,6 @@ impl MemoryStatsRow {
             shrunk: 0,
             retracted: 0,
             chars: 0,
-            most_under: None,
             last_shown: None,
         }
     }
@@ -460,15 +456,12 @@ impl StatsReader {
     /// memory.
     pub fn memory_stats(&self, filter: &Filter) -> Result<Vec<MemoryStatsRow>, StatsError> {
         let mut rows: BTreeMap<String, MemoryStatsRow> = BTreeMap::new();
-        // How often each memory was printed under each scope, which decides the
-        // scope it is reported as having been printed under most.
-        let mut under: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
 
         let (clause, values) = filter.clause(true);
         let deliveries = self.rows(
             &format!(
                 "SELECT deliveries.memory, deliveries.form, deliveries.reason, hook_events.ts,
-                        coalesce(deliveries.chars, 0), deliveries.scope
+                        coalesce(deliveries.chars, 0)
                  FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id{clause}"
             ),
             &queries::parameters(&values),
@@ -479,18 +472,14 @@ impl StatsReader {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )?;
-        for (memory, form, reason, ts, chars, scope) in deliveries {
+        for (memory, form, reason, ts, chars) in deliveries {
             let row = rows
                 .entry(memory.clone())
-                .or_insert_with(|| MemoryStatsRow::empty(memory.clone()));
+                .or_insert_with(|| MemoryStatsRow::empty(memory));
             row.chars += chars.max(0) as u64;
-            if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
-                *under.entry(memory).or_default().entry(scope).or_default() += 1;
-            }
             // A shrunk row is counted before the form is read, because nothing
             // was shown in that form: counting it as one would inflate the
             // deliveries this memory is reported to have cost.
@@ -511,18 +500,6 @@ impl StatsReader {
             }
             keep_newest(&mut row.last_shown, ts);
         }
-        for (memory, scopes) in under {
-            // Ties go to the first scope by id, so the answer does not depend on
-            // the order the rows came back in.
-            let most = scopes
-                .into_iter()
-                .max_by(|left, right| left.1.cmp(&right.1).then(right.0.cmp(&left.0)))
-                .map(|(scope, _)| scope);
-            if let Some(row) = rows.get_mut(&memory) {
-                row.most_under = most;
-            }
-        }
-
         let (tool_clause, mut tool_values) = filter.tool_call_clause();
         let joiner = match tool_clause.is_empty() {
             true => " WHERE ",
@@ -695,8 +672,8 @@ impl StatsReader {
         for (scope_id, count) in forgettings {
             row_for(&mut rows, &scope_id).forgettings = count.max(0) as u64;
         }
-        // What a scope cost is the length of its own sections: a memory printed
-        // under another scope is that scope's, however many scopes hold it.
+        // What a scope cost is the length of its own sections, as they were
+        // measured when the answer was sent.
         let delivered = self.rows(
             &format!(
                 "SELECT deliveries.scope,
@@ -1309,8 +1286,7 @@ mod tests {
     ///
     /// Expectation source: the rows written here. `bench-power` is printed under
     /// `global` twice, 100 and 120 characters, and under `workshop` once, 90; so
-    /// `global` cost 220 over two events and the memory cost 310 and was printed
-    /// under `global` most.
+    /// `global` cost 220 over two events and the memory cost 310.
     #[test]
     fn a_scopes_cost_is_the_length_of_the_sections_printed_under_it() {
         let directory = tempfile::TempDir::new().expect("a temporary directory");
@@ -1361,10 +1337,8 @@ mod tests {
             .find(|row| row.memory == "bench-power")
             .expect("the memory was delivered");
         assert_eq!(
-            (bench.chars, bench.most_under.as_deref()),
-            (310, Some("global")),
-            "a memory costs the sum of its rows and is reported under the scope it was printed \
-             under most, got {bench:?}"
+            bench.chars, 310,
+            "a memory costs the sum of its rows, got {bench:?}"
         );
     }
 

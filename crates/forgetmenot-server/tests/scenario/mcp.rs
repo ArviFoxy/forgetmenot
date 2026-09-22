@@ -239,11 +239,7 @@ impl<'s, 'w> Mcp<'s, 'w> {
             "id": id,
             "description": memory.description_text(),
             "kind": kind_name(&memory),
-            "scopes": memory
-                .scope_ids()
-                .iter()
-                .map(|scope| scope.as_str())
-                .collect::<Vec<_>>(),
+            "scope": memory.scope_id().as_str(),
             "source": memory.source_text(),
             "body": memory.body_text(),
         });

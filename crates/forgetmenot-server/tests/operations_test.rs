@@ -511,7 +511,7 @@ fn a_memory_fetched_for_a_context_comes_back_only_when_it_changes() {
         vec![(
             "memories/bench-power.md".to_string(),
             Some(
-                b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scopes:\n  - global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
+                b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scope: global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
                     .to_vec(),
             ),
         )],
@@ -587,7 +587,7 @@ fn write_of(document: &MemoryDoc, body: &str, message: &str) -> MemoryWriteReque
     MemoryWriteRequest {
         description: document.description.clone(),
         kind: document.kind,
-        scopes: document.scopes.clone(),
+        scope: document.scope.clone(),
         source: document.source.clone(),
         metadata: None,
         body: body.to_string(),
@@ -688,7 +688,7 @@ fn creating_a_memory_at_an_id_that_is_taken_is_refused_with_the_document_that_is
             &MemoryWriteRequest {
                 description: "A second memory claiming an id that is taken".to_string(),
                 kind: MemoryKind::Knowledge,
-                scopes: vec![ScopeId::global()],
+                scope: ScopeId::global(),
                 source: MemorySource::new("user"),
                 metadata: None,
                 body: "# Another reading list\n\ntext\n".to_string(),
@@ -729,7 +729,7 @@ fn a_created_memory_is_stamped_and_the_index_filter_lists_it_only_under_its_own_
             &MemoryWriteRequest {
                 description: "Bracket holes are reamed after welding, not before".to_string(),
                 kind: MemoryKind::Knowledge,
-                scopes: vec![ScopeId::new("widgets")],
+                scope: ScopeId::new("widgets"),
                 source: MemorySource::new("user"),
                 metadata: None,
                 body: "# Bracket tolerances\n\nReam the holes after welding.\n".to_string(),
@@ -860,7 +860,7 @@ fn note_own_writes_records_the_memories_it_names_and_forgets_one_that_is_gone() 
             (
                 "memories/bench-power.md".to_string(),
                 Some(
-                    b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scopes:\n  - global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
+                    b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scope: global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
                         .to_vec(),
                 ),
             ),
@@ -1020,8 +1020,7 @@ fn the_scope_index_lists_a_machine_and_a_session_that_only_a_store_file_names() 
                 "description: The lathe on gamma runs on neat cutting oil, never emulsion\n",
                 "metadata:\n",
                 "  kind: knowledge\n",
-                "  scopes:\n",
-                "  - machine:gamma\n",
+                "  scope: machine:gamma\n",
                 "  source: user\n",
                 "---\n",
                 "# The lathe on gamma runs on neat cutting oil\n",

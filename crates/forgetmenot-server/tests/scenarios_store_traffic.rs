@@ -273,7 +273,7 @@ fn store_with_long_rocket_rules() -> scenario::StoreBuilder {
         store = store.memory(&id, |memory| {
             memory
                 .critical()
-                .scopes(["global"])
+                .scope("global")
                 .description("A long launch rule")
                 .body(&body);
         });

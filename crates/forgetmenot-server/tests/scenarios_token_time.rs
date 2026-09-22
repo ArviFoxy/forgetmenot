@@ -71,7 +71,7 @@ fn forgetting_store() -> StoreBuilder {
         .memory(PASSING_RULE, |memory| {
             memory
                 .critical()
-                .scopes([PASSING])
+                .scope(PASSING)
                 .description("A measurement taken while the bench settles is labelled as such")
                 .body(PASSING_RULE_BODY);
         })

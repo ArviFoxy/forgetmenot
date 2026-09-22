@@ -385,20 +385,17 @@ export class FmnDashboardView extends PageElement {
         'Per scope',
         gate(
           this.scopes.state,
-          (rows) => html`
-            <fmn-data-table
-              class="stats-scopes"
-              .columns=${scopeColumns}
-              .sort=${scopeSort}
-              .rows=${rows}
-              .rowKey=${(row: ScopeStatsRow) => row.scope_id}
-              .expand=${(row: ScopeStatsRow) => this.renderScopeTriggers(row.scope_id)}
-              filterLabel="Filter scopes"
-              @fmn-row-click=${(event: CustomEvent<RowClick<ScopeStatsRow>>) =>
-                this.show({ scope: event.detail.row.scope_id })}
-            ></fmn-data-table>
-            <p class="muted">A memory in several scopes is counted under the one it was printed in.</p>
-          `,
+          (rows) => html`<fmn-data-table
+            class="stats-scopes"
+            .columns=${scopeColumns}
+            .sort=${scopeSort}
+            .rows=${rows}
+            .rowKey=${(row: ScopeStatsRow) => row.scope_id}
+            .expand=${(row: ScopeStatsRow) => this.renderScopeTriggers(row.scope_id)}
+            filterLabel="Filter scopes"
+            @fmn-row-click=${(event: CustomEvent<RowClick<ScopeStatsRow>>) =>
+              this.show({ scope: event.detail.row.scope_id })}
+          ></fmn-data-table>`,
         ),
       )}
       ${this.section(

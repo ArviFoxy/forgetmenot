@@ -168,7 +168,7 @@ fn issue_11_a_write_is_not_delivered_back_to_its_writer() {
         .memory_put("bench-power", |memory| {
             memory
                 .critical()
-                .scopes(["global"])
+                .scope("global")
                 .description(
                     "Cut bench power at the wall before rewiring and confirm with the meter",
                 )
@@ -263,7 +263,7 @@ fn store_with_three_rules() -> StoreBuilder {
     Store::example().memory("bench-power", |memory| {
         memory
             .critical()
-            .scopes(["global"])
+            .scope("global")
             .description("Cut bench power at the wall before rewiring and confirm with the meter")
             .body(THREE_RULES);
     })

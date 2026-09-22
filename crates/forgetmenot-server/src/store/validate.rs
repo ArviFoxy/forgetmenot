@@ -88,12 +88,12 @@ pub enum ValidationError {
         silo: String,
     },
 
-    #[error("is a session memory, so its scopes must be exactly [{expected}], not [{found}]")]
-    SessionMemoryScopes {
+    #[error("is a session memory, so its scope must be `{expected}`, not `{found}`")]
+    SessionMemoryScope {
         path: String,
         memory: MemoryId,
         expected: ScopeId,
-        found: String,
+        found: ScopeId,
     },
 
     #[error("sets `{key}`, which is not a setting of this server")]
@@ -124,7 +124,7 @@ impl ValidationError {
             | ValidationError::DuplicateMemoryId { path, .. }
             | ValidationError::MissingLinkTarget { path, .. }
             | ValidationError::LinkCrossesSessionSilo { path, .. }
-            | ValidationError::SessionMemoryScopes { path, .. }
+            | ValidationError::SessionMemoryScope { path, .. }
             | ValidationError::UnknownSetting { path, .. }
             | ValidationError::BadSettingValue { path, .. } => path,
         }
@@ -144,6 +144,19 @@ pub enum ValidationWarning {
 
     #[error("has no `description`, so its index entry is empty")]
     MissingDescription { path: String, memory: MemoryId },
+
+    #[error(
+        "names several scopes ({named}), and a memory has one; it is delivered in `{scope}` and \
+         the next write of the file keeps only that"
+    )]
+    SeveralScopesNamed {
+        path: String,
+        memory: MemoryId,
+        /// The scopes the file's legacy list names, in the order it names them.
+        named: String,
+        /// The one the memory is delivered in, which is the first of them.
+        scope: ScopeId,
+    },
 }
 
 impl ValidationWarning {
@@ -151,7 +164,8 @@ impl ValidationWarning {
     pub fn path(&self) -> &str {
         match self {
             ValidationWarning::NotAMemoryFile { path }
-            | ValidationWarning::MissingDescription { path, .. } => path,
+            | ValidationWarning::MissingDescription { path, .. }
+            | ValidationWarning::SeveralScopesNamed { path, .. } => path,
         }
     }
 }
@@ -399,25 +413,24 @@ fn validate_memory_document(
             memory: id.clone(),
         });
     }
-    for scope in document.scopes() {
-        if cross_document.are_checked() && !is_known_scope(catalog, scope) {
-            report.push(ValidationError::UnknownScope {
-                path: path.to_string(),
-                memory: id.clone(),
-                scope: scope.clone(),
-            });
-        }
+    if cross_document.are_checked() && !is_known_scope(catalog, document.scope()) {
+        report.push(ValidationError::UnknownScope {
+            path: path.to_string(),
+            memory: id.clone(),
+            scope: document.scope().clone(),
+        });
     }
     if let Some((machine, session_id)) = id.session_key().and_then(|key| key.split_once('/')) {
-        // A memory in a silo belongs to exactly one session; extra scopes would
-        // deliver it to contexts that cannot see the silo it links inside.
+        // A memory in a silo belongs to the session that owns the silo; any
+        // other scope would deliver its notes to contexts that cannot see the
+        // memories it links to.
         let expected = ScopeId::session(machine, session_id);
-        if document.scopes() != [expected.clone()] {
-            report.push(ValidationError::SessionMemoryScopes {
+        if document.scope() != &expected {
+            report.push(ValidationError::SessionMemoryScope {
                 path: path.to_string(),
                 memory: id.clone(),
                 expected,
-                found: join_scopes(document.scopes()),
+                found: document.scope().clone(),
             });
         }
     }
@@ -468,12 +481,4 @@ pub fn resolve_link(catalog: &Catalog, from: &MemoryId, target: &str) -> Option<
 /// Whether `scope` exists: implicit scopes always do, others need a file.
 pub fn is_known_scope(catalog: &Catalog, scope: &ScopeId) -> bool {
     scope.is_implicit() || catalog.scope(scope).is_some()
-}
-
-fn join_scopes(scopes: &[ScopeId]) -> String {
-    scopes
-        .iter()
-        .map(ScopeId::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
 }

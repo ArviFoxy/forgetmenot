@@ -8,7 +8,7 @@
 
 pub mod events;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -106,7 +106,6 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         key: &plan.key,
         catalog: &catalog,
         needs: &outcome.needs,
-        active: &outcome.active,
         activated: &outcome.activated,
         announce_empty_scopes: settings.announce_empty_scopes,
         session_start: plan.session_start,
@@ -242,10 +241,8 @@ fn outdated_versions(
 /// What one event decided for its context.
 struct Outcome {
     needs: Needs,
-    /// The context's scopes after this event's triggers were applied.
-    active: BTreeSet<ScopeId>,
-    /// The scopes this event added to that set, the ones its triggers named and
-    /// the ones those imply alike.
+    /// The scopes this event turned on, the ones its triggers named and the ones
+    /// those imply alike.
     activated: Vec<ScopeId>,
     fires: Vec<TriggerFire>,
     /// The scopes this event turned off because their `forget` rule was reached.
@@ -372,7 +369,6 @@ fn apply(
 
     Outcome {
         needs,
-        active: context.active.clone(),
         activated,
         fires,
         forgotten,
@@ -504,6 +500,8 @@ fn kind_name(kind: MemoryKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::context::{Form, Shown};
     use crate::store::catalog::Catalog;
@@ -544,7 +542,7 @@ mod tests {
             memory_file(
                 "bench-power",
                 "critical",
-                &["global"],
+                "global",
                 "Cut bench power at the wall",
                 "# Cut bench power before rewiring\n\nSwitch the supply off at the wall.\n",
             ),
