@@ -4,7 +4,7 @@ Trigger-based, scoped LLM memory.
 
 forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
 
-- **Scopes.** Every memory belongs to one or more scopes, such as a project, a topic, a machine or an AI session. The agent is shown only the memories in currently active scopes to reduce context bloat.
+- **Scopes.** Every memory belongs to one or more scopes, such as a project/topic, the global scope (always active), or a scope bound to a specific machine or conversation session. The agent is shown only the memories in currently active scopes to reduce context bloat.
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
 - **Critical memories.** Critical memories are delivered in full whenever in scope so that the agent can't miss them. Non-critical memories work the usual way to save tokens: the agent is shown an index with a one-line description of each memory and has to actively read the full text via MCP.
 - **Interception.** A tool call that brings a critical memory into scope is temporarily blocked, requesting the agent to read the memory before it continues.
