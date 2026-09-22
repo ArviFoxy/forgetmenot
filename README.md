@@ -4,12 +4,12 @@ Trigger-based, scoped LLM memory.
 
 forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
 
-- **Scopes.** Every memory belongs to one or more scopes, such as a project, a topic, a machine or a session. A session receives only the memories of the scopes active in it.
+- **Scopes.** Every memory belongs to one or more scopes, such as a project, a topic, a machine or an AI session. The agent is shown only the memories in currently active scopes to reduce context bloat.
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
-- **Critical memories.** Critical memories are delivered in full whenever they apply; other memories are delivered as their one-line description, and the full text only when the agent asks for it.
-- **Interception.** A tool call that brings a critical memory into play is held until the agent has been given that memory.
-- **Reminders.** Optionally, everything that applies is delivered again after a set number of context tokens: critical memories in full, the rest as their descriptions.
-- **Git.** The store is a git repository of markdown files. Every change is a commit; several changes can be made on a branch and landed as one. Several agents and people can write at the same time: their changes are merged, and only edits to the same lines conflict.
+- **Critical memories.** Critical memories are delivered in full whenever in scope so that the agent can't miss them. Non-critical memories work the usual way to save tokens: the agent is shown an index with a one-line description of each memory and has to actively read the full text via MCP.
+- **Interception.** A tool call that brings a critical memory into scope is temporarily blocked, requesting the agent to read the memory before it continues.
+- **Reminders.** Optionally, memories are delivered again after a set number of context tokens.
+- **Git.** The store is a git repository of markdown and yaml files. Multiple agents can modify the memory at the same time - each gets their own branch and conflicts are handled when the change is merged into the main memory.
 - **Backwards compatible.** Memory files use Claude Code's own auto-memory format, so an existing Claude Code memory directory can be imported directly, and migrating back to vanilla memory is easy as Claude Code can read forgetmenot's memory format (losing only the extended functionality).
 - **Frontend.** A web page to browse and edit memories and scopes, and to watch live sessions.
 - **Statistics.** Every trigger match, every memory shown to the agent and every memory it reads is recorded, so unused memories are visible.
