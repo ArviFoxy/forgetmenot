@@ -37,7 +37,7 @@ pub const SESSION_DIRECTORY: &str = "sessions";
 pub const SCOPE_MESSAGE_PREFIX: &str = "scopes/";
 
 /// Identifier of a memory: its path under `memories/` without the `.md`
-/// suffix, so `git-rules` or `sessions/alpha/session-1/notes`.
+/// suffix, so `widget-naming` or `sessions/alpha/session-1/notes`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MemoryId(String);
@@ -294,7 +294,7 @@ mod tests {
     /// or duplicates the prefix or the suffix.
     #[test]
     fn memory_ids_round_trip_through_their_repository_path() {
-        for id in ["git-rules", "sessions/alpha/session-1/notes"] {
+        for id in ["widget-naming", "sessions/alpha/session-1/notes"] {
             let id = MemoryId::new(id);
             assert_eq!(
                 MemoryId::from_repository_path(&id.repository_path()).as_ref(),
