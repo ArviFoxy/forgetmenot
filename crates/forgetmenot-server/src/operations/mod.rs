@@ -26,7 +26,7 @@ use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::context::registry::{ContextRecord, ContextRegistry, Inheritance, RegistrySnapshot};
+use crate::context::registry::{ContextRecord, ContextRegistry, Creation, RegistrySnapshot};
 use crate::context::{ContextKey, ContextState, PreviousTexts, compute_needs};
 use crate::render::{self, Delivery};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
@@ -777,13 +777,18 @@ pub async fn memory_get(
         let now = state.clock.now();
         state
             .contexts
-            .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-                // No hook event accompanies a fetch, so the context size at this
-                // moment is unknown; staleness is judged again from the next
-                // event that does carry one.
-                context.note_shown(entry, None);
-                context.last_seen = now;
-            })
+            .with_context(
+                key,
+                now,
+                Creation::in_session(catalog.settings()),
+                |context| {
+                    // No hook event accompanies a fetch, so the context size at this
+                    // moment is unknown; staleness is judged again from the next
+                    // event that does carry one.
+                    context.note_shown(entry, None);
+                    context.last_seen = now;
+                },
+            )
             .await;
     }
     Ok(document)
@@ -815,19 +820,24 @@ pub async fn note_own_writes(state: &AppState, key: &ContextKey, ids: &[MemoryId
     let now = state.clock.now();
     state
         .contexts
-        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-            for id in ids {
-                match catalog.memory(id) {
-                    Some(entry) => context.note_shown(entry, None),
-                    // Gone from the store, so there is nothing to withdraw from
-                    // the context that removed it.
-                    None => {
-                        context.delivered.remove(id);
+        .with_context(
+            key,
+            now,
+            Creation::in_session(catalog.settings()),
+            |context| {
+                for id in ids {
+                    match catalog.memory(id) {
+                        Some(entry) => context.note_shown(entry, None),
+                        // Gone from the store, so there is nothing to withdraw from
+                        // the context that removed it.
+                        None => {
+                            context.delivered.remove(id);
+                        }
                     }
                 }
-            }
-            context.last_seen = now;
-        })
+                context.last_seen = now;
+            },
+        )
         .await;
 }
 
@@ -2175,7 +2185,7 @@ pub async fn session_scopes(
         .with_context(
             key,
             state.clock.now(),
-            Inheritance::of(catalog.settings()),
+            Creation::in_session(catalog.settings()),
             |context| context.active.clone(),
         )
         .await;
@@ -2209,18 +2219,23 @@ pub async fn session_scope_on(
     let now = state.clock.now();
     let active = state
         .contexts
-        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-            context.active.extend(scopes.iter().cloned());
-            context.active = catalog.closure(&context.active);
-            // The call has no hook event of its own, so the activation is
-            // counted from the context size the last event reported.
-            let tokens = context.tokens;
-            for scope in scopes {
-                context.note_activation(scope, tokens, &catalog);
-            }
-            context.last_seen = now;
-            context.active.clone()
-        })
+        .with_context(
+            key,
+            now,
+            Creation::in_session(catalog.settings()),
+            |context| {
+                context.active.extend(scopes.iter().cloned());
+                context.active = catalog.closure(&context.active);
+                // The call has no hook event of its own, so the activation is
+                // counted from the context size the last event reported.
+                let tokens = context.tokens;
+                for scope in scopes {
+                    context.note_activation(scope, tokens, &catalog);
+                }
+                context.last_seen = now;
+                context.active.clone()
+            },
+        )
         .await;
     record_tool_call(state, "session_scope_on", key, scopes, true).await;
     Ok(session_scopes_of(&catalog, active))
@@ -2255,13 +2270,18 @@ pub async fn session_scope_off(
     let now = state.clock.now();
     let active = state
         .contexts
-        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-            for scope in scopes {
-                context.active.remove(scope);
-            }
-            context.last_seen = now;
-            context.active.clone()
-        })
+        .with_context(
+            key,
+            now,
+            Creation::in_session(catalog.settings()),
+            |context| {
+                for scope in scopes {
+                    context.active.remove(scope);
+                }
+                context.last_seen = now;
+                context.active.clone()
+            },
+        )
         .await;
     record_tool_call(state, "session_scope_off", key, scopes, true).await;
     Ok(session_scopes_of(&catalog, active))
@@ -2289,11 +2309,16 @@ pub async fn session_inherit(
     inherited.insert(from.session_scope());
     let active = state
         .contexts
-        .with_context(key, now, Inheritance::of(catalog.settings()), |context| {
-            context.active.extend(inherited);
-            context.last_seen = now;
-            context.active.clone()
-        })
+        .with_context(
+            key,
+            now,
+            Creation::in_session(catalog.settings()),
+            |context| {
+                context.active.extend(inherited);
+                context.last_seen = now;
+                context.active.clone()
+            },
+        )
         .await;
     record_tool_call(state, "session_inherit", key, &[], true).await;
     Ok(session_scopes_of(&catalog, active))

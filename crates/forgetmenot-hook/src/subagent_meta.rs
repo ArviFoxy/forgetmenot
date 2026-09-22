@@ -1,9 +1,10 @@
-//! Reading what a subagent was asked to do out of the metadata file Claude Code
-//! writes beside its transcript.
+//! Reading what a subagent was asked to do, and which agent asked it, out of
+//! the metadata file Claude Code writes beside its transcript.
 //!
 //! A `SubagentStart` event names the subagent and its type and says nothing
-//! about its task, so the only place the task can be read from is the file
-//! Claude Code writes for each subagent next to the session's transcript:
+//! about its task or about the agent that spawned it, so the only place either
+//! can be read from is the file Claude Code writes for each subagent next to
+//! the session's transcript:
 //!
 //! ```text
 //! <dir>/<session_id>.jsonl                                  the session
@@ -13,8 +14,11 @@
 //!
 //! The metadata file is a single JSON object,
 //! `{"agentType":…,"description":…,"toolUseId":…,"spawnDepth":…,…}`, whose
-//! `description` is the short label the parent gave the Agent tool. It is a few
-//! hundred bytes, so it is read whole, once per event.
+//! `description` is the short label the parent gave the Agent tool. A subagent
+//! spawned by another subagent carries `parentAgentId` as well, naming that
+//! subagent; a subagent the session spawned carries no such key. The file is a
+//! few hundred bytes, so it is read whole, once per event, and both values come
+//! out of the one read.
 //!
 //! Which of the two transcripts a hook event inside a subagent reports is not
 //! known, so both are handled: a `transcript_path` that is already a subagent's
@@ -38,23 +42,48 @@ const TASK_CHARACTERS: usize = 200;
 /// directory named after the session.
 const SUBAGENTS_DIRECTORY: &str = "subagents";
 
-/// The task the parent gave the subagent `agent_id`, cut to
-/// [`TASK_CHARACTERS`] characters, or `None` when there is no metadata file to
-/// read it from.
+/// What one subagent's metadata file says about it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubagentMeta {
+    /// The task the spawning agent gave it, cut to [`TASK_CHARACTERS`]
+    /// characters. `None` when the file says none.
+    pub task: Option<String>,
+    /// The subagent that spawned it. `None` when the session spawned it, which
+    /// is what a file carrying no such agent says.
+    pub parent_agent_id: Option<String>,
+}
+
+/// What the metadata file of `agent_id` says, or an empty [`SubagentMeta`] when
+/// there is no file to read it from.
 ///
 /// `transcript_path` is the event's own, whether that is the session's
 /// transcript or the subagent's.
-pub fn task(transcript_path: impl AsRef<Path>, agent_id: &str) -> Option<String> {
-    let path = meta_path(transcript_path.as_ref(), agent_id)?;
-    let bytes = std::fs::read(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let description = parsed.get("description")?.as_str()?;
-    // A metadata file with an empty description says no more about the
-    // subagent than no file at all, and an empty name is not a name.
-    if description.is_empty() {
-        return None;
+pub fn read(transcript_path: impl AsRef<Path>, agent_id: &str) -> SubagentMeta {
+    let Some(parsed) = parse(transcript_path.as_ref(), agent_id) else {
+        return SubagentMeta::default();
+    };
+    SubagentMeta {
+        task: text(&parsed, "description").map(|task| cut_to_characters(task, TASK_CHARACTERS)),
+        parent_agent_id: text(&parsed, "parentAgentId").map(str::to_string),
     }
-    Some(cut_to_characters(description, TASK_CHARACTERS))
+}
+
+/// The metadata file of `agent_id` as JSON, or `None` when there is none to
+/// read at either of the two places it can sit.
+fn parse(transcript_path: &Path, agent_id: &str) -> Option<serde_json::Value> {
+    let path = meta_path(transcript_path, agent_id)?;
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// One string field of the metadata, or `None` when it is absent, is not a
+/// string, or is empty: a file with an empty description says no more about the
+/// subagent than no file at all, and an empty id names no agent.
+fn text<'json>(parsed: &'json serde_json::Value, field: &str) -> Option<&'json str> {
+    parsed
+        .get(field)?
+        .as_str()
+        .filter(|value| !value.is_empty())
 }
 
 /// Where the metadata file of `agent_id` is, given the transcript path an event

@@ -7,9 +7,10 @@
 //!
 //! A delivery row carries the scope the memory was printed under and the length
 //! of the text printed for it, both as the renderer accounted them at the moment
-//! the answer was sent. A log written before those columns existed opens and is
-//! read: its rows carry null, which is what "recorded before this was recorded"
-//! means. The queries over a span of time are in [`queries`].
+//! the answer was sent. A row that carries null for either was written before
+//! those columns existed, which is what "recorded before this was recorded"
+//! means. The schema itself is [`SCHEMA`] and the queries over a span of time
+//! are in [`queries`].
 
 pub mod queries;
 
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags, params};
+use rusqlite_migration::{M, Migrations};
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot};
 
@@ -39,6 +41,12 @@ pub enum StatsError {
         path: PathBuf,
         #[source]
         source: rusqlite::Error,
+    },
+    #[error("statistics database {path}: the schema could not be brought up to date: {source}")]
+    Migration {
+        path: PathBuf,
+        #[source]
+        source: rusqlite_migration::Error,
     },
 }
 
@@ -438,15 +446,20 @@ pub struct MemoryDeliveryRow {
 /// What one session was given, with the two forms' bytes kept apart.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SessionStatsRow {
-    /// `<machine>/<session-id>[/<agent-id>]`, the key the MCP tools take.
+    /// `<machine>/<session-id>`, the main context's key, which is the key the
+    /// MCP tools take for the session.
     pub session_key: String,
     pub bytes_full: u64,
     pub bytes_index: u64,
-    /// UTF-16 units delivered into this context over the window, both forms
+    /// UTF-16 units delivered into this session over the window, both forms
     /// together, which is what it cost the model to be told them.
     pub chars: u64,
-    /// The context size Claude Code reported at the last event of this context
-    /// in the window; `None` when no event of it carried one.
+    /// The context size Claude Code reported at the last event of the main
+    /// context in the window; `None` when no event of it carried one.
+    ///
+    /// The main context's own size however the subagents are counted: a
+    /// subagent is a separate conversation with a size of its own, and sizes
+    /// are levels rather than costs, so they are never read as one number.
     pub last_context_tokens: Option<u64>,
 }
 
@@ -795,10 +808,15 @@ impl StatsReader {
         )
     }
 
-    /// What each context was delivered in the window and the context size its
-    /// last event there reported, sorted by session key.
+    /// What each session was delivered in the window and the context size its
+    /// main context's last event there reported, sorted by session key.
     ///
-    /// Every context the window holds an event of has a row, whether or not
+    /// One row per session, keyed by its main context: a subagent is never a
+    /// row of its own, and `filter.include_subagents` decides whether what was
+    /// delivered into a session's subagents is counted into the session's row
+    /// or left out of the report.
+    ///
+    /// Every session the window holds an event of has a row, whether or not
     /// anything was delivered into it: a session that was answered with nothing
     /// still has a context size worth seeing beside the zero.
     pub fn session_stats(&self, filter: &Filter) -> Result<Vec<SessionStatsRow>, StatsError> {
@@ -814,29 +832,25 @@ impl StatsReader {
         };
 
         let (clause, values) = filter.clause(true);
+        // The `agent` column is left out of the grouping, so the rows a session
+        // and its subagents wrote fall into one group; which of them the filter
+        // let through is what the flag decided.
         let groups = self.rows(
             &format!(
-                "SELECT hook_events.machine, hook_events.session_id, hook_events.agent,
+                "SELECT hook_events.machine, hook_events.session_id,
                         deliveries.form, sum(deliveries.bytes),
                         coalesce(sum(deliveries.chars), 0)
                  FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id{clause}
-                 GROUP BY hook_events.machine, hook_events.session_id, hook_events.agent,
-                          deliveries.form"
+                 GROUP BY hook_events.machine, hook_events.session_id, deliveries.form"
             ),
             &queries::parameters(&values),
             |row| {
                 Ok((
-                    // The constructor prints the agent only when there is a
-                    // subagent to name, which is the form the MCP tools take.
-                    ContextKey::subagent(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    )
-                    .to_string(),
-                    row.get::<_, String>(3)?,
+                    ContextKey::main(row.get::<_, String>(0)?, row.get::<_, String>(1)?)
+                        .to_string(),
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
                 ))
             },
         )?;
@@ -853,10 +867,16 @@ impl StatsReader {
             }
         }
 
-        let (clause, values) = filter.clause(false);
+        // The size is the main context's own, so this query reads the main
+        // agent's events whatever the report counts.
+        let main_only = Filter {
+            include_subagents: false,
+            ..filter.clone()
+        };
+        let (clause, values) = main_only.clause(false);
         let sizes = self.rows(
             &format!(
-                "SELECT hook_events.machine, hook_events.session_id, hook_events.agent,
+                "SELECT hook_events.machine, hook_events.session_id,
                         hook_events.context_tokens
                  FROM hook_events{clause}
                  ORDER BY hook_events.id"
@@ -864,13 +884,9 @@ impl StatsReader {
             &queries::parameters(&values),
             |row| {
                 Ok((
-                    ContextKey::subagent(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    )
-                    .to_string(),
-                    row.get::<_, Option<i64>>(3)?,
+                    ContextKey::main(row.get::<_, String>(0)?, row.get::<_, String>(1)?)
+                        .to_string(),
+                    row.get::<_, Option<i64>>(2)?,
                 ))
             },
         )?;
@@ -968,7 +984,79 @@ impl Table {
     }
 }
 
-/// Open the database and make sure its schema is there.
+/// The schema, one entry per version of it, applied through sqlite's own
+/// `user_version`.
+///
+/// Version 1 is the whole schema, so a database with no tables reaches the
+/// current shape in one step. A database that carries the tables and still
+/// reports `user_version` 0 was created by a bootstrap that recorded no
+/// version, and its shape is version 1's; [`stamp_existing_schema`] stamps it
+/// at that version before the migrations run, so it is adopted rather than
+/// created a second time. A change to the schema is one more entry here and
+/// nothing else.
+const SCHEMA: &[M<'static>] = &[M::up(
+    "CREATE TABLE hook_events (
+         id INTEGER PRIMARY KEY,
+         ts TEXT NOT NULL,
+         machine TEXT NOT NULL,
+         session_id TEXT NOT NULL,
+         agent TEXT NOT NULL,
+         event TEXT NOT NULL,
+         context_tokens INTEGER,
+         latency_us INTEGER NOT NULL,
+         decision TEXT NOT NULL,
+         answer_chars INTEGER
+     );
+     CREATE TABLE trigger_fires (
+         event_id INTEGER NOT NULL,
+         scope_id TEXT NOT NULL,
+         field TEXT NOT NULL,
+         pattern TEXT NOT NULL,
+         activated_new INTEGER NOT NULL
+     );
+     CREATE TABLE scope_forgettings (
+         event_id INTEGER NOT NULL,
+         scope_id TEXT NOT NULL,
+         tokens_since_trigger INTEGER NOT NULL,
+         tokens_at INTEGER NOT NULL
+     );
+     CREATE TABLE deliveries (
+         event_id INTEGER NOT NULL,
+         memory TEXT NOT NULL,
+         kind TEXT NOT NULL,
+         form TEXT NOT NULL,
+         reason TEXT NOT NULL,
+         bytes INTEGER NOT NULL,
+         scope TEXT,
+         chars INTEGER
+     );
+     CREATE TABLE tool_calls (
+         id INTEGER PRIMARY KEY,
+         ts TEXT NOT NULL,
+         tool TEXT NOT NULL,
+         session_key TEXT NOT NULL,
+         memory TEXT,
+         scope TEXT,
+         ok INTEGER NOT NULL
+     );
+     CREATE INDEX trigger_fires_event ON trigger_fires (event_id);
+     CREATE INDEX scope_forgettings_event ON scope_forgettings (event_id);
+     CREATE INDEX deliveries_event ON deliveries (event_id);
+     CREATE INDEX deliveries_memory ON deliveries (memory);
+     CREATE INDEX tool_calls_tool ON tool_calls (tool, memory);",
+)];
+
+/// [`SCHEMA`] as the connection applies it.
+const MIGRATIONS: Migrations<'static> = Migrations::from_slice(SCHEMA);
+
+/// The `user_version` a database at the current shape carries.
+pub const SCHEMA_VERSION: usize = SCHEMA.len();
+
+/// The table every other one hangs off, whose presence says a database already
+/// carries the schema.
+const ROOT_TABLE: &str = "hook_events";
+
+/// Open the database and bring its schema to [`SCHEMA_VERSION`].
 fn open_connection(path: &Path) -> Result<Connection, StatsError> {
     let to_error = |source: rusqlite::Error| StatsError::Sqlite {
         path: path.to_path_buf(),
@@ -983,103 +1071,46 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
             source: rusqlite::Error::ToSqlConversionFailure(Box::new(error)),
         })?;
     }
-    let connection = Connection::open(path).map_err(to_error)?;
+    let mut connection = Connection::open(path).map_err(to_error)?;
     // Write-ahead logging so that a reader (the stats API, a test) never blocks
-    // the writer and sees every committed row.
+    // the writer and sees every committed row. Outside the migrations, which
+    // run in a transaction, where `journal_mode` has no effect.
     connection
         .pragma_update(None, "journal_mode", "WAL")
         .map_err(to_error)?;
-    connection
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS hook_events (
-                 id INTEGER PRIMARY KEY,
-                 ts TEXT NOT NULL,
-                 machine TEXT NOT NULL,
-                 session_id TEXT NOT NULL,
-                 agent TEXT NOT NULL,
-                 event TEXT NOT NULL,
-                 context_tokens INTEGER,
-                 latency_us INTEGER NOT NULL,
-                 decision TEXT NOT NULL,
-                 answer_chars INTEGER
-             );
-             CREATE TABLE IF NOT EXISTS trigger_fires (
-                 event_id INTEGER NOT NULL,
-                 scope_id TEXT NOT NULL,
-                 field TEXT NOT NULL,
-                 pattern TEXT NOT NULL,
-                 activated_new INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS scope_forgettings (
-                 event_id INTEGER NOT NULL,
-                 scope_id TEXT NOT NULL,
-                 tokens_since_trigger INTEGER NOT NULL,
-                 tokens_at INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS deliveries (
-                 event_id INTEGER NOT NULL,
-                 memory TEXT NOT NULL,
-                 kind TEXT NOT NULL,
-                 form TEXT NOT NULL,
-                 reason TEXT NOT NULL,
-                 bytes INTEGER NOT NULL,
-                 scope TEXT,
-                 chars INTEGER
-             );
-             CREATE TABLE IF NOT EXISTS tool_calls (
-                 id INTEGER PRIMARY KEY,
-                 ts TEXT NOT NULL,
-                 tool TEXT NOT NULL,
-                 session_key TEXT NOT NULL,
-                 memory TEXT,
-                 scope TEXT,
-                 ok INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS trigger_fires_event
-                 ON trigger_fires (event_id);
-             CREATE INDEX IF NOT EXISTS scope_forgettings_event
-                 ON scope_forgettings (event_id);
-             CREATE INDEX IF NOT EXISTS deliveries_event
-                 ON deliveries (event_id);
-             CREATE INDEX IF NOT EXISTS deliveries_memory
-                 ON deliveries (memory);
-             CREATE INDEX IF NOT EXISTS tool_calls_tool
-                 ON tool_calls (tool, memory);",
-        )
-        .map_err(to_error)?;
-    // A log written before these columns existed is opened and read rather than
-    // replaced: its rows keep null, which is what "recorded before this was
-    // recorded" means, and everything written from now on carries them.
-    for (table, column, definition) in [
-        ("deliveries", "scope", "TEXT"),
-        ("deliveries", "chars", "INTEGER"),
-        ("hook_events", "answer_chars", "INTEGER"),
-    ] {
-        add_column_if_absent(&connection, table, column, definition).map_err(to_error)?;
-    }
+    stamp_existing_schema(&connection).map_err(to_error)?;
+    MIGRATIONS
+        .to_latest(&mut connection)
+        .map_err(|source| StatsError::Migration {
+            path: path.to_path_buf(),
+            source,
+        })?;
     Ok(connection)
 }
 
-/// Add `column` to `table` unless the database already has it.
+/// Record the version of a database that carries the schema but no
+/// `user_version`.
 ///
-/// sqlite has no `ADD COLUMN IF NOT EXISTS`, and adding a column that is there
-/// is an error, so the table is asked what it holds first.
-fn add_column_if_absent(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<(), rusqlite::Error> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-    let mut columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-    if columns.any(|name| name.as_deref() == Ok(column)) {
+/// sqlite reports `user_version` 0 both for a database with nothing in it and
+/// for one created before the version was recorded, and the two need opposite
+/// treatment: the empty one is built by the migrations, the other is already at
+/// the shape of [`SCHEMA_VERSION`] and would be built over. [`ROOT_TABLE`] in
+/// `sqlite_master` is what tells them apart.
+fn stamp_existing_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let version: i64 =
+        connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
+    if version != 0 {
         return Ok(());
     }
-    drop(columns);
-    drop(statement);
-    connection.execute_batch(&format!(
-        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-    ))
+    let carried: i64 = connection.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![ROOT_TABLE],
+        |row| row.get(0),
+    )?;
+    if carried == 0 {
+        return Ok(());
+    }
+    connection.pragma_update(None, "user_version", SCHEMA_VERSION as i64)
 }
 
 /// Insert records in the order they were queued, each group in one transaction

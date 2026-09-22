@@ -27,6 +27,7 @@ rmcp.workspace = true
 regex.workspace = true
 git2.workspace = true
 rusqlite.workspace = true
+rusqlite_migration.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

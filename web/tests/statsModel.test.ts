@@ -57,47 +57,76 @@ test('a range measures its window from somewhere other than now, or gets the wro
   });
 });
 
+/** A filter over the whole log, with whatever the case under test changes. */
+function filter(over: Partial<StatsFilter> = {}): StatsFilter {
+  return { range: 'all', session: '', scope: '', includeSubagents: true, ...over };
+}
+
 test('the whole log is asked for with a window, which would cut it off at one end', () => {
   expect(statsWindow('all', now)).toEqual({});
-  expect(statsQueryOf({ range: 'all', session: '', scope: '' }, now)).toEqual({});
+  expect(statsQueryOf(filter(), now)).toEqual({ include_subagents: 'true' });
 });
 
 test('an empty session or scope is sent as a filter, which narrows the log to nothing', () => {
-  expect(statsQueryOf({ range: 'all', session: '', scope: '' }, now)).toEqual({});
-  expect(statsQueryOf({ range: 'all', session: 'alpha/session-1', scope: 'widgets' }, now)).toEqual({
+  expect(statsQueryOf(filter(), now)).toEqual({ include_subagents: 'true' });
+  expect(statsQueryOf(filter({ session: 'alpha/session-1', scope: 'widgets' }), now)).toEqual({
     session: 'alpha/session-1',
     scope: 'widgets',
+    include_subagents: 'true',
   });
+});
+
+test('a request leaves the subagent flag out, so two sections answer different questions', () => {
+  // Every report of one page carries the flag as it stands, whichever way it
+  // stands: left out, a section would fall back to the server's own answer.
+  expect(statsQueryOf(filter({ includeSubagents: false }), now).include_subagents).toBe('false');
+  expect(statsQueryOf(filter({ includeSubagents: true }), now).include_subagents).toBe('true');
+  expect(
+    statsQueryOf(filter({ range: '24h', includeSubagents: false }), now).include_subagents,
+  ).toBe('false');
 });
 
 test('a filter read back from the address is not the one written to it', () => {
   const filters: StatsFilter[] = [
-    { range: '24h', session: '', scope: '' },
-    { range: '7d', session: '', scope: 'widgets' },
-    { range: '30d', session: 'alpha/session-1', scope: '' },
-    { range: 'all', session: 'alpha/session-1/agent-7f3a', scope: 'session:alpha/session-1' },
+    filter({ range: '24h' }),
+    filter({ range: '7d', scope: 'widgets' }),
+    filter({ range: '30d', session: 'alpha/session-1' }),
+    filter({
+      session: 'alpha/session-1/agent-7f3a',
+      scope: 'session:alpha/session-1',
+    }),
+    filter({ range: '24h', includeSubagents: false }),
+    filter({ range: '7d', session: 'alpha/session-1', includeSubagents: false }),
   ];
-  for (const filter of filters) {
-    expect(statsFilterFromSearch(statsSearch(filter)), JSON.stringify(filter)).toEqual(filter);
+  for (const each of filters) {
+    expect(statsFilterFromSearch(statsSearch(each)), JSON.stringify(each)).toEqual(each);
   }
 });
 
 test('the address carries what the page would show anyway, so a plain link is not the default view', () => {
   expect(statsSearch(defaultStatsFilter)).toBe('');
   expect(statsAddress(defaultStatsFilter)).toBe('/dashboard');
-  expect(statsAddress({ range: '7d', session: '', scope: 'widgets' })).toBe(
+  expect(statsAddress(filter({ range: '7d', scope: 'widgets' }))).toBe(
     '/dashboard?range=7d&scope=widgets',
+  );
+  expect(statsAddress(filter({ range: '24h', includeSubagents: false }))).toBe(
+    '/dashboard?subagents=false',
   );
 });
 
 test('an address naming a range nobody offers is taken as that range instead of the default', () => {
   expect(statsFilterFromSearch('?range=12h').range).toBe('24h');
   expect(statsFilterFromSearch('').range).toBe('24h');
-  expect(statsFilterFromSearch('?scope=widgets')).toEqual({
-    range: '24h',
-    session: '',
-    scope: 'widgets',
-  });
+  expect(statsFilterFromSearch('?scope=widgets')).toEqual(filter({ range: '24h', scope: 'widgets' }));
+});
+
+test('an address that says nothing about subagents drops them from every count', () => {
+  // The checkbox stands on unless the address turns it off, so the plain
+  // address counts a session together with everything it spawned.
+  expect(defaultStatsFilter.includeSubagents).toBe(true);
+  expect(statsFilterFromSearch('').includeSubagents).toBe(true);
+  expect(statsFilterFromSearch('?range=7d').includeSubagents).toBe(true);
+  expect(statsFilterFromSearch('?subagents=false').includeSubagents).toBe(false);
 });
 
 const seriesPoints: SeriesPoint[] = [
@@ -329,6 +358,27 @@ test('the session in the address is dropped from the options, so the filter it n
     { key: 'alpha/session-1', label: 'Rebuild the rig' },
   ]);
   expect(sessionOptions([held], '')).toEqual([
+    { key: 'alpha/session-1', label: 'Rebuild the rig' },
+  ]);
+});
+
+test('a subagent whose parent is another subagent is offered, so the filter names no session', () => {
+  // A subagent runs inside whatever spawned it, which may be a subagent itself;
+  // what makes a context a session is that nothing spawned it. A filter that
+  // reads the parent key for a session id would take the deeper one for one.
+  const session = contextRow({ key: 'alpha/session-1', name: 'Rebuild the rig' });
+  const agent = contextRow({
+    key: 'alpha/session-1/agent-7f3a',
+    name: 'Survey the crate',
+    parent: 'alpha/session-1',
+  });
+  const deeper = contextRow({
+    key: 'alpha/session-1/agent-91b2',
+    name: 'Read one file',
+    parent: 'alpha/session-1/agent-7f3a',
+  });
+
+  expect(sessionOptions([deeper, agent, session], '')).toEqual([
     { key: 'alpha/session-1', label: 'Rebuild the rig' },
   ]);
 });

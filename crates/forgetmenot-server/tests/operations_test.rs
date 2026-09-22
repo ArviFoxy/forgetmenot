@@ -26,7 +26,7 @@ use forgetmenot_server::operations::{
     self, ContextPrompt, CurrentDocument, DeleteRequest, MemoryDoc, MemoryFilter,
     MemoryWriteRequest, OperationError, PromptMode, ScopeRow, StoreHistory,
 };
-use forgetmenot_server::stats::{Bucket, Filter, Table, Window};
+use forgetmenot_server::stats::{Bucket, Filter, StatsReader, Table, Window};
 use forgetmenot_server::store::memory::{MemoryKind, MemorySource};
 use forgetmenot_server::store::validate::WriteMode;
 use forgetmenot_server::store::{MemoryId, ScopeId, ScopeKind};
@@ -1863,7 +1863,7 @@ fn a_summary_window_holds_the_events_inside_it_and_none_of_the_older_ones() {
     let now = server.state().clock.now();
     let windows = server
         .stats()
-        .summary(now)
+        .summary(&Filter::all(), now)
         .expect("the summary is readable");
     let named = |name: &str| {
         windows
@@ -2047,5 +2047,118 @@ fn a_sessions_series_reports_the_size_claude_code_measured_beside_the_answers_ow
         events[0].t,
         started().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "the events must be timestamped by the server's clock"
+    );
+}
+
+/// The agent id of the subagent the recorded `SubagentStart` comes from.
+const SUBAGENT: &str = "agent-7f3a";
+
+/// Everything the delivery log recorded for one context, in characters.
+///
+/// Read memory by memory through the per-memory delivery log, so the figure
+/// comes from the rows as they were written rather than from the session report
+/// it is compared against.
+fn delivered_chars(stats: &StatsReader, session_key: &str) -> u64 {
+    stats
+        .memory_stats(&Filter::all())
+        .expect("the memories are readable")
+        .iter()
+        .flat_map(|row| {
+            stats
+                .deliveries_of(&row.memory)
+                .expect("the delivery log is readable")
+        })
+        .filter(|row| row.session_key == session_key)
+        .map(|row| row.chars)
+        .sum()
+}
+
+/// Detects a session report that counts a subagent's deliveries whatever the
+/// caller asked, one that never counts them, and one that gives a subagent a
+/// row of its own: the dashboard shows one line per main context, and a
+/// subagent's context is paid for out of the session that opened it. The
+/// summary is asserted beside the session rows because a report that never
+/// receives the flag answers the same figure both ways.
+///
+/// Expectation source: the delivery log itself, read per memory. A session
+/// start on `alpha/session-1` and a `SubagentStart` inside it are answered with
+/// text, so the session's own characters and the subagent's are both above
+/// zero; counting the subagents is their sum and not counting them is the
+/// session's own. Both events are answered at the one instant the test clock
+/// stands at, so both fall in every window of the summary.
+#[test]
+fn a_subagents_deliveries_count_towards_its_session_only_when_the_report_includes_them() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
+    server.hook(MACHINE, SOME_TOKENS, &hook_fixture("subagent_start"));
+
+    let stats = server.stats();
+    let session_key = ContextKey::main(MACHINE, "session-1").to_string();
+    let subagent_key = ContextKey::subagent(MACHINE, "session-1", SUBAGENT).to_string();
+    let own = delivered_chars(&stats, &session_key);
+    let subagents = delivered_chars(&stats, &subagent_key);
+    assert!(
+        own > 0 && subagents > 0,
+        "the sequence must deliver into the session and into its subagent, got {own} and \
+         {subagents}"
+    );
+
+    let rolled_up = stats
+        .session_stats(&Filter::all())
+        .expect("the sessions are readable");
+    let alone = stats
+        .session_stats(&Filter {
+            include_subagents: false,
+            ..Filter::all()
+        })
+        .expect("the sessions are readable");
+
+    assert_eq!(
+        rolled_up
+            .iter()
+            .map(|row| &row.session_key)
+            .collect::<Vec<_>>(),
+        vec![&session_key],
+        "the one session of the sequence must be the one row, keyed by its main context: \
+         {rolled_up:?}"
+    );
+    assert_eq!(
+        alone.iter().map(|row| &row.session_key).collect::<Vec<_>>(),
+        vec![&session_key],
+        "leaving the subagents out must not turn the subagent into a row of its own: {alone:?}"
+    );
+    assert_eq!(
+        rolled_up[0].chars,
+        own + subagents,
+        "a session that counts its subagents must carry what they were delivered as well as \
+         its own: {rolled_up:?}"
+    );
+    assert_eq!(
+        alone[0].chars, own,
+        "a session that leaves its subagents out must carry only its own: {alone:?}"
+    );
+
+    let now = server.state().clock.now();
+    let hour = |filter: Filter| {
+        stats
+            .summary(&filter, now)
+            .expect("the summary is readable")
+            .into_iter()
+            .find(|row| row.name == "1h")
+            .expect("the summary reports the hour window")
+    };
+    assert_eq!(
+        hour(Filter::all()).chars,
+        own + subagents,
+        "a summary that counts the subagents must carry what they were delivered as well"
+    );
+    assert_eq!(
+        hour(Filter {
+            include_subagents: false,
+            ..Filter::all()
+        })
+        .chars,
+        own,
+        "a summary that leaves the subagents out must carry the main contexts' text only"
     );
 }

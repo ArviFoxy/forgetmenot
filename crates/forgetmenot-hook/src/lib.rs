@@ -5,8 +5,8 @@
 //! server cannot know by itself: the machine name, what only the session's
 //! transcript says, the size of the session's context, what the session is
 //! called and its first prompt, and, inside a subagent, the task the subagent
-//! was given, which only its metadata file says. It POSTs the result to the
-//! server and
+//! was given and the agent that spawned it, which only its metadata file says.
+//! It POSTs the result to the server and
 //! copies the server's answer to stdout unchanged. It holds no state, so any
 //! number of them may run at once.
 //!
@@ -120,15 +120,15 @@ pub fn run(
     let session_title =
         transcript_path.and_then(|path| transcript_name::session_title(path, title_scan));
     let first_prompt = transcript_path.and_then(transcript_name::first_prompt);
-    // Only an event from inside a subagent has a task, and the event names the
-    // subagent whose metadata file carries it.
+    // Only an event from inside a subagent has a task and an agent that spawned
+    // it, and the event names the subagent whose metadata file carries both.
     let agent_id = event
         .get("agent_id")
         .and_then(serde_json::Value::as_str)
         .filter(|agent_id| !agent_id.is_empty());
-    let task = match (transcript_path, agent_id) {
-        (Some(path), Some(agent_id)) => subagent_meta::task(path, agent_id),
-        _ => None,
+    let subagent = match (transcript_path, agent_id) {
+        (Some(path), Some(agent_id)) => subagent_meta::read(path, agent_id),
+        _ => subagent_meta::SubagentMeta::default(),
     };
 
     let body = request_body(
@@ -136,7 +136,7 @@ pub fn run(
         context_tokens,
         session_title.as_deref(),
         first_prompt.as_deref(),
-        task.as_deref(),
+        &subagent,
         hook_json,
     );
     let url = format!("{}/hook", parsed.server.trim_end_matches('/'));
@@ -192,7 +192,7 @@ fn request_body(
     context_tokens: Option<u64>,
     session_title: Option<&str>,
     first_prompt: Option<&str>,
-    task: Option<&str>,
+    subagent: &subagent_meta::SubagentMeta,
     hook_json: &[u8],
 ) -> Vec<u8> {
     let mut body = Vec::with_capacity(hook_json.len() + 512);
@@ -208,7 +208,9 @@ fn request_body(
     body.extend_from_slice(b",\"first_prompt\":");
     write_optional_string(&mut body, first_prompt);
     body.extend_from_slice(b",\"task\":");
-    write_optional_string(&mut body, task);
+    write_optional_string(&mut body, subagent.task.as_deref());
+    body.extend_from_slice(b",\"parent_agent_id\":");
+    write_optional_string(&mut body, subagent.parent_agent_id.as_deref());
     body.extend_from_slice(b",\"hook\":");
     body.extend_from_slice(hook_json);
     body.extend_from_slice(b"}");

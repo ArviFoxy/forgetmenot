@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 /// from the transcript's last assistant message, `None` when the transcript is
 /// missing or carries no usage record yet. `session_title` and `first_prompt`
 /// are read from the same transcript and say what the session is, which no
-/// hook event carries. `task` is read from the subagent metadata file beside
-/// the transcript and says what a subagent was asked to do, which no hook event
-/// carries either.
+/// hook event carries. `task` and `parent_agent_id` are read from the subagent
+/// metadata file beside the transcript and say what a subagent was asked to do
+/// and which agent asked it, neither of which any hook event carries.
 ///
 /// Everything but `machine` and `hook` defaults to absent, because a client
 /// older than the field it does not know still POSTs a body the server must
@@ -50,6 +50,12 @@ pub struct HookRequest {
     /// is missing or unreadable.
     #[serde(default)]
     pub task: Option<String>,
+    /// The agent that spawned the subagent this event comes from, as the client
+    /// read it from the subagent's metadata file. `None` when the session
+    /// spawned it, which is what the file says by carrying no such agent, and
+    /// for an event that comes from no subagent at all.
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
     /// The hook event JSON, verbatim.
     pub hook: serde_json::Value,
 }

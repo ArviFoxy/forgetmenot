@@ -47,13 +47,15 @@ pub fn router() -> Router<Arc<AppState>> {
 /// The window and the filters every report takes, as query parameters.
 ///
 /// A parameter that is absent or empty narrows nothing, so a request with no
-/// query at all reads the whole log.
+/// query at all reads the whole log with every session's subagents counted into
+/// it.
 #[derive(Debug, Default, Deserialize)]
 struct FilterQuery {
     from: Option<String>,
     to: Option<String>,
     session: Option<String>,
     scope: Option<String>,
+    include_subagents: Option<String>,
 }
 
 impl FilterQuery {
@@ -76,7 +78,29 @@ impl FilterQuery {
                 .as_deref()
                 .filter(|scope| !scope.is_empty())
                 .map(str::to_string),
+            include_subagents: flag(
+                "include_subagents",
+                self.include_subagents.as_deref(),
+                Filter::default().include_subagents,
+            )?,
         })
+    }
+}
+
+/// A `true` or `false` parameter, answering `absent` when the request left it
+/// out or sent it empty.
+///
+/// Anything else is refused with the name of the parameter and what it takes,
+/// the way an unreadable bucket is: a value read as a default would answer a
+/// question the caller did not ask.
+fn flag(name: &str, text: Option<&str>, absent: bool) -> Result<bool, Rejection> {
+    match text.filter(|text| !text.is_empty()) {
+        None => Ok(absent),
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(other) => Err(Rejection::bad_request(format!(
+            "{name} must be `true` or `false`, not `{other}`"
+        ))),
     }
 }
 
@@ -192,8 +216,11 @@ async fn latency(State(state): State<Arc<AppState>>) -> Response {
     answer(read(&state, |reader| reader.latency()).await)
 }
 
-/// What each session was delivered, and the context size its last event
-/// reported.
+/// What each session was delivered, and the context size its main context's
+/// last event reported.
+///
+/// One row per main context, with `include_subagents` deciding whether what a
+/// session's subagents were delivered is counted into its row.
 async fn sessions(
     State(state): State<Arc<AppState>>,
     Query(query): Query<FilterQuery>,
@@ -218,13 +245,20 @@ async fn sessions(
 
 /// What was delivered, answered, held and forgotten over the last five minutes,
 /// hour, day and week, with the contexts live now.
-async fn summary(State(state): State<Arc<AppState>>) -> Response {
+///
+/// The four windows are the route's own, so the query narrows the rest: the
+/// filters the other reports take apply to all four alike.
+async fn summary(State(state): State<Arc<AppState>>, Query(query): Query<FilterQuery>) -> Response {
+    let filter = match query.filter() {
+        Ok(filter) => filter,
+        Err(rejection) => return rejection.into_response(),
+    };
     let Some(divisor) = characters_per_token(&state).await else {
         return store_unreadable();
     };
     let live_contexts = active_scope_sets(&state).await.len() as u64;
     let now = state.clock.now();
-    let rows = read(&state, move |reader| reader.summary(now)).await;
+    let rows = read(&state, move |reader| reader.summary(&filter, now)).await;
     answer(rows.map(|rows| {
         Summary {
             windows: rows
@@ -313,8 +347,12 @@ fn automatic_span(
     })
 }
 
-/// `GET /api/stats/session/{*key}/series`: every hook event of one context with
-/// the context size it reported and the tokens its answer carried.
+/// `GET /api/stats/session/{*key}/series`: every hook event of the one context
+/// the key names, with the context size it reported and the tokens its answer
+/// carried.
+///
+/// The key names a context and not a session, so a subagent's chart is the
+/// subagent's own events; only the window narrows this.
 async fn session_series(
     State(state): State<Arc<AppState>>,
     Path(rest): Path<String>,

@@ -64,6 +64,9 @@ pub struct HookPost<'a> {
     pub first_prompt: Option<&'a str>,
     /// What the subagent this event comes from was asked to do.
     pub task: Option<&'a str>,
+    /// The subagent that spawned the subagent this event comes from, absent
+    /// when the session spawned it.
+    pub parent_agent_id: Option<&'a str>,
     /// The event as Claude Code writes it, `transcript_path` included.
     pub event: &'a Value,
 }
@@ -84,8 +87,9 @@ pub struct Http;
 /// Claude Code does, and parse what it writes to stdout.
 ///
 /// Everything beside the event is left out of the call: the client reads the
-/// context size, the title, the first prompt and the task from the transcript
-/// and the metadata file itself, which is the point of running it.
+/// context size, the title, the first prompt, the task and the spawning agent
+/// from the transcript and the metadata file itself, which is the point of
+/// running it.
 pub struct Client;
 
 /// The transport a world posts straight to `/hook` with.
@@ -102,6 +106,7 @@ impl Transport for Http {
             "session_title": post.session_title,
             "first_prompt": post.first_prompt,
             "task": post.task,
+            "parent_agent_id": post.parent_agent_id,
             "hook": post.event,
         });
         let agent = common::test_agent();

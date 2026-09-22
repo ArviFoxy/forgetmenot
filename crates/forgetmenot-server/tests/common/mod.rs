@@ -310,6 +310,12 @@ impl TestServer {
         &self.config.stats_path
     }
 
+    /// The file the server records its contexts in, written at every change and
+    /// at shutdown.
+    pub fn state_path(&self) -> &Path {
+        &self.config.state_path
+    }
+
     /// Read the statistics the server has written. Flushes first, so every
     /// record queued by an answered request is in the database.
     pub fn stats(&self) -> StatsReader {
@@ -701,6 +707,27 @@ pub fn write_subagent_meta(
     agent_id: &str,
     description: &str,
 ) -> PathBuf {
+    write_subagent_meta_spawned_by(session_transcript, agent_id, description, None, 1)
+}
+
+/// The same for a subagent at any depth: `spawned_by` is the subagent that
+/// spawned it, absent when the session did, and `spawn_depth` is how deep it
+/// sits.
+///
+/// Expectation source: the same files, read again on 2026-09-22 for a session
+/// whose subagents spawned subagents. Every file of a session is in the one
+/// `subagents` directory whatever its depth; a file at depth 2 carries
+/// `parentAgentId` naming an agent whose own file is at depth 1, and a file at
+/// depth 1 carries no such key. Every field is written, not only the ones under
+/// test, so a client that sends the agent type or the tool use id as one of
+/// them is caught.
+pub fn write_subagent_meta_spawned_by(
+    session_transcript: &Path,
+    agent_id: &str,
+    description: &str,
+    spawned_by: Option<&str>,
+    spawn_depth: u64,
+) -> PathBuf {
     let directory = session_transcript
         .parent()
         .expect("the transcript is in a directory")
@@ -712,15 +739,18 @@ pub fn write_subagent_meta(
         .join("subagents");
     std::fs::create_dir_all(&directory).expect("the subagents directory must be creatable");
     let path = directory.join(format!("agent-{agent_id}.meta.json"));
-    let meta = json!({
+    let mut meta = json!({
         "agentType": "general-purpose",
         "description": description,
         "toolUseId": "toolu_01DDDDDDDDDDDDDDDDDDDDDD",
-        "spawnDepth": 1,
+        "spawnDepth": spawn_depth,
         "requestShape": "foreground",
         "requestNonInteractive": true,
         "model": "haiku",
     });
+    if let Some(parent_agent_id) = spawned_by {
+        meta["parentAgentId"] = json!(parent_agent_id);
+    }
     std::fs::write(
         &path,
         serde_json::to_string(&meta).expect("the metadata serialises"),

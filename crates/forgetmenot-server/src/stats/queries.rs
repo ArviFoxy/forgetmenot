@@ -14,7 +14,7 @@ use rusqlite::{ToSql, params_from_iter};
 use serde::Serialize;
 
 use super::{StatsError, StatsReader};
-use crate::context::ContextKey;
+use crate::context::{ContextKey, MAIN_AGENT};
 
 /// Tokens for a length of delivered text: `chars / characters_per_token`,
 /// rounded up.
@@ -51,17 +51,39 @@ impl Window {
     }
 }
 
-/// Which rows a query reads: a span of time, one session, one scope.
+/// Which rows a query reads: a span of time, one session, one scope, and
+/// whether a session's subagents are read with it.
 ///
-/// The default reads the whole log, which is what a request that names no
-/// filter asks for.
-#[derive(Clone, Debug, Default)]
+/// The default reads the whole log with the subagents counted, which is what a
+/// request that names no filter asks for.
+#[derive(Clone, Debug)]
 pub struct Filter {
     pub window: Window,
-    /// One context, by the key the MCP tools take.
+    /// One session, by the key the MCP tools take. The agent part of the key
+    /// names which context of the session sent it and is not matched:
+    /// `include_subagents` is what decides how much of the session is read.
     pub session: Option<ContextKey>,
     /// One scope, matched against the section a memory was printed under.
     pub scope: Option<String>,
+    /// Whether the rows of a session's subagents are read with the session's
+    /// own.
+    ///
+    /// Every context Claude Code opens inside a session carries that session's
+    /// id, whatever depth it sits at, so reading a whole session and its
+    /// descendants is ignoring the `agent` column and reading the session
+    /// alone is requiring [`MAIN_AGENT`] in it.
+    pub include_subagents: bool,
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Self {
+            window: Window::default(),
+            session: None,
+            scope: None,
+            include_subagents: true,
+        }
+    }
 }
 
 impl Filter {
@@ -98,14 +120,35 @@ impl Filter {
     }
 
     /// The same for a query over `tool_calls`, which names its context by the
-    /// session key rather than by the three columns and knows no scope.
+    /// printed session key rather than by the three columns and knows no scope.
+    ///
+    /// A key is `machine/session-id` for a main context and carries the agent
+    /// id as a third part for a subagent, so the descendants of a session are
+    /// the keys that begin with the session's own key and a slash, and a main
+    /// context is a key with no third part.
     pub(crate) fn tool_call_clause(&self) -> (String, Vec<SqlValue>) {
         let mut conditions = Vec::new();
         let mut values = Vec::new();
         self.push_window(&mut conditions, &mut values, "tool_calls.ts");
-        if let Some(session) = &self.session {
-            conditions.push("tool_calls.session_key = ?".to_string());
-            values.push(SqlValue::Text(session.to_string()));
+        match (&self.session, self.include_subagents) {
+            (Some(session), true) => {
+                let session = session.session_context().to_string();
+                let descendants = format!("{session}/");
+                conditions.push(
+                    "(tool_calls.session_key = ?
+                      OR substr(tool_calls.session_key, 1, ?) = ?)"
+                        .to_string(),
+                );
+                values.push(SqlValue::Text(session));
+                values.push(SqlValue::Integer(descendants.chars().count() as i64));
+                values.push(SqlValue::Text(descendants));
+            }
+            (Some(session), false) => {
+                conditions.push("tool_calls.session_key = ?".to_string());
+                values.push(SqlValue::Text(session.session_context().to_string()));
+            }
+            (None, true) => {}
+            (None, false) => conditions.push("tool_calls.session_key NOT LIKE '%/%/%'".to_string()),
         }
         (where_of(&conditions), values)
     }
@@ -122,16 +165,15 @@ impl Filter {
     }
 
     fn push_session(&self, conditions: &mut Vec<String>, values: &mut Vec<SqlValue>) {
-        let Some(session) = &self.session else {
-            return;
-        };
-        conditions.push(
-            "hook_events.machine = ? AND hook_events.session_id = ? AND hook_events.agent = ?"
-                .to_string(),
-        );
-        values.push(SqlValue::Text(session.machine.clone()));
-        values.push(SqlValue::Text(session.session_id.clone()));
-        values.push(SqlValue::Text(session.agent.clone()));
+        if let Some(session) = &self.session {
+            conditions.push("hook_events.machine = ? AND hook_events.session_id = ?".to_string());
+            values.push(SqlValue::Text(session.machine.clone()));
+            values.push(SqlValue::Text(session.session_id.clone()));
+        }
+        if !self.include_subagents {
+            conditions.push("hook_events.agent = ?".to_string());
+            values.push(SqlValue::Text(MAIN_AGENT.to_string()));
+        }
     }
 }
 
@@ -298,10 +340,20 @@ impl Bucket {
 impl StatsReader {
     /// What was delivered, answered, held and forgotten in each of the
     /// [`SUMMARY_WINDOWS`], counted back from `now`.
-    pub fn summary(&self, now: DateTime<Utc>) -> Result<Vec<SummaryRow>, StatsError> {
+    ///
+    /// Each window replaces `filter`'s own, so the rest of the filter narrows
+    /// every window alike: the subagents are counted in all four or in none.
+    pub fn summary(
+        &self,
+        filter: &Filter,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<SummaryRow>, StatsError> {
         let mut rows = Vec::new();
         for (name, seconds) in SUMMARY_WINDOWS {
-            let filter = Filter::over(Window::last(Duration::seconds(seconds), now));
+            let filter = Filter {
+                window: Window::last(Duration::seconds(seconds), now),
+                ..filter.clone()
+            };
             let (events_where, events_values) = filter.clause(false);
             let (delivery_where, delivery_values) = filter.clause(true);
             let chars = self.value(
@@ -393,6 +445,10 @@ impl StatsReader {
     /// Every hook event of one context, oldest first, with the context size it
     /// reported and the characters its answer carried.
     ///
+    /// The context is the one `key` names and no other: a subagent's chart is
+    /// the subagent's own events, so all three columns of the key are matched
+    /// here, where a [`Filter`]'s session matches a whole session.
+    ///
     /// Empty for a context the log has never seen, which is how a caller tells
     /// an unknown key from a quiet one.
     pub fn session_series(
@@ -400,12 +456,18 @@ impl StatsReader {
         key: &ContextKey,
         window: Window,
     ) -> Result<Vec<SessionEventRow>, StatsError> {
-        let filter = Filter {
-            window,
-            session: Some(key.clone()),
-            scope: None,
+        let (clause, mut values) = Filter::over(window).clause(false);
+        let joiner = match clause.is_empty() {
+            true => " WHERE ",
+            false => " AND ",
         };
-        let (clause, values) = filter.clause(false);
+        let clause = format!(
+            "{clause}{joiner}hook_events.machine = ? AND hook_events.session_id = ? \
+             AND hook_events.agent = ?"
+        );
+        values.push(SqlValue::Text(key.machine.clone()));
+        values.push(SqlValue::Text(key.session_id.clone()));
+        values.push(SqlValue::Text(key.agent.clone()));
         self.rows(
             &format!(
                 "SELECT hook_events.ts, hook_events.event, hook_events.context_tokens,

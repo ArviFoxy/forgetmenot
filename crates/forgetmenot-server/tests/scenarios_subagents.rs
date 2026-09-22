@@ -129,6 +129,56 @@ fn a_subagent_starts_from_the_implicit_scopes_when_the_store_says_so() {
     );
 }
 
+/// Detects a subagent of a subagent created from its session rather than from
+/// the agent that spawned it: an agent that turns a scope on for the work it is
+/// about to hand on would hand its own subagent a context without that scope,
+/// and every agent below the first would work from the session's scopes however
+/// deep it sits.
+///
+/// The session turns `widgets` on by naming one in a prompt, and the child
+/// turns `workshop` on through the tool: `workshop`'s only trigger is a
+/// directory neither of them is in, so nothing but that call can have turned it
+/// on. The grandchild is created from the child, so it works in both, while the
+/// session's second child is created from the session and works in `widgets`
+/// alone. The scopes are read back from the server because that is where the
+/// answer is: `workshop` holds no memory in this store, so nothing delivered
+/// would show it either way.
+#[test]
+fn a_subagent_of_a_subagent_starts_with_the_scopes_of_the_agent_that_spawned_it() {
+    let world = World::new().store(Store::example()).build();
+    let session = world.claude(ALPHA).session();
+
+    session.start_in(NEUTRAL);
+    session.prompt("rename the widget brackets");
+    let child = session.subagent("general-purpose", "list the bracket files");
+    child.mcp().session_scope_on(["workshop"]).expect_ok();
+
+    let grandchild = child.subagent("general-purpose", "measure the first bracket");
+    let second_child = session.subagent("general-purpose", "list the wiring files");
+
+    let inherited = grandchild.active_scopes();
+    assert!(
+        inherited.contains("workshop"),
+        "the grandchild starts in the scope its spawner turned on, got {inherited:?}"
+    );
+    assert!(
+        inherited.contains("widgets"),
+        "the session's scope reached the child, and the child passes on what it works in, got \
+         {inherited:?}"
+    );
+    assert_eq!(
+        world.context(&grandchild.key())["parent"],
+        json!(child.key()),
+        "the context a subagent inherited from is the one reported as its parent"
+    );
+    let from_the_session = second_child.active_scopes();
+    assert!(
+        from_the_session.contains("widgets") && !from_the_session.contains("workshop"),
+        "a child the session spawned starts in the session's scopes and not in another \
+         subagent's, got {from_the_session:?}"
+    );
+}
+
 /// Detects a task that is matched into the parent's context instead of the
 /// child's: the parent would end up working in scopes nobody in it asked for,
 /// and would be delivered their memories for the rest of the session.

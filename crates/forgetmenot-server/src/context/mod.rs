@@ -6,6 +6,7 @@
 //! decided by the catalog and the state alone and can be tested without a
 //! server.
 
+pub mod migrate;
 pub mod registry;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -155,7 +156,11 @@ pub struct ContextState {
     pub active: BTreeSet<ScopeId>,
     /// What has been delivered, and in what form.
     pub delivered: BTreeMap<MemoryId, Shown>,
-    /// The context this one inherited its scopes from, for a subagent.
+    /// The context this one inherited its scopes from, for a subagent: the
+    /// context that spawned it, which is the session itself unless a subagent
+    /// spawned it. Defaulted, so that a snapshot written before the field
+    /// existed loads and [`migrate`] fills it in.
+    #[serde(default)]
     pub parent: Option<ContextKey>,
     /// The directory `claude` was started in: the `cwd` of this context's first
     /// event, remembered for as long as the context lives and never moved by a

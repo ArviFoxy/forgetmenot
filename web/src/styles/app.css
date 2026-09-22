@@ -26,6 +26,8 @@ html {
   --fmn-row-height: 1.9rem;
   /* The column of chevrons, which the sticky first column is offset by. */
   --fmn-expander-width: 1.8rem;
+  /* How far one level of nesting moves the cell that names the row. */
+  --fmn-nesting-step: 1.25rem;
 
   /* One surface for the whole app; thin borders do the separating. */
   --fmn-bg: var(--sl-color-neutral-0);
@@ -1109,16 +1111,17 @@ table.data td.nowrap {
   white-space: nowrap;
 }
 
-table.data td.nested {
-  padding-inline-start: var(--sl-spacing-large);
+/* Text long enough to run onto a second line, in a table whose figures do not. */
+table.data td.wrap {
+  white-space: normal;
 }
 
 /* What a context row is read by is its name, so the name column keeps enough
    width for a title to sit on a line or two while the scope chips wrap into
    whatever is left: without a minimum, a row with many scopes squeezes the name
    to a few characters a line. */
-table.data th.context-name,
-table.data td.context-name {
+.contexts-table table.data th.row-id,
+.contexts-table table.data td.row-id {
   min-width: 22rem;
 }
 
@@ -1433,10 +1436,24 @@ table.data th.expander,
 table.data td.expander {
   width: var(--fmn-expander-width);
   padding-inline: 2px;
+  white-space: nowrap;
 }
 
 table.data td.expander sl-icon-button::part(base) {
   padding: 0;
+}
+
+/* A closed row stands for the rows under it and says how many, so the column of
+   chevrons holds a number beside each one and the sticky first column, which is
+   offset by that width, moves with it. */
+table.data:has(.descendants) {
+  --fmn-expander-width: 3.2rem;
+}
+
+.descendants {
+  color: var(--fmn-fg-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
 }
 
 table.data tr.data-row {

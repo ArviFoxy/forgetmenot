@@ -243,6 +243,11 @@ export interface StatsQuery {
   session?: string;
   /** One scope, matched against the section a memory was printed under. */
   scope?: string;
+  /**
+   * `true` or `false`: whether the rows of a session's subagents are read with
+   * the session's own, at any depth. Absent counts them.
+   */
+  include_subagents?: string;
 }
 
 /** How long one bucket of the delivered-tokens series is. */

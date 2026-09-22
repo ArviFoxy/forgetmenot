@@ -20,7 +20,7 @@ use forgetmenot_types::hook::{HookEvent, HookRequest, HookResponse};
 use git2::Oid;
 
 use crate::app::AppState;
-use crate::context::registry::Inheritance;
+use crate::context::registry::Creation;
 use crate::context::{ContextState, Needs, PreviousTexts, compute_needs, record_delivery};
 use crate::render::{self, Delivery, Rendered};
 use crate::service::Store;
@@ -28,6 +28,7 @@ use crate::stats::{Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, Tri
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
 use crate::store::scope::TriggerField;
+use crate::store::settings::Settings;
 use crate::store::{MemoryId, ScopeId};
 use events::EventPlan;
 
@@ -63,8 +64,13 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
 
     // An event name this server does not know is acknowledged with an object
     // Claude Code reads as "nothing to do", not with an error.
-    let Some(plan) = events::plan(&event, &request.machine, request.task.as_deref(), settings)
-    else {
+    let Some(plan) = events::plan(
+        &event,
+        &request.machine,
+        request.task.as_deref(),
+        request.parent_agent_id.as_deref(),
+        settings,
+    ) else {
         return axum::Json(serde_json::json!({})).into_response();
     };
 
@@ -86,7 +92,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     let previous = previous_texts_of_event(&state, &plan, &catalog, now).await;
     let outcome = state
         .contexts
-        .with_context(&plan.key, now, Inheritance::of(settings), |context| {
+        .with_context(&plan.key, now, creation_of(&plan, settings), |context| {
             apply(
                 context,
                 &plan,
@@ -174,12 +180,26 @@ async fn previous_texts_of_event(
     if plan.session_start {
         return PreviousTexts::new();
     }
-    let inheritance = Inheritance::of(catalog.settings());
     let held = state
         .contexts
-        .with_context(&plan.key, now, inheritance, |context| context.clone())
+        .with_context(
+            &plan.key,
+            now,
+            creation_of(plan, catalog.settings()),
+            |context| context.clone(),
+        )
         .await;
     previous_texts(&state.store, &held, catalog).await
+}
+
+/// What the context this event acts on is created from, when the event is the
+/// first thing seen for it.
+///
+/// Read at both places an event reaches its context, because either may be the
+/// one that creates it: a `SubagentStart` reads what the child holds before it
+/// works out what it is owed.
+fn creation_of(plan: &EventPlan, settings: &Settings) -> Creation {
+    Creation::spawned_by(settings, plan.parent.clone())
 }
 
 /// The text `context` was given for each memory the store now holds another
@@ -563,7 +583,7 @@ mod tests {
             "prompt": text
         }))
         .expect("the payload parses as an event");
-        events::plan(&event, "alpha", None, catalog.settings()).expect("the event is known")
+        events::plan(&event, "alpha", None, None, catalog.settings()).expect("the event is known")
     }
 
     /// The plan of an event that fires no trigger and stops nothing, so that
@@ -808,7 +828,8 @@ mod tests {
             "tool_input": { "file_path": "/home/dev/notes/README.md" }
         }))
         .expect("the payload parses as an event");
-        let call = events::plan(&call, "alpha", None, catalog.settings()).expect("PreToolUse");
+        let call =
+            events::plan(&call, "alpha", None, None, catalog.settings()).expect("PreToolUse");
         let moved = answer(&mut context, &catalog, &call, Some(START));
 
         assert!(

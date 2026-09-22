@@ -350,12 +350,22 @@ const subagent = context({
   last_seen: '2026-01-02T03:05:05+00:00',
 });
 
+/** A subagent the subagent above spawned, whose parent is therefore not a session. */
+const nestedSubagent = context({
+  key: 'alpha/session-1/agent-91b2',
+  name: 'Read the launch table',
+  parent: 'alpha/session-1/agent-7f3a',
+  task: 'Read the launch table',
+  last_seen: '2026-01-02T03:06:05+00:00',
+});
+
 /** The contexts page, rendered over `rows`. */
-async function renderContexts(rows: ContextRow[]): Promise<void> {
+async function renderContexts(rows: ContextRow[]): Promise<HTMLElement> {
   answers.contexts = rows;
   const element = document.createElement('fmn-contexts-view');
   document.body.append(element);
   await settle(element);
+  return element;
 }
 
 function cellsOf(row: Element | undefined): string[] {
@@ -481,9 +491,10 @@ const namelessSession = context({ key: 'alpha/session-4' });
 
 test('the session select labels an option by its key, or offers a nameless session or a subagent', async () => {
   // The source of this expectation is what the select is for: choosing a
-  // session by what it was doing. A subagent is not a session, and a context
-  // with no name has nothing to read as, so neither is on offer.
-  answers.contexts = [subagent, namelessSession, session];
+  // session by what it was doing. A subagent is not a session however deep it
+  // runs, and a context with no name has nothing to read as, so none of the
+  // three is on offer.
+  answers.contexts = [nestedSubagent, subagent, namelessSession, session];
   const element = await renderDashboard();
 
   const [sessions] = [...element.querySelectorAll('.series-filter')];
@@ -506,10 +517,17 @@ test('a memory row has no way to the memory it names', async () => {
 });
 
 // The source of these three expectations is the decision about what the contexts
-// table shows: the columns Name, Scopes, Id, Machine, Delivered, Last seen, in
-// that order, with each subagent directly under the session it runs in and its
-// name indented, and the rows in the order the server sends them, which is most
-// recently seen first (issue #21).
+// table shows: the columns Name, Scopes, Id, Machine, Delivered, Last seen, in that
+// order; a session standing for everything it spawned until it is opened, with the
+// number of those contexts beside it; and a subagent drawn under the context it
+// runs in (issue #21).
+
+/** The names the table draws, in the order it draws them. */
+function contextNames(): (string | undefined)[] {
+  return [...document.querySelectorAll('table.data tbody tr.data-row')].map((row) =>
+    row.querySelector('td.row-id')?.textContent?.trim(),
+  );
+}
 
 test('the contexts table names its columns in another order, or lists a context without its name', async () => {
   await renderContexts([session]);
@@ -525,35 +543,42 @@ test('the contexts table names its columns in another order, or lists a context 
   expect(cellsOf(row)).toContain('alpha');
 });
 
-test('a subagent is listed in the order it arrived, or level with the session it runs in', async () => {
-  // In the other order, so that a page that lists them as they arrive fails.
+test('a session is drawn open, so its subagents are rows of the table before anyone asks', async () => {
+  // In the order the server sends, which is the subagent first. A page of
+  // sessions each already unfolded is the list the nesting replaced.
   await renderContexts([subagent, session]);
 
-  const rows = [...document.querySelectorAll('table.data tbody tr')];
-  expect(rows.map((row) => cellsOf(row)[0])).toEqual([session.name, subagent.name]);
-  expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
-  expect(rows[0]?.querySelector('td')?.classList.contains('nested')).toBe(false);
+  expect(contextNames()).toEqual([session.name]);
+  expect(document.querySelector('td.expander .descendants')?.textContent?.trim()).toBe('1');
 });
 
-/** A session with no subagent, keyed ahead of `session` and seen before it. */
-const otherSession = context({
-  key: 'alpha/session-0',
-  name: 'Sort the fastener bins',
-  last_seen: '2026-01-02T03:04:30+00:00',
+test('a filter naming a subagent answers nothing, because the session it runs in does not match', async () => {
+  // The filter is what the table is searched with, and a subagent is only
+  // reachable through the session that spawned it. Matching the rows one level
+  // at a time would drop the subagent with the session it hangs from, and
+  // keeping the session closed would leave the row that matched out of sight.
+  const page = await renderContexts([nestedSubagent, subagent, session]);
+
+  const field = document.querySelector('.table-filter sl-input') as HTMLElement & {
+    value: string;
+  };
+  field.value = 'launch table';
+  field.dispatchEvent(new Event('sl-input'));
+  await settle(page);
+
+  expect(contextNames()).toEqual([session.name, subagent.name, nestedSubagent.name]);
 });
 
-test('a session whose subagent was seen last is listed under a session seen earlier', async () => {
-  // The order the server sends: most recently seen first, which puts the
-  // subagent ahead of both sessions and leaves its own session last.
-  await renderContexts([subagent, otherSession, session]);
+test('an opened session leaves its subagent level with it, or does not show it at all', async () => {
+  const page = await renderContexts([subagent, session]);
 
-  const rows = [...document.querySelectorAll('table.data tbody tr')];
-  expect(rows.map((row) => cellsOf(row)[0])).toEqual([
-    session.name,
-    subagent.name,
-    otherSession.name,
-  ]);
-  expect(rows[1]?.querySelector('td')?.classList.contains('nested')).toBe(true);
+  (document.querySelector('td.expander sl-icon-button') as HTMLElement).click();
+  await settle(page);
+
+  expect(contextNames()).toEqual([session.name, subagent.name]);
+  const cells = [...document.querySelectorAll('table.data tbody tr.data-row td.row-id')];
+  expect(cells[0]?.getAttribute('style')).toBeNull();
+  expect(cells[1]?.getAttribute('style')).toContain('padding-inline-start');
 });
 
 // The source of these two expectations is this ticket: the prompt page shows the
@@ -594,7 +619,7 @@ test('the name in the contexts table opens nothing, so the prompt page is unreac
   const nameless = context({ key: 'beta/session-9', name: '' });
   await renderContexts([session, nameless]);
 
-  const links = [...document.querySelectorAll('table.data tbody td.context-name a')];
+  const links = [...document.querySelectorAll('table.data tbody td.row-id a')];
   expect(links.map((link) => link.getAttribute('href'))).toEqual([
     paths.contextPrompt(session.key),
     paths.contextPrompt(nameless.key),

@@ -47,6 +47,14 @@ pub struct Session<'w> {
     /// subagent; `None` for a session's own context, which nobody opens.
     start_answer: Option<Answer<'w>>,
     transcript: PathBuf,
+    /// The transcript of the session this context runs in, which is
+    /// `transcript` itself for a session's own context. Claude Code keeps every
+    /// subagent of a session beside that file, however deep the subagent sits,
+    /// so it is what says where the metadata files go.
+    session_transcript: PathBuf,
+    /// How deep this context sits: zero for a session, one for a subagent it
+    /// spawned, and one more for each spawn below that.
+    spawn_depth: u64,
     state: RefCell<State>,
 }
 
@@ -70,6 +78,10 @@ struct State {
     summary: Option<String>,
     first_prompt: Option<String>,
     task: Option<String>,
+    /// The subagent that spawned this one, as its metadata file names it; the
+    /// client reads it beside the task, so it travels with every event of the
+    /// subagent.
+    parent_agent_id: Option<String>,
     /// Everything Claude Code injected into this context, in order, as the
     /// model saw it.
     injected: Vec<String>,
@@ -119,7 +131,9 @@ impl<'w> Session<'w> {
             session_id: session_id.to_string(),
             agent: None,
             start_answer: None,
+            session_transcript: transcript.clone(),
             transcript,
+            spawn_depth: 0,
             state: RefCell::new(State::new()),
         }
     }
@@ -268,15 +282,31 @@ impl<'w> Session<'w> {
     /// The model spawns a subagent: `SubagentStart` on this session, naming the
     /// child, whose context the answer is delivered into.
     ///
-    /// The task reaches the server beside the event, read from the metadata file
-    /// Claude Code writes for the subagent, which this writes too.
+    /// A subagent spawns a subagent the same way, and Claude Code writes every
+    /// metadata file of a session in the one directory, so a child's id carries
+    /// its spawner's: `agent-1` is the session's first child and `agent-1-1` is
+    /// that child's first.
+    ///
+    /// The task and the spawning agent reach the server beside the event, read
+    /// from the metadata file Claude Code writes for the subagent, which this
+    /// writes too.
     pub fn subagent(&self, agent_type: &str, task: &str) -> Subagent<'w> {
         let agent_id = {
             let mut state = self.state.borrow_mut();
             state.agents += 1;
-            format!("agent-{}", state.agents)
+            match &self.agent {
+                Some(spawner) => format!("{}-{}", spawner.agent_id, state.agents),
+                None => format!("agent-{}", state.agents),
+            }
         };
-        common::write_subagent_meta(&self.transcript, &agent_id, task);
+        let spawner = self.agent.as_ref().map(|agent| agent.agent_id.clone());
+        common::write_subagent_meta_spawned_by(
+            &self.session_transcript,
+            &agent_id,
+            task,
+            spawner.as_deref(),
+            self.spawn_depth + 1,
+        );
         let agent = Agent {
             agent_id: agent_id.clone(),
             agent_type: agent_type.to_string(),
@@ -287,10 +317,13 @@ impl<'w> Session<'w> {
             session_id: self.session_id.clone(),
             agent: Some(agent.clone()),
             start_answer: None,
-            transcript: subagent_transcript(&self.transcript, &agent_id),
+            transcript: subagent_transcript(&self.session_transcript, &agent_id),
+            session_transcript: self.session_transcript.clone(),
+            spawn_depth: self.spawn_depth + 1,
             state: RefCell::new(State {
                 cwd: self.state.borrow().cwd.clone(),
                 task: Some(cut(task)),
+                parent_agent_id: spawner.clone(),
                 first_prompt: self.state.borrow().first_prompt.clone(),
                 custom_title: self.state.borrow().custom_title.clone(),
                 summary: self.state.borrow().summary.clone(),
@@ -299,13 +332,13 @@ impl<'w> Session<'w> {
         };
         create(&child.transcript);
 
-        // The event is the parent's, so it reports the parent's size and the
-        // parent's transcript; its answer belongs to the child, which is the
+        // The event is the spawner's, so it reports the spawner's size and the
+        // spawner's transcript; its answer belongs to the child, which is the
         // context it was planned for.
         let mut common = self.common();
         common.agent = Some(agent);
         let event = payloads::subagent_start(&common);
-        let answer = self.post(&event, Some(&cut(task)));
+        let answer = self.post(&event, Some(&cut(task)), spawner.as_deref());
         child.absorb(&answer);
         child.start_answer = Some(Answer::new(self.world, event, answer));
         child
@@ -403,14 +436,17 @@ impl<'w> Session<'w> {
 
     /// Send one event and apply its answer to this context.
     fn send(&self, event: Value) -> Answer<'w> {
-        let task = self.state.borrow().task.clone();
-        let answer = self.post(&event, task.as_deref());
+        let (task, parent_agent_id) = {
+            let state = self.state.borrow();
+            (state.task.clone(), state.parent_agent_id.clone())
+        };
+        let answer = self.post(&event, task.as_deref(), parent_agent_id.as_deref());
         self.absorb(&answer);
         Answer::new(self.world, event, answer)
     }
 
     /// Send one event and report the answer, without applying it anywhere.
-    fn post(&self, event: &Value, task: Option<&str>) -> Value {
+    fn post(&self, event: &Value, task: Option<&str>, parent_agent_id: Option<&str>) -> Value {
         self.report_tokens();
         let state = self.state.borrow();
         let title = state.custom_title.clone().or_else(|| state.summary.clone());
@@ -426,6 +462,7 @@ impl<'w> Session<'w> {
                 session_title: title.as_deref(),
                 first_prompt: first_prompt.as_deref(),
                 task,
+                parent_agent_id,
                 event,
             })
     }
@@ -542,6 +579,7 @@ impl State {
             summary: None,
             first_prompt: None,
             task: None,
+            parent_agent_id: None,
             injected: Vec::new(),
             persisted: Vec::new(),
         }
@@ -644,7 +682,8 @@ fn injected_strings(answer: &Value) -> Vec<String> {
 }
 
 /// Where Claude Code writes a subagent's own transcript: beside its metadata
-/// file, under the directory named after the session.
+/// file, under the directory named after the session, whatever the subagent's
+/// depth.
 fn subagent_transcript(session_transcript: &Path, agent_id: &str) -> PathBuf {
     session_transcript
         .parent()

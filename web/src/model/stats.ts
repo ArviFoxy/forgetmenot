@@ -1,7 +1,8 @@
-// The parts of the dashboard that are arithmetic on values rather than
-// markup: the window a range name stands for, the address the controls are kept
-// in, the points the charts are drawn from, and what each table's columns hold.
+// The parts of the dashboard that are values rather than pages: the window a
+// range name stands for, the address the controls are kept in, the points the
+// charts are drawn from, and what each table's columns hold.
 
+import type { TemplateResult } from 'lit';
 import type {
   ContextRow,
   MemoryStatsRow,
@@ -35,9 +36,16 @@ export interface StatsFilter {
   session: string;
   /** A scope id, empty for every scope. */
   scope: string;
+  /** Whether what a session's subagents were delivered counts towards it. */
+  includeSubagents: boolean;
 }
 
-export const defaultStatsFilter: StatsFilter = { range: '24h', session: '', scope: '' };
+export const defaultStatsFilter: StatsFilter = {
+  range: '24h',
+  session: '',
+  scope: '',
+  includeSubagents: true,
+};
 
 /**
  * The window a range covers, ending at `now`. `all` has no window: the request
@@ -52,11 +60,16 @@ export function statsWindow(range: StatsRange, now: Date): StatsQuery {
   };
 }
 
-/** The window and the filters as one query, which is what every request takes. */
+/**
+ * The window and the filters as one query, which is what every request takes.
+ * The subagent flag is always named, so every report of one page answers the
+ * same question whichever way the checkbox stands.
+ */
 export function statsQueryOf(filter: StatsFilter, now: Date): StatsQuery {
   const query: StatsQuery = statsWindow(filter.range, now);
   if (filter.session !== '') query.session = filter.session;
   if (filter.scope !== '') query.scope = filter.scope;
+  query.include_subagents = filter.includeSubagents ? 'true' : 'false';
   return query;
 }
 
@@ -71,6 +84,7 @@ export function statsFilterFromSearch(search: string = window.location.search): 
     range: readRange(query.get('range')),
     session: query.get('session') ?? '',
     scope: query.get('scope') ?? '',
+    includeSubagents: query.get('subagents') !== 'false',
   };
 }
 
@@ -83,6 +97,7 @@ export function statsSearch(filter: StatsFilter): string {
   if (filter.range !== defaultStatsFilter.range) query.set('range', filter.range);
   if (filter.session !== '') query.set('session', filter.session);
   if (filter.scope !== '') query.set('scope', filter.scope);
+  if (!filter.includeSubagents) query.set('subagents', 'false');
   const text = query.toString();
   return text === '' ? '' : `?${text}`;
 }
@@ -164,12 +179,16 @@ export interface TableColumn<Row> {
   value: (row: Row) => string | number;
   /** The text the cell shows; the value itself when this is absent. */
   text?: (row: Row) => string;
+  /** What the cell draws, for a column whose value is not plain text. */
+  cell?: (row: Row) => TemplateResult;
   /** The address the cell links to, null for a cell that is not a link. */
   link?: (row: Row) => string | null;
   /** Figures, which are set to the right in digits of one width. */
   numeric?: boolean;
   /** Text that is read character by character, such as a pattern. */
   mono?: boolean;
+  /** Text long enough to run onto a second line rather than widen the table. */
+  wraps?: boolean;
   /** A value the clock decides, which the recorded screenshots paint over. */
   moment?: boolean;
   /** How narrow a screen may be and still show it; every width when absent. */

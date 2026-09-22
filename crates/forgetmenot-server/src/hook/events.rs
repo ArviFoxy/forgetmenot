@@ -48,6 +48,12 @@ pub struct EventPlan {
     /// The kind of subagent that started, for `SubagentStart` alone. It is what
     /// names the context when nothing said what the task was.
     pub agent_type: Option<String>,
+    /// The context that spawned the one this event acts on, for `SubagentStart`
+    /// alone: the spawning subagent when the request named one, else the
+    /// session the event arrived on. It is what the new context inherits its
+    /// scopes and its session directory from. Every other event acts on a
+    /// context that already exists, so it names no spawner.
+    pub parent: Option<ContextKey>,
     /// Whether the context size this event reports is the parent's rather than
     /// this plan's own context's, which is true of `SubagentStart` alone.
     ///
@@ -65,8 +71,9 @@ pub struct EventPlan {
 /// know, which is answered with an empty object.
 ///
 /// `task` is what the request said the subagent this event comes from was asked
-/// to do; no hook event carries it, so it is the client's read of the
-/// subagent's metadata file or nothing.
+/// to do and `parent_agent_id` is the subagent the request said spawned it; no
+/// hook event carries either, so both are the client's read of the subagent's
+/// metadata file or nothing.
 ///
 /// `settings` are the store's, because how much of a tool result is matched
 /// against triggers is part of what the store says about its own behaviour.
@@ -74,6 +81,7 @@ pub fn plan(
     event: &HookEvent,
     machine: &str,
     task: Option<&str>,
+    parent_agent_id: Option<&str>,
     settings: &Settings,
 ) -> Option<EventPlan> {
     let event_name = event.event_name();
@@ -89,6 +97,7 @@ pub fn plan(
         matches_directories: false,
         task: task.filter(|task| !task.is_empty()).map(str::to_string),
         agent_type: None,
+        parent: None,
         tokens_are_the_parents: false,
     };
 
@@ -170,6 +179,13 @@ pub fn plan(
             plan.key = ContextKey::subagent(machine, &common.session_id, agent_id);
             plan.tokens_are_the_parents = true;
             plan.agent_type = agent_type.clone();
+            // A subagent may spawn a subagent, and the event says only which
+            // session it arrived on, so the spawner is the agent the request
+            // named and the session when it named none.
+            plan.parent = Some(match parent_agent_id.filter(|id| !id.is_empty()) {
+                Some(parent) => ContextKey::subagent(machine, &common.session_id, parent),
+                None => ContextKey::main(machine, &common.session_id),
+            });
             // The task is what the subagent was told to do, so it is matched
             // against the user-message triggers once, where the subagent
             // begins, rather than again at every event inside it.
@@ -309,9 +325,9 @@ mod tests {
     }
 
     /// The plan for one event on `machine`, under a store that has said nothing
-    /// about its behaviour and a request that read no task.
+    /// about its behaviour and a request that read no task and no spawner.
     fn plan_of(event: &HookEvent, machine: &str) -> Option<EventPlan> {
-        plan(event, machine, None, &Settings::default())
+        plan(event, machine, None, None, &Settings::default())
     }
 
     /// Detects a tool input flattened in a way that loses a nested value, which
@@ -444,9 +460,9 @@ mod tests {
         };
         let output = "the widgets rule is in the binder";
 
-        let exempt = plan(&tool_result("Read", output), "alpha", None, &settings)
+        let exempt = plan(&tool_result("Read", output), "alpha", None, None, &settings)
             .expect("PostToolUse is known");
-        let matched = plan(&tool_result("Grep", output), "alpha", None, &settings)
+        let matched = plan(&tool_result("Grep", output), "alpha", None, None, &settings)
             .expect("PostToolUse is known");
 
         assert!(
@@ -507,8 +523,14 @@ mod tests {
         };
         let output = "SUPERNOVA in the log. ".repeat(20);
 
-        let plan = plan(&tool_result("Bash", &output), "alpha", None, &settings)
-            .expect("PostToolUse is known");
+        let plan = plan(
+            &tool_result("Bash", &output),
+            "alpha",
+            None,
+            None,
+            &settings,
+        )
+        .expect("PostToolUse is known");
 
         let matched = texts_on(&plan, TriggerField::ToolResult);
         assert_eq!(matched.len(), 1, "one result is one text, got {matched:?}");
@@ -656,6 +678,7 @@ mod tests {
             })),
             "alpha",
             Some("survey the widgets crate"),
+            None,
             &Settings::default(),
         )
         .expect("SubagentStart is a known event");
@@ -674,6 +697,86 @@ mod tests {
             plan.agent_type.as_deref(),
             Some("general-purpose"),
             "the kind of subagent that started must reach the context that records it"
+        );
+    }
+
+    /// Detects a `SubagentStart` planned as spawned by the session when another
+    /// subagent spawned it: the new context would inherit the session's scopes
+    /// instead of its spawner's, so a scope the spawner turned on for the work
+    /// it is delegating would not reach the agent doing it. Detects too a plan
+    /// that takes the spawner from nothing, which would put every subagent of a
+    /// session under a context that never spawned it.
+    ///
+    /// The event is the same either way: it arrives on the session and names the
+    /// child alone. What separates the two is `parentAgentId` in the child's
+    /// metadata file, which Claude Code writes only for a subagent another
+    /// subagent spawned, so the request carries it only then.
+    #[test]
+    fn a_subagent_start_is_spawned_by_the_agent_the_request_names_and_by_the_session_otherwise() {
+        let event = event(json!({
+            "hook_event_name": "SubagentStart",
+            "session_id": "session-1",
+            "agent_id": "agent-7",
+            "agent_type": "general-purpose"
+        }));
+
+        let nested = plan(
+            &event,
+            "alpha",
+            Some("survey the widgets crate"),
+            Some("agent-3"),
+            &Settings::default(),
+        )
+        .expect("SubagentStart is a known event");
+        assert_eq!(
+            nested.parent,
+            Some(ContextKey::subagent("alpha", "session-1", "agent-3")),
+            "the agent the request named is the context this subagent was spawned by"
+        );
+
+        let top_level = plan(
+            &event,
+            "alpha",
+            Some("survey the widgets crate"),
+            None,
+            &Settings::default(),
+        )
+        .expect("SubagentStart is a known event");
+        assert_eq!(
+            top_level.parent,
+            Some(ContextKey::main("alpha", "session-1")),
+            "a request that names no agent is a subagent the session itself spawned"
+        );
+    }
+
+    /// Detects an event other than a `SubagentStart` planned as spawning a
+    /// context: every other event acts on a context that already exists, and a
+    /// spawner on one of them would move a live context under whichever agent
+    /// the request happened to name.
+    #[test]
+    fn an_event_inside_a_subagent_spawns_nothing() {
+        let plan = plan(
+            &event(json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-1",
+                "agent_id": "agent-7",
+                "prompt": "start with the rail"
+            })),
+            "alpha",
+            Some("survey the widgets crate"),
+            Some("agent-3"),
+            &Settings::default(),
+        )
+        .expect("UserPromptSubmit is a known event");
+
+        assert_eq!(
+            plan.parent, None,
+            "a prompt inside a subagent acts on a context that is already there"
+        );
+        assert_eq!(
+            plan.key,
+            ContextKey::subagent("alpha", "session-1", "agent-7"),
+            "the event still acts on the subagent it comes from"
         );
     }
 
@@ -698,6 +801,7 @@ mod tests {
             })),
             "alpha",
             Some("survey the widgets crate"),
+            None,
             &Settings::default(),
         )
         .expect("SubagentStart is a known event");

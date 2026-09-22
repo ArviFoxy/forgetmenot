@@ -1,0 +1,100 @@
+{
+  "comment": "A state file in the shape written before the version field existed. Made by the ignored test regenerate_the_version_0_state_fixture in crates/forgetmenot-server/tests/state_migration_test.rs: a server on the example store under examples/store was played a session start, a prompt, a subagent start and a call inside the subagent through POST /hook and was then restarted, which is what made it write its state; the version field and the subagents' parent fields were stripped from what it wrote. Nothing here comes from any real store or any real session.",
+  "contexts": [
+    {
+      "machine": "alpha",
+      "session_id": "session-1",
+      "agent": "agent-1",
+      "active": [
+        "global",
+        "machine:alpha",
+        "rocketry",
+        "session:alpha/session-1",
+        "widgets"
+      ],
+      "delivered": {
+        "bench-power": {
+          "version": "b7d777772eb20b10a0c6aaa48992f8cbcc8cfcec",
+          "form": "full",
+          "tokens": 10200
+        },
+        "reading-list": {
+          "version": "b06b85cb47e9cfe6294dd1ffeacdadc2c0b9a304",
+          "form": "index",
+          "tokens": 10200
+        },
+        "rocket-stages": {
+          "version": "47d743eadadf62174df2445f2db4e1eb10bf325c",
+          "form": "index",
+          "tokens": 10200
+        },
+        "sessions/alpha/session-1/notes": {
+          "version": "4f07a35aae510e0383c81d074d0da5c66a3692a1",
+          "form": "index",
+          "tokens": 10200
+        },
+        "widget-naming": {
+          "version": "2f029fb857dbf27e9942eaebfc7c34f995ffa6de",
+          "form": "full",
+          "tokens": 10200
+        }
+      },
+      "last_seen": "2026-01-02T03:04:05Z",
+      "session_directory": "/home/dev/widgets",
+      "session_title": null,
+      "first_prompt": null,
+      "task": "list the widget files",
+      "agent_type": "general-purpose",
+      "tokens": 10200,
+      "activated_at": {}
+    },
+    {
+      "machine": "alpha",
+      "session_id": "session-1",
+      "agent": "main",
+      "active": [
+        "global",
+        "machine:alpha",
+        "rocketry",
+        "session:alpha/session-1",
+        "widgets"
+      ],
+      "delivered": {
+        "bench-power": {
+          "version": "b7d777772eb20b10a0c6aaa48992f8cbcc8cfcec",
+          "form": "full",
+          "tokens": 10000
+        },
+        "reading-list": {
+          "version": "b06b85cb47e9cfe6294dd1ffeacdadc2c0b9a304",
+          "form": "index",
+          "tokens": 10000
+        },
+        "rocket-stages": {
+          "version": "47d743eadadf62174df2445f2db4e1eb10bf325c",
+          "form": "index",
+          "tokens": 10400
+        },
+        "sessions/alpha/session-1/notes": {
+          "version": "4f07a35aae510e0383c81d074d0da5c66a3692a1",
+          "form": "index",
+          "tokens": 10000
+        },
+        "widget-naming": {
+          "version": "2f029fb857dbf27e9942eaebfc7c34f995ffa6de",
+          "form": "full",
+          "tokens": 10400
+        }
+      },
+      "parent": null,
+      "session_directory": "/home/dev/widgets",
+      "session_title": null,
+      "first_prompt": null,
+      "task": null,
+      "agent_type": null,
+      "tokens": 10400,
+      "activated_at": {},
+      "last_seen": "2026-01-02T03:04:05Z"
+    }
+  ]
+}

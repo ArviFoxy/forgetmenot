@@ -1655,6 +1655,75 @@ fn the_series_route_honours_the_window_and_the_two_filters_it_is_given() {
     );
 }
 
+/// Detects a statistics route that ignores `include_subagents`, which would
+/// leave the page's checkbox changing nothing, one that answers a subagent a
+/// row of its own, and one that reads a value it has no notion of as a default
+/// instead of refusing it, which would report a number nobody asked for.
+///
+/// Expectation source: the sequence below. A session start on `alpha/session-1`
+/// and a `SubagentStart` inside it are both answered with text, so the
+/// session's row carries more tokens when its subagents count than when they do
+/// not; the subagent's key is a row in neither, and the parameter left out is
+/// the same answer as `true`.
+#[test]
+fn the_sessions_route_takes_include_subagents_and_refuses_a_value_that_is_neither_true_nor_false() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    server.hook(
+        "alpha",
+        Some(10_000),
+        &common::hook_fixture("session_start"),
+    );
+    server.hook(
+        "alpha",
+        Some(10_000),
+        &common::hook_fixture("subagent_start"),
+    );
+
+    let rows = |query: &str| -> Value {
+        let (status, answer) = server.api("GET", &format!("/api/stats/sessions{query}"), None);
+        assert_eq!(
+            status, 200,
+            "the sessions must be readable at {query}, got {answer}"
+        );
+        answer
+    };
+    let one_session = |answer: &Value| -> Value {
+        let list = answer
+            .as_array()
+            .unwrap_or_else(|| panic!("the report is a list of rows: {answer}"));
+        assert_eq!(
+            list.iter()
+                .map(|row| row["session_key"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["alpha/session-1"],
+            "the one session of the sequence must be the one row, keyed by its main context, \
+             got {answer}"
+        );
+        list[0].clone()
+    };
+
+    let counted = one_session(&rows("?include_subagents=true"));
+    let alone = one_session(&rows("?include_subagents=false"));
+    let unasked = one_session(&rows(""));
+
+    assert!(
+        alone["tokens"].as_u64().unwrap_or(0) > 0
+            && counted["tokens"].as_u64().unwrap_or(0) > alone["tokens"].as_u64().unwrap_or(0),
+        "the subagent's text must count towards its session only when the subagents are \
+         included, got {counted} against {alone}"
+    );
+    assert_eq!(
+        unasked, counted,
+        "the parameter left out must be the answer the subagents are counted in"
+    );
+
+    let (status, refused) = server.api("GET", "/api/stats/sessions?include_subagents=maybe", None);
+    assert_eq!(
+        status, 400,
+        "a value this route has no notion of must be refused, got {refused}"
+    );
+}
+
 /// Detects a per-session series answered for a context the log has never seen,
 /// which would show the page an empty chart for a mistyped key instead of
 /// saying there is no such context, and one that drops either of the two

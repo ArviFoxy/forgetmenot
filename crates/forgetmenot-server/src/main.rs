@@ -42,7 +42,7 @@ enum Command {
     },
     /// Report what the statistics log holds: what was shown for each memory,
     /// what each trigger and scope did, stopped calls per day, hook latency and
-    /// delivered bytes per session.
+    /// delivered bytes per session, each session counting its subagents.
     Stats(StatsArgs),
 }
 
@@ -211,6 +211,9 @@ struct StatsArgs {
 /// scope right now and which scopes exist are state a running server holds, and
 /// this command reads a file. The figures are the raw character counts the log
 /// holds; the tables below turn them into tokens.
+///
+/// The sessions are one row per main context, each carrying what its subagents
+/// were delivered as well as its own, which is what [`Filter::all`] counts.
 #[derive(Serialize)]
 struct StatsReport {
     memories: Vec<MemoryStatsRow>,
@@ -406,7 +409,7 @@ fn print_report(report: &StatsReport) {
             .collect(),
     );
     print_table(
-        "sessions",
+        "sessions (each row a main context, its subagents counted with it)",
         &[
             "session_key",
             "bytes_full",

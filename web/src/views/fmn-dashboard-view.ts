@@ -167,7 +167,11 @@ export class FmnDashboardView extends PageElement {
   private reload(): void {
     const query = statsQueryOf(this.filter, new Date());
     this.window = query;
-    void this.summary.load(() => api.summaryStats());
+    // The summary's four windows are the route's own and the page narrows none
+    // of them; what it carries is the one answer every section has to share.
+    void this.summary.load(() =>
+      api.summaryStats({ include_subagents: query.include_subagents }),
+    );
     void this.series.load(() => api.seriesStats(query));
     void this.scopes.load(() => api.scopeStats(query));
     void this.memories.load(() => api.memoryStats(query));
@@ -418,22 +422,31 @@ export class FmnDashboardView extends PageElement {
       ${this.section(
         'sessions',
         'Sessions',
-        gate(
-          this.sessions.state,
-          (rows) => html`<fmn-data-table
-            class="stats-sessions"
-            .columns=${sessionColumns}
-            .sort=${sessionSort}
-            .rows=${rows}
-            .rowKey=${(row: SessionRow) => row.session_key}
-            .expand=${(row: SessionRow) =>
-              html`<fmn-session-series
-                .sessionKey=${row.session_key}
-                .window=${this.window}
-              ></fmn-session-series>`}
-            filterLabel="Filter sessions"
-          ></fmn-data-table>`,
-        ),
+        html`<div class="actions">
+            <sl-checkbox
+              size="small"
+              ?checked=${this.filter.includeSubagents}
+              @sl-change=${(event: Event) =>
+                this.show({ includeSubagents: (event.target as HTMLInputElement).checked })}
+              >Count subagents</sl-checkbox
+            >
+          </div>
+          ${gate(
+            this.sessions.state,
+            (rows) => html`<fmn-data-table
+              class="stats-sessions"
+              .columns=${sessionColumns}
+              .sort=${sessionSort}
+              .rows=${rows}
+              .rowKey=${(row: SessionRow) => row.session_key}
+              .expand=${(row: SessionRow) =>
+                html`<fmn-session-series
+                  .sessionKey=${row.session_key}
+                  .window=${this.window}
+                ></fmn-session-series>`}
+              filterLabel="Filter sessions"
+            ></fmn-data-table>`,
+          )}`,
       )}
       ${this.section('health', 'Hook health', this.renderHealth())}
     `;

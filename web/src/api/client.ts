@@ -128,8 +128,11 @@ export interface ApiClient {
   denyStats(): Promise<DenyDayRow[]>;
   latencyStats(): Promise<LatencyRow[]>;
   sessionStats(filter?: StatsQuery): Promise<SessionStatsRow[]>;
-  /** Delivered tokens and events over the last five minutes, hour, day and week. */
-  summaryStats(): Promise<Summary>;
+  /**
+   * Delivered tokens and events over the last five minutes, hour, day and week.
+   * The four windows are the route's own, so a window in the filter is not read.
+   */
+  summaryStats(filter?: StatsQuery): Promise<Summary>;
   /** Delivered tokens per bucket over the window, oldest bucket first. */
   seriesStats(filter?: StatsQuery, bucket?: SeriesBucket): Promise<Series>;
   /** Every hook event of one context, with its context size and its answer's tokens. */
@@ -272,7 +275,7 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     denyStats: () => read<DenyDayRow[]>('/api/stats/denies'),
     latencyStats: () => read<LatencyRow[]>('/api/stats/latency'),
     sessionStats: (filter) => read<SessionStatsRow[]>(`/api/stats/sessions${statsQuery(filter)}`),
-    summaryStats: () => read<Summary>('/api/stats/summary'),
+    summaryStats: (filter) => read<Summary>(`/api/stats/summary${statsQuery(filter)}`),
     seriesStats: (filter, bucket) =>
       read<Series>(`/api/stats/series${statsQuery(filter, { bucket: bucket ?? '' })}`),
     // The session and scope filters are the key's own by definition, so only the

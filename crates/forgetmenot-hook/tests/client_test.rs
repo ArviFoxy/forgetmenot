@@ -1074,6 +1074,10 @@ fn a_body_without_the_transcript_fields_still_reads_as_a_request() {
         request.task, None,
         "a body that names no task must read as no task"
     );
+    assert_eq!(
+        request.parent_agent_id, None,
+        "a body that names no spawning agent must read as none"
+    );
 }
 
 // Detects a first prompt taken from the harness's own turns: Claude Code writes
@@ -1149,16 +1153,54 @@ fn subagents_directory(directory: &Path, session: &str) -> std::path::PathBuf {
 /// only the one under test, so a client that sends the agent type or the model
 /// as the task is caught.
 fn write_subagent_meta(directory: &Path, agent_id: &str, description: &str) {
+    write_meta_file(
+        directory,
+        agent_id,
+        serde_json::json!({
+            "agentType": "general-purpose",
+            "description": description,
+            "toolUseId": "toolu_01DDDDDDDDDDDDDDDDDDDDDD",
+            "spawnDepth": 1,
+            "requestShape": "foreground",
+            "requestNonInteractive": true,
+            "model": "haiku",
+        }),
+    );
+}
+
+/// Write the metadata file Claude Code writes for a subagent that another
+/// subagent spawned: the same file with the spawning agent named in it, one
+/// level deeper.
+///
+/// Expectation source: the metadata files Claude Code 2.1.270 wrote on this
+/// machine, read 2026-09-22. A file at spawn depth 2 carries `parentAgentId`
+/// naming an agent whose own file sits in the same directory at depth 1, and a
+/// file at depth 1 carries no such key at all.
+fn write_nested_subagent_meta(
+    directory: &Path,
+    agent_id: &str,
+    description: &str,
+    parent_agent_id: &str,
+) {
+    write_meta_file(
+        directory,
+        agent_id,
+        serde_json::json!({
+            "agentType": "general-purpose",
+            "description": description,
+            "toolUseId": "toolu_01EEEEEEEEEEEEEEEEEEEEEE",
+            "parentAgentId": parent_agent_id,
+            "spawnDepth": 2,
+            "requestShape": "foreground",
+            "requestNonInteractive": true,
+            "model": "haiku",
+        }),
+    );
+}
+
+/// Write `meta` where Claude Code writes the metadata file of `agent_id`.
+fn write_meta_file(directory: &Path, agent_id: &str, meta: serde_json::Value) {
     std::fs::create_dir_all(directory).expect("the subagents directory must be creatable");
-    let meta = serde_json::json!({
-        "agentType": "general-purpose",
-        "description": description,
-        "toolUseId": "toolu_01DDDDDDDDDDDDDDDDDDDDDD",
-        "spawnDepth": 1,
-        "requestShape": "foreground",
-        "requestNonInteractive": true,
-        "model": "haiku",
-    });
     std::fs::write(
         directory.join(format!("agent-{agent_id}.meta.json")),
         serde_json::to_string(&meta).expect("the metadata serialises"),
@@ -1201,6 +1243,99 @@ fn client_sends_the_task_from_the_metadata_file_of_the_subagent_the_event_comes_
         request.task.as_deref(),
         Some(TASK),
         "the task must be the description of the metadata file of the event's own subagent"
+    );
+}
+
+// Detects a reader that finds only one of the two things the metadata file
+// says: the task and the agent that spawned the subagent are in one file and
+// are read in one pass, so a reader that keeps the task and drops the spawner
+// leaves the server unable to tell a nested subagent from a session's own.
+//
+// The file written here is the depth-2 one, which is the only kind that names
+// a spawning agent.
+#[test]
+fn the_metadata_reader_reports_the_task_and_the_spawning_agent_of_a_nested_subagent() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let subagents = subagents_directory(directory.path(), "session-1");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_nested_subagent_meta(&subagents, AGENT_ID, TASK, "agent-0001");
+
+    let meta = forgetmenot_hook::subagent_meta::read(&transcript, AGENT_ID);
+
+    assert_eq!(
+        meta.task.as_deref(),
+        Some(TASK),
+        "the task must be the description of the file"
+    );
+    assert_eq!(
+        meta.parent_agent_id.as_deref(),
+        Some("agent-0001"),
+        "the spawning agent must be the parentAgentId of the same file"
+    );
+}
+
+// Detects a reader that invents a task or a spawning agent out of a metadata
+// file that says neither: a subagent the session spawned has no parentAgentId,
+// and a reader that reported one would put it under an agent that does not
+// exist. Detects too a reader that fails on a file whose keys it does not find,
+// which runs on Claude Code's critical path.
+//
+// The file carries the keys that are not being read, so a reader that returns
+// some other field as the task or the spawner is caught rather than passing.
+#[test]
+fn the_metadata_reader_reports_neither_value_when_the_file_carries_neither() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let subagents = subagents_directory(directory.path(), "session-1");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_meta_file(
+        &subagents,
+        AGENT_ID,
+        serde_json::json!({
+            "agentType": "general-purpose",
+            "toolUseId": "toolu_01DDDDDDDDDDDDDDDDDDDDDD",
+            "spawnDepth": 1,
+            "model": "haiku",
+        }),
+    );
+
+    let meta = forgetmenot_hook::subagent_meta::read(&transcript, AGENT_ID);
+
+    assert_eq!(
+        meta.task, None,
+        "a file with no description says nothing about the task"
+    );
+    assert_eq!(
+        meta.parent_agent_id, None,
+        "a file with no parentAgentId is a subagent the session spawned"
+    );
+}
+
+// Detects a spawning agent that never leaves the client: a SubagentStart names
+// the session it arrived on and the subagent that started, and nothing else, so
+// a server that is not sent the spawner has no way to tell a subagent spawned
+// by a subagent from one the session spawned, and would give it the session's
+// scopes. Detects too a client that reports a spawner for a subagent the
+// session spawned, which would file it under an agent that never spawned it.
+#[test]
+fn client_sends_the_spawning_agent_of_a_nested_subagent_and_none_for_a_sessions_own() {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let transcript = directory.path().join("session-1.jsonl");
+    write_transcript_lines(&transcript, &[user_line(serde_json::json!("the prompt"))]);
+    let subagents = subagents_directory(directory.path(), "session-1");
+    write_subagent_meta(&subagents, "agent-0001", "read the wiring notes");
+    write_nested_subagent_meta(&subagents, AGENT_ID, TASK, "agent-0001");
+
+    let nested = post_one_event(&event_in_subagent(&transcript, AGENT_ID));
+    let spawned_by_the_session = post_one_event(&event_in_subagent(&transcript, "agent-0001"));
+
+    assert_eq!(
+        nested.parent_agent_id.as_deref(),
+        Some("agent-0001"),
+        "the agent named in the metadata file of the event's own subagent must reach the server"
+    );
+    assert_eq!(
+        spawned_by_the_session.parent_agent_id, None,
+        "a subagent whose metadata file names no agent was spawned by the session"
     );
 }
 
