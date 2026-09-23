@@ -1,4 +1,4 @@
-// Sizes as a reader of the page sees them.
+// Sizes and ages as a reader of the page sees them.
 
 // 1024-based units, the way a file manager counts them. Bytes are the unit below
 // the first of these.
@@ -49,4 +49,21 @@ export function formatTokens(tokens: number): string {
   const whole = Math.round(scaled);
   if (whole >= 1000 && unit + 1 < unitsAboveTokens.length) return `1.0${unitsAboveTokens[unit + 1]}`;
   return `${whole}${unitsAboveTokens[unit]}`;
+}
+
+const minute = 60_000;
+const hour = 60 * minute;
+const day = 24 * hour;
+
+/**
+ * How long before `now` the instant `iso` was, in the largest whole unit it
+ * fills: `just now` under a minute (and for an instant after `now`), then
+ * `N min` under an hour, `N h` under a day, and `N d` from there on.
+ */
+export function formatAgo(iso: string, now: Date): string {
+  const elapsed = now.getTime() - new Date(iso).getTime();
+  if (elapsed < minute) return 'just now';
+  if (elapsed < hour) return `${Math.floor(elapsed / minute)} min`;
+  if (elapsed < day) return `${Math.floor(elapsed / hour)} h`;
+  return `${Math.floor(elapsed / day)} d`;
 }

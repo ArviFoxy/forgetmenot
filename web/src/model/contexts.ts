@@ -5,6 +5,7 @@ import { html } from 'lit';
 import type { ContextRow } from '../api/types';
 import { paths } from '../routes';
 import type { TableColumn } from './stats';
+import { formatAgo } from './units';
 
 /** One context with the contexts spawned inside it, at any depth. */
 export interface ContextNode extends ContextRow {
@@ -24,6 +25,17 @@ function machineOf(key: string): string {
 function idOf(key: string): string {
   const slash = key.indexOf('/');
   return slash === -1 ? '' : key.slice(slash + 1);
+}
+
+/**
+ * The context's own id, which is the session id for a session and the agent id
+ * for a subagent, cut at its first `-`: the first block of a UUID, which is
+ * enough to tell the contexts of one page apart.
+ */
+function shortIdOf(key: string): string {
+  const own = key.slice(key.lastIndexOf('/') + 1);
+  const dash = own.indexOf('-');
+  return dash === -1 ? own : own.slice(0, dash);
 }
 
 /**
@@ -93,16 +105,21 @@ export function contextTree(rows: ContextRow[]): ContextNode[] {
 }
 
 /**
- * What the contexts table shows. On a narrow screen the row keeps what names it
- * and when it was last seen; the machine and the delivered count go first, then
- * the scopes and the id, which the row lists inside itself once opened.
+ * What the contexts table shows. Below 900 px the row keeps its name and when it
+ * was last seen, and the name carries a second line with the machine, the
+ * delivered count and the short id; from 900 px on, those and the scopes are
+ * columns of their own.
  */
 export const contextColumns: TableColumn<ContextNode>[] = [
   {
     id: 'name',
     header: 'Name',
     value: (row) => nameOf(row),
-    link: (row) => paths.contextPrompt(row.key),
+    cell: (row) => html`<a href=${paths.contextPrompt(row.key)}>${nameOf(row)}</a>
+      <div class="row-meta">
+        <span>${machineOf(row.key)}</span><span>${row.delivered_count} delivered</span
+        ><span title=${idOf(row.key)}>${shortIdOf(row.key)}</span>
+      </div>`,
     wraps: true,
   },
   {
@@ -118,9 +135,9 @@ export const contextColumns: TableColumn<ContextNode>[] = [
       )}</span
     >`,
     wraps: true,
-    priority: 2,
+    priority: 3,
   },
-  { id: 'id', header: 'Id', value: (row) => idOf(row.key), mono: true, priority: 2 },
+  { id: 'id', header: 'Id', value: (row) => idOf(row.key), mono: true, priority: 3 },
   { id: 'machine', header: 'Machine', value: (row) => machineOf(row.key), priority: 3 },
   {
     id: 'delivered',
@@ -129,5 +146,11 @@ export const contextColumns: TableColumn<ContextNode>[] = [
     numeric: true,
     priority: 3,
   },
-  { id: 'last-seen', header: 'Last seen', value: (row) => row.last_seen, moment: true },
+  {
+    id: 'last-seen',
+    header: 'Last seen',
+    value: (row) => row.last_seen,
+    cell: (row) => html`<span title=${row.last_seen}>${formatAgo(row.last_seen, new Date())}</span>`,
+    moment: true,
+  },
 ];

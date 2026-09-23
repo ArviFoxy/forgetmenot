@@ -26,6 +26,8 @@ html {
   --fmn-row-height: 1.9rem;
   /* The column of chevrons, which the sticky first column is offset by. */
   --fmn-expander-width: 1.8rem;
+  /* The chevron and the count beside it before the name of a row in a tree. */
+  --fmn-toggle-width: 2.6rem;
   /* How far one level of nesting moves the cell that names the row. */
   --fmn-nesting-step: 1.25rem;
 
@@ -1116,13 +1118,26 @@ table.data td.wrap {
   white-space: normal;
 }
 
-/* What a context row is read by is its name, so the name column keeps enough
-   width for a title to sit on a line or two while the scope chips wrap into
-   whatever is left: without a minimum, a row with many scopes squeezes the name
-   to a few characters a line. */
-.contexts-table table.data th.row-id,
-.contexts-table table.data td.row-id {
-  min-width: 22rem;
+/* What a context row is read by is its name, so where the scope chips are drawn
+   beside it the name column keeps enough width for a title to sit on a line or
+   two while the chips wrap into whatever is left: without a minimum, a row with
+   many scopes squeezes the name to a few characters a line. */
+@media (min-width: 900px) {
+  .contexts-table table.data th.row-id,
+  .contexts-table table.data td.row-id {
+    min-width: 22rem;
+  }
+
+  /* The columns hold the machine, the count and the id at this width. */
+  .contexts-table .row-meta {
+    display: none;
+  }
+}
+
+/* An age is a few characters whatever it says, so its column keeps one width and
+   the names beside it do not move as the clock runs. */
+.contexts-table table.data td.moment {
+  width: 5rem;
 }
 
 table.stats td,
@@ -1443,17 +1458,58 @@ table.data td.expander sl-icon-button::part(base) {
   padding: 0;
 }
 
-/* A closed row stands for the rows under it and says how many, so the column of
-   chevrons holds a number beside each one and the sticky first column, which is
-   offset by that width, moves with it. */
-table.data:has(.descendants) {
-  --fmn-expander-width: 3.2rem;
-}
-
 .descendants {
   color: var(--fmn-fg-muted);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* The name of a row in a tree, after its chevron and the count of the rows it
+   stands for. A row with nothing under it keeps the same room empty, so the
+   names of one depth start in one line. */
+table.data.nested td.row-id {
+  overflow-wrap: anywhere;
+}
+
+.row-name {
+  display: flex;
+  align-items: baseline;
+}
+
+/* The name of the column starts where the names under it start. */
+table.data.nested:has(.row-toggle) th.row-id button.sort {
+  margin-inline-start: var(--fmn-toggle-width);
+}
+
+.row-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  width: var(--fmn-toggle-width);
+  white-space: nowrap;
+}
+
+.row-toggle sl-icon-button::part(base) {
+  padding: 0 2px 0 0;
+}
+
+.row-label {
+  min-width: 0;
+}
+
+/* What else identifies the row, under its name. */
+.row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.4em;
+  color: var(--fmn-fg-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.row-meta span + span::before {
+  content: '·';
+  margin-inline-end: 0.4em;
 }
 
 table.data tr.data-row {
@@ -1548,30 +1604,36 @@ table.data table.data.sub {
     min-width: 100%;
   }
 
+  /* A tree keeps to the width of its box: its name column wraps and its other
+     columns are the few that fit. */
+  .table-wrap table.data.nested {
+    width: 100%;
+  }
+
   /* What names the row stays on screen while the figures scroll past it. */
-  table.data th.expander,
-  table.data td.expander,
-  table.data th.row-id,
-  table.data td.row-id {
+  table.data:not(.nested) th.expander,
+  table.data:not(.nested) td.expander,
+  table.data:not(.nested) th.row-id,
+  table.data:not(.nested) td.row-id {
     position: sticky;
     left: 0;
     z-index: 1;
   }
 
-  table.data:has(th.expander) th.row-id,
-  table.data:has(th.expander) td.row-id {
+  table.data:not(.nested):has(th.expander) th.row-id,
+  table.data:not(.nested):has(th.expander) td.row-id {
     left: var(--fmn-expander-width);
   }
 
   /* A sticky cell is drawn over the ones scrolling under it, so it carries the
      surface its row has. */
-  table.data td.expander,
-  table.data td.row-id {
+  table.data:not(.nested) td.expander,
+  table.data:not(.nested) td.row-id {
     background-color: var(--fmn-bg);
   }
 
-  table.data tbody tr:hover td.expander,
-  table.data tbody tr:hover td.row-id {
+  table.data:not(.nested) tbody tr:hover td.expander,
+  table.data:not(.nested) tbody tr:hover td.row-id {
     background-color: var(--fmn-raised);
   }
 

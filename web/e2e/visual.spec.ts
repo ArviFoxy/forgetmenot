@@ -79,6 +79,23 @@ async function checkNoOverflow(page: Page): Promise<void> {
   );
 }
 
+/**
+ * The contexts table is as wide as the box it is drawn in. Below 900 px it has two
+ * columns and a name that wraps, so a table that scrolls sideways there is a
+ * column or a word that does not give way.
+ */
+async function checkContextsFit(page: Page): Promise<void> {
+  await page.goto('/contexts');
+  await expect(page.locator('table.data')).toBeVisible();
+  await settle(page);
+  const box = await page
+    .locator('.contexts-table .table-wrap')
+    .evaluate((wrap) => ({ scrollWidth: wrap.scrollWidth, clientWidth: wrap.clientWidth }));
+  expect(box.scrollWidth, 'the contexts table scrolls sideways').toBeLessThanOrEqual(
+    box.clientWidth,
+  );
+}
+
 for (const size of sizes) {
   for (const scheme of ['light', 'dark'] as const) {
     test.describe(`${size.name} ${scheme}`, () => {
@@ -106,6 +123,12 @@ for (const size of sizes) {
         await checkContrast(page, ['.memory-index a', '.muted', 'table.data td code']);
         await checkNoOverflow(page);
       });
+
+      if (size.width < 900) {
+        test('the contexts table is wider than its box', async ({ page }) => {
+          await checkContextsFit(page);
+        });
+      }
 
       test('the type and the controls drift off the intended scale', async ({ page }) => {
         await page.goto('/memories/widget-naming');
@@ -396,6 +419,45 @@ for (const size of sizes.filter((each) => each.width <= 900)) {
       });
     });
   }
+}
+
+// The contexts table at a phone's width, closed and with its first session opened
+// onto the subagent under it.
+
+for (const scheme of ['light', 'dark'] as const) {
+  test.describe(`look phone ${scheme} contexts`, () => {
+    // The images were recorded in the container, against the store the global setup
+    // seeds: an outside server named by FORGETMENOT_URL is not that store, and a run
+    // outside the container is not that machine.
+    test.skip(
+      process.env.FORGETMENOT_URL !== undefined || process.env.FMN_SKIP_SCREENSHOTS !== undefined,
+      'the images belong to the container and its fixture store',
+    );
+    test.use({ viewport: { width: 390, height: 844 }, colorScheme: scheme });
+
+    test('the contexts on a phone look as reviewed', async ({ page }) => {
+      await page.goto('/contexts');
+      await expect(page.locator('table.data')).toBeVisible();
+      await settle(page);
+      await expect(page).toHaveScreenshot(`contexts-phone-${scheme}.png`, {
+        mask: clockValues(page),
+      });
+    });
+
+    test('an opened session on a phone looks as reviewed', async ({ page }) => {
+      await page.goto('/contexts');
+      const rows = page.locator('table.data tbody tr.data-row');
+      await expect(rows).toHaveCount(2);
+      await page.locator('td.row-id sl-icon-button').first().click();
+      await expect(rows).toHaveCount(3);
+      // Off the table, so the opened row is drawn as it is without the pointer on it.
+      await page.mouse.move(200, 800);
+      await settle(page);
+      await expect(page).toHaveScreenshot(`contexts-phone-open-${scheme}.png`, {
+        mask: clockValues(page),
+      });
+    });
+  });
 }
 
 test.describe('look phone drawer', () => {

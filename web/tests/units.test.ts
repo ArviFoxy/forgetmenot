@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { formatBytes, formatTokens } from '../src/model/units';
+import { formatAgo, formatBytes, formatTokens } from '../src/model/units';
 
 // The source of these expectations is the unit table decided in issue #12: 1024
 // per step, a plain byte count below 1024, one decimal above it, so 0 B, 1023 B,
@@ -57,4 +57,37 @@ test('a token count is divided by 1024 rather than 1000, or misses the step to t
 test('a token count that rounds to a thousand of a unit keeps the smaller unit', () => {
   expect(formatTokens(999500)).toBe('1.0M');
   expect(formatTokens(999500000)).toBe('1.0G');
+});
+
+// The source of these expectations is the form the contexts page shows an age in:
+// `just now` under a minute, then whole minutes, hours and days, each counted down
+// to the whole unit, so 59 s is `just now`, 60 s `1 min`, 59 min 59 s `59 min`,
+// one hour `1 h`, 23 h 59 min `23 h` and one day `1 d`.
+
+const now = new Date('2026-09-23T12:00:00Z');
+
+/** The instant `seconds` before `now`, as the server writes one. */
+function before(seconds: number): string {
+  return new Date(now.getTime() - seconds * 1000).toISOString();
+}
+
+test('an age is moved to the next unit before it fills it, or rounded up to it', () => {
+  expect(formatAgo(before(59), now)).toBe('just now');
+  expect(formatAgo(before(3599), now)).toBe('59 min');
+  expect(formatAgo(before(86_399), now)).toBe('23 h');
+});
+
+test('an age that fills a unit is still counted in the unit below', () => {
+  expect(formatAgo(before(60), now)).toBe('1 min');
+  expect(formatAgo(before(3600), now)).toBe('1 h');
+  expect(formatAgo(before(86_400), now)).toBe('1 d');
+  expect(formatAgo(before(3 * 86_400 + 3600), now)).toBe('3 d');
+});
+
+test('an instant after now reads as a negative age instead of just now', () => {
+  expect(formatAgo(before(-30), now)).toBe('just now');
+});
+
+test('an age in another time zone offset is read as a different instant', () => {
+  expect(formatAgo('2026-09-23T13:55:00+02:00', now)).toBe('5 min');
 });

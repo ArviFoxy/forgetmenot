@@ -241,6 +241,20 @@ window.matchMedia = ((media: string) => ({
   removeEventListener: () => undefined,
 })) as unknown as typeof window.matchMedia;
 
+/**
+ * Runs `body` with the window `width` pixels across, which is what a table
+ * chooses its columns by when it is put on the page.
+ */
+async function atWidth(width: number, body: () => Promise<void>): Promise<void> {
+  const before = window.innerWidth;
+  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true });
+  try {
+    await body();
+  } finally {
+    Object.defineProperty(window, 'innerWidth', { value: before, configurable: true });
+  }
+}
+
 /** Waits for the element and everything it loads to settle. */
 async function settle(element: HTMLElement & { updateComplete?: Promise<unknown> }): Promise<void> {
   for (let round = 0; round < 20; round += 1) {
@@ -525,7 +539,7 @@ test('a memory row has no way to the memory it names', async () => {
 /** The names the table draws, in the order it draws them. */
 function contextNames(): (string | undefined)[] {
   return [...document.querySelectorAll('table.data tbody tr.data-row')].map((row) =>
-    row.querySelector('td.row-id')?.textContent?.trim(),
+    row.querySelector('td.row-id a')?.textContent?.trim(),
   );
 }
 
@@ -537,7 +551,7 @@ test('the contexts table names its columns in another order, or lists a context 
   );
   expect(headers).toEqual(['Name', 'Scopes', 'Id', 'Machine', 'Delivered', 'Last seen']);
   const [row] = [...document.querySelectorAll('table.data tbody tr')];
-  expect(cellsOf(row)[0]).toBe(session.name);
+  expect(contextNames()).toEqual([session.name]);
   // The key is split over the two columns that carry its parts.
   expect(cellsOf(row)).toContain('session-1');
   expect(cellsOf(row)).toContain('alpha');
@@ -549,7 +563,7 @@ test('a session is drawn open, so its subagents are rows of the table before any
   await renderContexts([subagent, session]);
 
   expect(contextNames()).toEqual([session.name]);
-  expect(document.querySelector('td.expander .descendants')?.textContent?.trim()).toBe('1');
+  expect(document.querySelector('td.row-id .descendants')?.textContent?.trim()).toBe('1');
 });
 
 test('a filter naming a subagent answers nothing, because the session it runs in does not match', async () => {
@@ -572,13 +586,80 @@ test('a filter naming a subagent answers nothing, because the session it runs in
 test('an opened session leaves its subagent level with it, or does not show it at all', async () => {
   const page = await renderContexts([subagent, session]);
 
-  (document.querySelector('td.expander sl-icon-button') as HTMLElement).click();
+  (document.querySelector('td.row-id sl-icon-button') as HTMLElement).click();
   await settle(page);
 
   expect(contextNames()).toEqual([session.name, subagent.name]);
   const cells = [...document.querySelectorAll('table.data tbody tr.data-row td.row-id')];
   expect(cells[0]?.getAttribute('style')).toBeNull();
   expect(cells[1]?.getAttribute('style')).toContain('padding-inline-start');
+});
+
+// The source of these expectations is the decision about the contexts table on a
+// phone: below 900 px it has the columns Name and Last seen, the chevron of a row
+// opens the rows under it and nothing else, and the name carries a second line
+// with the machine, the delivered count and the id cut at its first dash, whose
+// title is the whole id. A table whose rows do not nest, which is every table of
+// the dashboard, still opens a row into the panel of what the width left out.
+
+test('the contexts table on a phone draws columns that push Last seen off the screen', async () => {
+  await atWidth(390, async () => {
+    await renderContexts([session]);
+
+    const headers = [...document.querySelectorAll('table.data thead th')].map((cell) =>
+      cell.textContent?.trim(),
+    );
+    expect(headers).toEqual(['Name', 'Last seen']);
+  });
+});
+
+test('the chevron of a session on a phone opens a details panel along with its subagents', async () => {
+  await atWidth(390, async () => {
+    const page = await renderContexts([subagent, session]);
+
+    (document.querySelector('td.row-id sl-icon-button') as HTMLElement).click();
+    await settle(page);
+
+    expect(contextNames()).toEqual([session.name, subagent.name]);
+    expect(document.querySelector('table.data tr.sub-row')).toBeNull();
+    expect(document.querySelector('.hidden-cells')).toBeNull();
+  });
+});
+
+test('the chevron of a dashboard row on a phone no longer opens what the width left out', async () => {
+  await atWidth(390, async () => {
+    const element = await renderDashboard();
+    const memories = element.querySelector('.stats-memories');
+
+    (memories?.querySelector('tr.data-row td.expander sl-icon-button') as HTMLElement).click();
+    await settle(element);
+
+    const listed = [...(memories?.querySelectorAll('tr.sub-row .hidden-cells dt') ?? [])].map(
+      (term) => term.textContent?.trim(),
+    );
+    expect(listed).toContain('Fetched');
+  });
+});
+
+test('a context row leaves out its machine, its delivered count or its short id', async () => {
+  const uuid = '9cda0955-0e8a-52ac-85cb-d0ae9d00c517';
+  await renderContexts([context({ key: `alpha/${uuid}`, name: 'Wire the rig', delivered_count: 7 })]);
+
+  const meta = document.querySelector('td.row-id .row-meta');
+  const parts = [...(meta?.querySelectorAll('span') ?? [])].map((part) => part.textContent?.trim());
+  expect(parts).toContain('alpha');
+  expect(parts.some((part) => part?.includes('7'))).toBe(true);
+  const id = meta?.querySelector('[title]');
+  expect(id?.textContent?.trim()).toBe('9cda0955');
+  expect(id?.getAttribute('title')).toBe(uuid);
+});
+
+test('the last-seen cell hides the moment it abbreviates', async () => {
+  await renderContexts([session]);
+
+  expect(document.querySelector('td.moment [title]')?.getAttribute('title')).toBe(
+    session.last_seen,
+  );
 });
 
 // The source of these two expectations is this ticket: the prompt page shows the

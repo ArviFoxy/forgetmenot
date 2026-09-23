@@ -65,11 +65,14 @@ function descendantCount(row: NestedRow): number {
  * itself, and a click anywhere else on a row is reported as `fmn-row-click`.
  *
  * A column is drawn while the viewport is wide enough for its priority; the
- * narrower the screen, the fewer columns, and an open row lists what the width
- * left out, so every figure is reachable at every size.
+ * narrower the screen, the fewer columns.
  *
- * Every row starts closed, so a row with rows under it reads as one row and the
- * number it stands for until it is opened.
+ * A table whose rows do not nest opens a row into a panel below it, which lists
+ * what the width left out and what `expand` draws. A table given `subRows` is a
+ * tree: its chevron sits in the cell that names the row and opens the rows under
+ * it and nothing else, and it has no panel, so its columns say themselves what a
+ * narrow screen keeps of a row. Every row starts closed, so a row with rows
+ * under it reads as one row and the number it stands for until it is opened.
  */
 export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
   static override properties: PropertyDeclarations = {
@@ -82,7 +85,8 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
     empty: { type: String },
     filterLabel: { type: String },
     filterText: { state: true },
-    open: { state: true },
+    detailOpen: { state: true },
+    childrenOpen: { state: true },
     width: { state: true },
   };
 
@@ -92,7 +96,7 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
   rowKey: (row: Row) => string = (row) => JSON.stringify(row);
   /** The rows nested under one row, at any depth; null when rows do not nest. */
   subRows: ((row: Row) => Row[]) | null = null;
-  /** What an open row shows below itself; null when rows do not open. */
+  /** What an open row shows below itself, in a table whose rows do not nest. */
   expand: ((row: Row) => TemplateResult) | null = null;
   /** What the table is sorted by until a header is clicked; unsorted when null. */
   sort: TableSort | null = null;
@@ -100,14 +104,15 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
   filterLabel = 'Filter';
 
   private filterText = '';
-  private open = new Set<string>();
+  /** The keys of the rows whose panel is open, in a table whose rows do not nest. */
+  private detailOpen = new Set<string>();
   /**
-   * The same keys as `open`, in the shape TanStack reads them. It is kept rather
-   * than built in `render`, because the table compares the state it is given
-   * against the state it holds by identity and a fresh object every render is a
-   * change every render.
+   * The keys of the rows whose children are drawn, in a tree, in the shape
+   * TanStack reads as its expanded state. It is replaced rather than changed in
+   * place, because the table compares the state it is given against the state it
+   * holds by identity.
    */
-  private openRows: Record<string, boolean> = {};
+  private childrenOpen: Record<string, boolean> = {};
   /** The viewport width the columns are chosen against. */
   private width = window.innerWidth;
   private stopListening: (() => void)[] = [];
@@ -157,12 +162,30 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
     return this.definitions;
   }
 
-  private toggle(key: string): void {
-    const open = new Set(this.open);
+  private toggleDetail(key: string): void {
+    const open = new Set(this.detailOpen);
     if (open.has(key)) open.delete(key);
     else open.add(key);
-    this.open = open;
-    this.openRows = Object.fromEntries([...open].map((each) => [each, true]));
+    this.detailOpen = open;
+  }
+
+  private toggleChildren(key: string): void {
+    const { [key]: wasOpen, ...rest } = this.childrenOpen;
+    this.childrenOpen = wasOpen === true ? rest : { ...rest, [key]: true };
+  }
+
+  /** The chevron of one row and, for a row with rows under it, how many there are. */
+  private renderChevron(
+    open: boolean,
+    below: number,
+    toggle: () => void,
+  ): TemplateResult {
+    return html`<sl-icon-button
+        name=${open ? 'chevron-down' : 'chevron-right'}
+        label=${open ? 'Collapse' : 'Expand'}
+        @click=${toggle}
+      ></sl-icon-button
+      >${below === 0 ? nothing : html`<span class="descendants">${below}</span>`}`;
   }
 
   /**
@@ -201,18 +224,21 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
   }
 
   /**
-   * One cell. `first` marks the cell that names the row, which stays in place
-   * while a narrow screen scrolls the rest of the row past it and which carries
-   * the indent of the row's depth.
+   * One cell. `first` marks the cell that names the row, which in a table whose
+   * rows do not nest stays in place while a narrow screen scrolls the rest of the
+   * row past it, and which carries the indent of the row's depth. `toggle` is
+   * what a tree draws before the name: the row's chevron, or the room one takes.
    */
   private renderCell(
     column: TableColumn<Row>,
     row: Row,
     first: boolean,
     depth: number,
+    toggle: TemplateResult | typeof nothing = nothing,
   ): TemplateResult {
-    const content = this.renderValue(column, row);
+    const value = this.renderValue(column, row);
     const target = column.link?.(row) ?? null;
+    const linked = target === null ? value : html`<a href=${target}>${value}</a>`;
     const classes = [
       column.numeric === true ? 'number' : '',
       column.moment === true ? 'moment nowrap' : '',
@@ -227,11 +253,17 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
         ? `padding-inline-start: calc(var(--sl-spacing-x-small) + ${depth} * var(--fmn-nesting-step))`
         : nothing}
     >
-      ${target === null ? content : html`<a href=${target}>${content}</a>`}
+      ${toggle === nothing
+        ? linked
+        : html`<div class="row-name">
+            <span class="row-toggle">${toggle}</span>
+            <div class="row-label">${linked}</div>
+          </div>`}
     </td>`;
   }
 
   override render(): TemplateResult {
+    const tree = this.subRows !== null;
     const table = this.controller.table({
       features,
       columns: this.tanstackColumns(),
@@ -251,7 +283,7 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
       // on screen rather than behind a row that happens to be closed.
       state: {
         globalFilter: this.filterText,
-        expanded: this.filterText === '' ? this.openRows : true,
+        expanded: this.filterText === '' ? this.childrenOpen : true,
       },
       globalFilterFn: 'includesString' as const,
       onGlobalFilterChange: () => undefined,
@@ -263,12 +295,12 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
     const shown = table.getRowModel().rows;
     const columns = visibleColumns(this.columns, this.width);
     const hidden = hiddenColumns(this.columns, this.width);
-    // A row opens for what it holds as well as for what it leads to, so a table
-    // whose columns do not all fit still opens.
-    const opensDetail = this.expand !== null || hidden.length > 0;
-    const nests = shown.some((modelRow) => modelRow.subRows.length > 0);
-    const opens = opensDetail || nests;
-    const width = columns.length + (opens ? 1 : 0);
+    // A row of a flat table opens for what it holds as well as for what it leads
+    // to, so a table whose columns do not all fit still opens. A tree opens rows
+    // only onto the rows under them.
+    const opensDetail = !tree && (this.expand !== null || hidden.length > 0);
+    const nests = tree && shown.some((modelRow) => modelRow.subRows.length > 0);
+    const width = columns.length + (opensDetail ? 1 : 0);
     const headers = (table.getHeaderGroups()[0]?.headers ?? []).filter((header) =>
       columns.some((column) => column.id === header.column.id),
     );
@@ -285,10 +317,10 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
         ></sl-input>
       </div>
       <div class="table-wrap">
-        <table class="data stats">
+        <table class=${tree ? 'data stats nested' : 'data stats'}>
           <thead>
             <tr>
-              ${opens ? html`<th scope="col" class="expander"></th>` : nothing}
+              ${opensDetail ? html`<th scope="col" class="expander"></th>` : nothing}
               ${headers.map((header, index) => {
                 const sorted = header.column.getIsSorted();
                 const numeric =
@@ -330,31 +362,31 @@ export class FmnDataTable<Row extends DataRow = DataRow> extends PageElement {
               : shown.map((modelRow) => {
                   const row = modelRow.original;
                   const key = this.rowKey(row);
-                  const isOpen = this.open.has(key);
                   const below = descendantCount(modelRow);
+                  const detailOpen = opensDetail && this.detailOpen.has(key);
+                  const toggle = !nests
+                    ? nothing
+                    : below === 0
+                      ? html``
+                      : this.renderChevron(modelRow.getIsExpanded(), below, () =>
+                          this.toggleChildren(key),
+                        );
                   return html`<tr
                       class="data-row"
                       @click=${(event: MouseEvent) => this.clicked(event, row)}
                     >
-                      ${opens
+                      ${opensDetail
                         ? html`<td class="expander">
-                            ${opensDetail || below > 0
-                              ? html`<sl-icon-button
-                                    name=${isOpen ? 'chevron-down' : 'chevron-right'}
-                                    label=${isOpen ? 'Collapse' : 'Expand'}
-                                    @click=${() => this.toggle(key)}
-                                  ></sl-icon-button>
-                                  ${below === 0
-                                    ? nothing
-                                    : html`<span class="descendants">${below}</span>`}`
-                              : nothing}
+                            ${this.renderChevron(detailOpen, 0, () => this.toggleDetail(key))}
                           </td>`
                         : nothing}
                       ${columns.map((column, index) =>
-                        this.renderCell(column, row, index === 0, modelRow.depth),
+                        index === 0
+                          ? this.renderCell(column, row, true, modelRow.depth, toggle)
+                          : this.renderCell(column, row, false, modelRow.depth),
                       )}
                     </tr>
-                    ${isOpen && opensDetail
+                    ${detailOpen
                       ? html`<tr class="sub-row">
                           <td colspan=${width}>
                             ${this.renderHiddenCells(hidden, row)}${this.expand?.(row) ?? nothing}
