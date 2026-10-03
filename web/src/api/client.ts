@@ -54,17 +54,17 @@ export class RequestFailed extends Error {
   }
 }
 
-/** A write was attempted without a commit message; no request is sent. */
-export class MissingCommitMessage extends Error {
+/** A write was attempted without a commit title; no request is sent. */
+export class MissingCommitTitle extends Error {
   constructor(readonly target: string) {
-    super(`write to ${target} needs a commit message`);
-    this.name = 'MissingCommitMessage';
+    super(`write to ${target} needs a commit title`);
+    this.name = 'MissingCommitTitle';
   }
 }
 
-function requireMessage(target: string, message: unknown): void {
-  if (typeof message !== 'string' || message.trim() === '') {
-    throw new MissingCommitMessage(target);
+function requireCommitTitle(target: string, title: unknown): void {
+  if (typeof title !== 'string' || title.trim() === '') {
+    throw new MissingCommitTitle(target);
   }
 }
 
@@ -187,15 +187,15 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     memory: (id) => read<MemoryDoc>(`/api/memories/${encodedPath(id)}`),
 
     putMemory(id, request) {
-      requireMessage(`memory ${id}`, request.message);
+      requireCommitTitle(`memory ${id}`, request.commit_title);
       return write<MemoryDoc>('PUT', `/api/memories/${encodedPath(id)}`, request);
     },
     createMemory(request) {
-      requireMessage(`memory ${request.id}`, request.message);
+      requireCommitTitle(`memory ${request.id}`, request.commit_title);
       return write<MemoryDoc>('POST', '/api/memories', request);
     },
     deleteMemory(id, request) {
-      requireMessage(`deletion of memory ${id}`, request.message);
+      requireCommitTitle(`deletion of memory ${id}`, request.commit_title);
       return write<MemoryDoc, DeleteResponse>('DELETE', `/api/memories/${encodedPath(id)}`, request);
     },
 
@@ -207,16 +207,16 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     scope: (id) => read<ScopeDoc>(`/api/scopes/${encodeURIComponent(id)}`),
 
     putScope(id, request) {
-      requireMessage(`scope ${id}`, request.message);
+      requireCommitTitle(`scope ${id}`, request.commit_title);
       return write<ScopeDoc>('PUT', `/api/scopes/${encodeURIComponent(id)}`, request);
     },
     createScope(request) {
-      requireMessage(`scope ${request.id}`, request.message);
+      requireCommitTitle(`scope ${request.id}`, request.commit_title);
       return write<ScopeDoc>('POST', '/api/scopes', request);
     },
 
     deleteScope(id, request) {
-      requireMessage(`deletion of scope ${id}`, request.message);
+      requireCommitTitle(`deletion of scope ${id}`, request.commit_title);
       return write<ScopeDoc, DeleteResponse>('DELETE', `/api/scopes/${encodeURIComponent(id)}`, request);
     },
 
@@ -261,7 +261,7 @@ export function createApiClient(baseUrl = '', fetchImpl: typeof fetch = fetch): 
     settings: () => read<SettingsDoc>('/api/settings'),
 
     putSetting(key, request) {
-      requireMessage(`the setting ${key}`, request.message);
+      requireCommitTitle(`the setting ${key}`, request.commit_title);
       return write<SettingsDoc>('PUT', `/api/settings/${encodeURIComponent(key)}`, request);
     },
 

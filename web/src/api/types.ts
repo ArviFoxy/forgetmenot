@@ -45,6 +45,16 @@ export interface Commit {
   time: string;
   author: string;
   title: string;
+  /** The rest of the commit message, with the server's own `key: value` lines last; empty when there is none. */
+  body: string;
+}
+
+/** What a write names the commit it makes by. */
+export interface CommitMessage {
+  /** One line of at most 72 characters. */
+  commit_title: string;
+  /** The rest of the message, any number of lines; blank or absent when there is none. */
+  commit_body?: string;
 }
 
 // `title` is the body's first level-1 heading, else the name; the server derives it and
@@ -117,11 +127,10 @@ export interface SettingsDoc {
 }
 
 /** A change to one setting, which is one commit. */
-export interface SettingsWriteRequest {
+export interface SettingsWriteRequest extends CommitMessage {
   value: SettingValue;
   base_version?: string;
   author: string;
-  message: string;
 }
 
 /** When a scope turns itself off in a context. */
@@ -377,7 +386,7 @@ export interface MemoryIndexFilter {
   kind?: MemoryKind;
 }
 
-export interface WriteRequest {
+export interface WriteRequest extends CommitMessage {
   description: string;
   kind: MemoryKind;
   scope: string;
@@ -390,29 +399,26 @@ export interface WriteRequest {
   body: string;
   base_version?: string;
   author: string;
-  message: string;
 }
 
 /** Creation needs the id of the new memory, which is its path under memories/. */
 export type MemoryCreateRequest = WriteRequest & { id: string };
 
 /** A memory is deleted rather than archived: the git history is the archive. */
-export interface DeleteRequest {
+export interface DeleteRequest extends CommitMessage {
   base_version: string;
   author: string;
-  message: string;
 }
 
-export interface ScopeWriteRequest {
+export interface ScopeWriteRequest extends CommitMessage {
   implies: string[];
   triggers: Trigger[];
-  /** The scope's own message, apart from `message`, which is the commit title. */
-  scope_message: string | null;
+  /** The text the scope delivers whenever it is active; null when it delivers none. */
+  message: string | null;
   /** When the scope turns itself off; null when it stays on until the agent turns it off. */
   forget: Forget | null;
   base_version?: string;
   author: string;
-  message: string;
 }
 
 /** Creation needs the id of the new scope. */

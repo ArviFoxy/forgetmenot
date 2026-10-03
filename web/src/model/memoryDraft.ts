@@ -15,7 +15,9 @@ export interface MemoryDraft {
   source: MemorySource;
   /** The markdown the editor holds, once the reader has edited it. */
   editedBody: string | null;
-  message: string;
+  /** The title line and the rest of the message of the commit a save makes. */
+  commitTitle: string;
+  commitBody: string;
   saving: boolean;
   errors: ValidationError[];
   conflict: MemoryDoc | null;
@@ -31,7 +33,8 @@ export function draftOf(doc: MemoryDoc): MemoryDraft {
     scope: doc.scope,
     source: doc.source,
     editedBody: null,
-    message: '',
+    commitTitle: '',
+    commitBody: '',
     saving: false,
     errors: [],
     conflict: null,

@@ -235,7 +235,7 @@ fn a_memory_written_through_mcp_is_authored_by_the_calling_session_and_answers_w
             "scope": "global",
             "source": "assistant",
             "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
-            "message": "record the bracket torque"
+            "commit_title": "record the bracket torque"
         }),
     );
 
@@ -278,6 +278,52 @@ fn a_memory_written_through_mcp_is_authored_by_the_calling_session_and_answers_w
         ),
         (json!("critical"), Some(true)),
         "the document must read back with the kind and the body that were written, got {document}"
+    );
+}
+
+/// Detects a `commit_body` that does not reach the commit, that is cut at its
+/// first blank line or folded onto one line, or that ends up after the server's
+/// own lines instead of before them: the model gives its reasons there, and
+/// `memory_history` is where it and every later session read them back.
+/// Expectation source: the commit body contract, where the body is the
+/// writer's text, trimmed, then a blank line and the server's `memory:` and
+/// `author:` lines.
+#[test]
+fn a_commit_body_written_through_mcp_reads_back_word_for_word_in_the_memory_history() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-7";
+    let commit_body = "The torque came from the bracket maker's sheet.\n\n\
+                       Two passes keep the bracket from warping:\n- first pass at 5 Nm\n- second at 9 Nm";
+
+    let written = session.call(
+        "memory_put",
+        json!({
+            "session_key": session_key,
+            "id": "bracket-torque",
+            "description": "Bracket bolts are torqued to 9 Nm, in two passes",
+            "kind": "critical",
+            "scope": "global",
+            "source": "assistant",
+            "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
+            "commit_title": "record the bracket torque",
+            "commit_body": format!("\n{commit_body}\n\n"),
+        }),
+    );
+    assert_ne!(
+        written.is_error,
+        Some(true),
+        "the write must be answered as done, got {}",
+        tool_text(&written)
+    );
+
+    let history = tool_json(&session.call("memory_history", json!({ "id": "bracket-torque" })));
+    assert_eq!(
+        history[0]["body"],
+        json!(format!(
+            "{commit_body}\n\nmemory: bracket-torque\nauthor: {session_key}"
+        )),
+        "the commit's body must be the body sent, trimmed, then the server's lines, got {history}"
     );
 }
 
@@ -381,7 +427,7 @@ fn a_scope_created_through_mcp_fires_at_the_next_matching_prompt_and_delivers_it
             "id": NEW_SCOPE,
             "implies": [],
             "triggers": [{ "on": "user_message", "pattern": "\\blathe\\b" }],
-            "message_title": "add a scope for the lathe",
+            "commit_title": "add a scope for the lathe",
         }),
     );
     assert_ne!(
@@ -400,7 +446,7 @@ fn a_scope_created_through_mcp_fires_at_the_next_matching_prompt_and_delivers_it
             "scope": NEW_SCOPE,
             "source": "assistant",
             "body": format!("# Chuck key\n\n{LATHE_RULE}.\n"),
-            "message": "record what happens to the chuck key",
+            "commit_title": "record what happens to the chuck key",
         }),
     );
     assert_ne!(
@@ -456,7 +502,7 @@ fn creating_a_scope_at_an_id_that_has_a_file_is_refused_and_names_the_version_th
             "id": "widgets",
             "implies": [],
             "triggers": [],
-            "message_title": "take the widgets scope over",
+            "commit_title": "take the widgets scope over",
         }),
     );
 
@@ -499,7 +545,7 @@ fn updating_a_scope_from_a_version_that_is_no_longer_current_is_refused_with_the
             "implies": [],
             "triggers": [{ "on": "user_message", "pattern": "\\bwidget\\b" }],
             "base_version": stale,
-            "message_title": "match widgets in prompts only",
+            "commit_title": "match widgets in prompts only",
         }),
     );
     assert_ne!(
@@ -518,7 +564,7 @@ fn updating_a_scope_from_a_version_that_is_no_longer_current_is_refused_with_the
             "implies": ["rocketry"],
             "triggers": [],
             "base_version": stale,
-            "message_title": "drop the widget triggers",
+            "commit_title": "drop the widget triggers",
         }),
     );
 
@@ -563,7 +609,7 @@ fn a_scope_whose_trigger_pattern_does_not_compile_is_refused_naming_the_file_and
             "id": NEW_SCOPE,
             "implies": [],
             "triggers": [{ "on": "user_message", "pattern": "(lathe" }],
-            "message_title": "add a scope for the lathe",
+            "commit_title": "add a scope for the lathe",
         }),
     );
 
@@ -606,7 +652,7 @@ fn deleting_a_scope_a_memory_is_in_is_refused_naming_that_memory() {
         json!({
             "session_key": "alpha/session-7",
             "id": "widgets",
-            "message_title": "drop the widgets scope",
+            "commit_title": "drop the widgets scope",
         }),
     );
 
@@ -648,7 +694,7 @@ fn deleting_a_scope_nothing_names_removes_it_and_the_index_stops_listing_it() {
         json!({
             "session_key": "alpha/session-7",
             "id": "workshop",
-            "message_title": "drop the workshop scope, nothing is in it",
+            "commit_title": "drop the workshop scope, nothing is in it",
         }),
     );
 
@@ -714,7 +760,7 @@ fn a_scope_written_on_a_branch_is_invisible_until_the_branch_lands() {
             "id": NEW_SCOPE,
             "implies": [],
             "triggers": [{ "on": "user_message", "pattern": "\\blathe\\b" }],
-            "message_title": "add a scope for the lathe",
+            "commit_title": "add a scope for the lathe",
             "branch": branch,
         }),
     );
@@ -734,7 +780,7 @@ fn a_scope_written_on_a_branch_is_invisible_until_the_branch_lands() {
         json!({
             "session_key": session_key,
             "branch": branch,
-            "message": "add a scope for the lathe",
+            "commit_title": "add a scope for the lathe",
         }),
     );
     assert_ne!(
@@ -857,16 +903,16 @@ fn a_refused_operation_is_an_error_result_whose_text_names_what_the_call_got_wro
             "bench-power-notes",
         ),
         (
-            "a commit message the history cannot show",
+            "a commit title the history cannot show",
             "memory_replace_text",
             json!({
                 "session_key": "alpha/session-7",
                 "id": "bench-power",
                 "old_string": "at the wall",
                 "new_string": "at the wall switch",
-                "message": "   "
+                "commit_title": "   "
             }),
-            "message",
+            "commit title",
         ),
         (
             "an id that is no scope of this store",
@@ -948,7 +994,7 @@ fn a_conflicting_land_through_mcp_reports_the_file_and_both_texts_as_text() {
             "id": "bench-power",
             "old_string": "reads zero",
             "new_string": "reads zero volts",
-            "message": "say what the meter reads",
+            "commit_title": "say what the meter reads",
             "branch": branch,
         }),
     );
@@ -959,7 +1005,7 @@ fn a_conflicting_land_through_mcp_reports_the_file_and_both_texts_as_text() {
             "id": "bench-power",
             "old_string": "reads zero",
             "new_string": "reads nothing at all",
-            "message": "say what the meter reads on main",
+            "commit_title": "say what the meter reads on main",
         }),
     );
     assert_ne!(
@@ -974,7 +1020,7 @@ fn a_conflicting_land_through_mcp_reports_the_file_and_both_texts_as_text() {
         json!({
             "session_key": session_key,
             "branch": branch,
-            "message": "say what the meter reads",
+            "commit_title": "say what the meter reads",
         }),
     );
 

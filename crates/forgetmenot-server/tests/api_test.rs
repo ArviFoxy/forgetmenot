@@ -64,7 +64,7 @@ fn write_of(document: &Value, body: &str, message: &str) -> Value {
         "body": body,
         "base_version": document["version"],
         "author": AUTHOR,
-        "message": message,
+        "commit_title": message,
     })
 }
 
@@ -159,7 +159,7 @@ fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_it
             "source": "user",
             "body": "# Bracket tolerances\n\nReam the holes after welding.\n",
             "author": AUTHOR,
-            "message": "record the bracket tolerance",
+            "commit_title": "record the bracket tolerance",
         })),
     );
 
@@ -234,7 +234,7 @@ fn setting_one_field_answers_200_and_a_path_naming_no_action_is_reported_as_miss
         Some(&json!({
             "description": "Cut bench power at the wall and prove the rail reads zero",
             "author": AUTHOR,
-            "message": "sharpen the bench power description",
+            "commit_title": "sharpen the bench power description",
         })),
     );
 
@@ -256,7 +256,7 @@ fn setting_one_field_answers_200_and_a_path_naming_no_action_is_reported_as_miss
     let (status, answer) = server.api(
         "POST",
         "/api/memories/bench-power/sharpen",
-        Some(&json!({ "author": AUTHOR, "message": "m" })),
+        Some(&json!({ "author": AUTHOR, "commit_title": "m" })),
     );
     assert_eq!(
         status, 404,
@@ -277,7 +277,7 @@ fn deleting_a_memory_answers_200_with_the_commit_and_the_memory_is_then_missing(
         Some(&json!({
             "base_version": document(&server, "bench-power")["version"],
             "author": AUTHOR,
-            "message": "the bench was taken out of the workshop",
+            "commit_title": "the bench was taken out of the workshop",
         })),
     );
 
@@ -471,11 +471,11 @@ fn writing_a_scope_answers_200_and_it_reads_back_through_the_scope_and_the_index
         Some(&json!({
             "implies": read["implies"],
             "triggers": triggers,
-            "scope_message": message,
+            "message": message,
             "forget": { "tokens_since_trigger": 50000 },
             "base_version": read["version"],
             "author": AUTHOR,
-            "message": "restrict the widgets trigger and give the scope a message",
+            "commit_title": "restrict the widgets trigger and give the scope a message",
         })),
     );
 
@@ -529,7 +529,7 @@ fn deleting_a_scope_answers_200_with_the_commit_and_the_scope_is_then_missing() 
         Some(&json!({
             "base_version": scope(&server, "workshop")["version"],
             "author": AUTHOR,
-            "message": "the workshop directory moved off this machine",
+            "commit_title": "the workshop directory moved off this machine",
         })),
     );
 
@@ -622,7 +622,7 @@ fn writing_a_setting_answers_200_with_the_version_the_next_write_sends_back() {
         Some(&json!({
             "value": 150_000,
             "author": AUTHOR,
-            "message": "remind the agent of the rules every 150k tokens",
+            "commit_title": "remind the agent of the rules every 150k tokens",
         })),
     );
 
@@ -1107,7 +1107,7 @@ fn a_missing_resource_is_404_and_a_request_the_api_refuses_outright_is_400_each_
         Some(&json!({
             "base_version": before,
             "author": AUTHOR,
-            "message": "remove the global scope",
+            "commit_title": "remove the global scope",
         })),
     );
     assert_eq!(
@@ -1236,7 +1236,7 @@ fn sixteen_concurrent_writes_to_different_memories_all_land_in_one_line_of_histo
                             "body": format!("# note-{index:02}\n\ntext from writer {index}\n"),
                             "base_version": base_version,
                             "author": AUTHOR,
-                            "message": format!("rewrite note {index:02}"),
+                            "commit_title": format!("rewrite note {index:02}"),
                         })),
                     );
                     (index, status)
@@ -1306,7 +1306,7 @@ fn concurrent_writes_to_one_memory_from_one_version_admit_exactly_one() {
                             "body": format!("# Where the workshop references live\n\ntext from writer {index}\n"),
                             "base_version": base_version,
                             "author": AUTHOR,
-                            "message": format!("rewrite the reading list as writer {index}"),
+                            "commit_title": format!("rewrite the reading list as writer {index}"),
                         })),
                     );
                     (index, status)
@@ -1828,7 +1828,7 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
             "implies": [],
             "triggers": [],
             "author": AUTHOR,
-            "message": "add the sandbox scope",
+            "commit_title": "add the sandbox scope",
         })),
     );
     assert_eq!(status, 200, "the scope must be created, got {answer}");
@@ -1843,7 +1843,7 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
             "source": "user",
             "body": "# The sandbox is temporary\n\nNothing in it outlives the session.\n",
             "author": AUTHOR,
-            "message": "record the sandbox rule",
+            "commit_title": "record the sandbox rule",
         })),
     );
     assert_eq!(status, 200, "the memory must be created, got {answer}");
@@ -1871,7 +1871,7 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
         Some(&json!({
             "base_version": document(&server, "sandbox-rule")["version"],
             "author": AUTHOR,
-            "message": "the sandbox rule is written down elsewhere",
+            "commit_title": "the sandbox rule is written down elsewhere",
         })),
     );
     assert_eq!(status, 200, "the memory must be deleted, got {answer}");
@@ -1882,7 +1882,7 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
             Some(&json!({
                 "base_version": scope(&server, id)["version"],
                 "author": AUTHOR,
-                "message": format!("the {id} scope is no longer in use"),
+                "commit_title": format!("the {id} scope is no longer in use"),
             })),
         );
         assert_eq!(status, 200, "the scope {id} must be deleted, got {answer}");

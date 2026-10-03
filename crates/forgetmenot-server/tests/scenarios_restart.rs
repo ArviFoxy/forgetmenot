@@ -175,7 +175,7 @@ fn a_branch_open_before_a_restart_lands_after_it() {
             json!({
                 "session_key": writer.key(),
                 "branch": branch_name,
-                "message": "light the bench",
+                "commit_title": "light the bench",
             }),
         )
         .expect_ok();

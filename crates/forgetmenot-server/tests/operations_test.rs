@@ -593,7 +593,8 @@ fn write_of(document: &MemoryDoc, body: &str, message: &str) -> MemoryWriteReque
         body: body.to_string(),
         base_version: Some(document.version.clone()),
         author: "wiki".to_string(),
-        message: message.to_string(),
+        commit_title: message.to_string(),
+        commit_body: None,
     }
 }
 
@@ -694,7 +695,8 @@ fn creating_a_memory_at_an_id_that_is_taken_is_refused_with_the_document_that_is
                 body: "# Another reading list\n\ntext\n".to_string(),
                 base_version: None,
                 author: "wiki".to_string(),
-                message: "create a second reading list".to_string(),
+                commit_title: "create a second reading list".to_string(),
+                commit_body: None,
             },
             WriteMode::Create,
             None,
@@ -735,7 +737,8 @@ fn a_created_memory_is_stamped_and_the_index_filter_lists_it_only_under_its_own_
                 body: "# Bracket tolerances\n\nReam the holes after welding.\n".to_string(),
                 base_version: None,
                 author: "wiki".to_string(),
-                message: "record the bracket tolerance".to_string(),
+                commit_title: "record the bracket tolerance".to_string(),
+                commit_body: None,
             },
             WriteMode::Create,
             None,
@@ -811,7 +814,8 @@ fn deleting_a_memory_from_a_stale_version_is_refused_and_leaves_it_in_the_store(
             &DeleteRequest {
                 base_version: stale.version.clone(),
                 author: "wiki".to_string(),
-                message: "the reading list is not needed any more".to_string(),
+                commit_title: "the reading list is not needed any more".to_string(),
+                commit_body: None,
             },
             None,
         ))
@@ -1083,7 +1087,8 @@ fn the_scope_index_drops_a_deleted_scope_although_a_context_still_has_it_on() {
             &DeleteRequest {
                 base_version: version,
                 author: "wiki".to_string(),
-                message: "the workshop directory moved off this machine".to_string(),
+                commit_title: "the workshop directory moved off this machine".to_string(),
+                commit_body: None,
             },
             None,
         ))
@@ -1139,7 +1144,8 @@ fn deleting_a_scope_the_store_still_names_is_refused_naming_the_file_that_names_
                 &DeleteRequest {
                     base_version: version,
                     author: "wiki".to_string(),
-                    message: format!("{scope} is not used here any more"),
+                    commit_title: format!("{scope} is not used here any more"),
+                    commit_body: None,
                 },
                 None,
             ))
@@ -1516,6 +1522,29 @@ fn the_store_history_lists_every_commit_newest_first_and_pages_past_the_one_it_n
     );
 }
 
+/// Detects a write sent without a commit body growing one anyway: an empty
+/// paragraph before the server's lines, or a placeholder where the writer's
+/// text would go, which every history would then show as if the writer had
+/// written something. Expectation source: the commit body contract, where a
+/// write with no body is its title and the server's `memory:` and `author:`
+/// lines and nothing else.
+#[test]
+fn a_write_without_a_commit_body_records_only_the_servers_lines_beneath_the_title() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let title = write_line_to(&server, "reading-list", "note where the binder lives");
+
+    let history = server
+        .run(operations::store_history(&server.state(), None, 1))
+        .expect("the store's history is readable");
+
+    let newest = &history.commits[0];
+    assert_eq!(
+        (newest.title.as_str(), newest.body.as_str()),
+        (title.as_str(), "memory: reading-list\nauthor: wiki"),
+        "a write with no body must carry its title and the server's lines alone"
+    );
+}
+
 /// Detects a commit page that reports files the commit did not change, that
 /// carries no diff, or that leaves the reader to work out which document a path
 /// holds. Detects the commit that has no parent being reported as having
@@ -1610,7 +1639,8 @@ fn settings_write(
         value,
         base_version,
         author: "wiki".to_string(),
-        message: message.to_string(),
+        commit_title: message.to_string(),
+        commit_body: None,
     }
 }
 
@@ -1748,7 +1778,8 @@ fn a_settings_change_on_a_branch_is_not_in_force_until_the_branch_lands() {
             &state,
             &branch,
             &LandRequest {
-                message: "fetch knowledge on demand instead of indexing it".to_string(),
+                commit_title: "fetch knowledge on demand instead of indexing it".to_string(),
+                commit_body: None,
                 author: owner.to_string(),
             },
         ))

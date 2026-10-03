@@ -171,7 +171,9 @@ test('a write the server has moved past is reported as though it had been writte
 
   const bar = element.querySelector('fmn-commit-bar');
   expect(bar).not.toBeNull();
-  bar?.dispatchEvent(new CustomEvent('fmn-message-change', { detail: { message: 'fewer tokens' } }));
+  bar?.dispatchEvent(
+    new CustomEvent('fmn-commit-change', { detail: { commitTitle: 'fewer tokens', commitBody: '' } }),
+  );
   bar?.dispatchEvent(new CustomEvent('fmn-save'));
   await settle(element);
 
@@ -179,7 +181,8 @@ test('a write the server has moved past is reported as though it had been writte
     value: 15000,
     base_version: 'a'.repeat(40),
     author: 'wiki',
-    message: 'fewer tokens',
+    commit_title: 'fewer tokens',
+    commit_body: '',
   });
   const conflict = element.querySelector('.conflict');
   expect(conflict).not.toBeNull();
@@ -204,7 +207,9 @@ test('the number control cuts the fraction off a setting that is a fraction', as
   const bar = element.querySelector('fmn-commit-bar');
   expect(bar, 'a changed setting must offer to be saved').not.toBeNull();
   bar?.dispatchEvent(
-    new CustomEvent('fmn-message-change', { detail: { message: 'count characters' } }),
+    new CustomEvent('fmn-commit-change', {
+      detail: { commitTitle: 'count characters', commitBody: '' },
+    }),
   );
   bar?.dispatchEvent(new CustomEvent('fmn-save'));
   await settle(element);

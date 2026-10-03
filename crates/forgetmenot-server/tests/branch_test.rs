@@ -144,7 +144,7 @@ fn put_body(
             "body": new_body,
             "base_version": base_version,
             "author": AUTHOR,
-            "message": message,
+            "commit_title": message,
         })),
     )
 }
@@ -168,7 +168,7 @@ fn land(server: &TestServer, branch: &str, message: &str) -> (u16, Value) {
     server.api(
         "POST",
         &format!("/api/branches/{branch}/land"),
-        Some(&json!({ "message": message, "author": AUTHOR })),
+        Some(&json!({ "commit_title": message, "author": AUTHOR })),
     )
 }
 
@@ -341,7 +341,7 @@ fn landing_three_writes_on_a_branch_makes_one_commit_on_main_with_all_three_chan
             "source": "user",
             "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
             "author": AUTHOR,
-            "message": "record where the bracket jig lives",
+            "commit_title": "record where the bracket jig lives",
         })),
     );
     assert_eq!(
@@ -389,6 +389,111 @@ fn landing_three_writes_on_a_branch_makes_one_commit_on_main_with_all_three_chan
     assert!(
         !open_branches(&server).contains(&branch),
         "the branch must be gone once it has landed"
+    );
+}
+
+/// The lines indented beneath `- {title}` in a squash commit's body, trimmed,
+/// without the blank ones: what the commit kept of that write's own body.
+fn squashed_body_lines(body: &str, title: &str) -> Vec<String> {
+    let item = format!("- {title}");
+    let mut lines = body.lines().skip_while(|line| *line != item);
+    assert!(
+        lines.next().is_some(),
+        "the squash commit must list `{title}`, got {body:?}"
+    );
+    lines
+        .take_while(|line| !line.starts_with("- "))
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            assert!(
+                line.starts_with(char::is_whitespace),
+                "a line of the body of `{title}` must be indented beneath it, got {line:?}"
+            );
+            line.trim().to_string()
+        })
+        .collect()
+}
+
+/// Detects a land that drops what the writers on the branch wrote beneath their
+/// titles, so that the reasons given for each write are gone once the branch is
+/// one commit; a land that drops the lander's own body; and one that repeats the
+/// server's own `memory:` and `author:` lines of each squashed commit as if a
+/// writer had written them. Expectation source: the commit body contract, where
+/// the squash commit carries the lander's body, then the branch's record with
+/// each squashed title followed by its writer's body indented beneath it.
+#[test]
+fn a_land_keeps_the_body_of_each_squashed_commit_beneath_its_title() {
+    let server = TestServer::start(store_files(), |_| {});
+    let branch = open_branch(&server, SESSION);
+    let described_title = "note where the binder lives";
+    let described_body = "The binder moved to the shelf by the door.\n\nThe old shelf is gone.";
+    let bare_title = "move the first bracket";
+    let land_body = "Both changes come from the workshop tidy.";
+
+    let current = document(&server, "bench-power");
+    let (status, answer) = server.api(
+        "PUT",
+        &with_branch("/api/memories/bench-power", Some(&branch)),
+        Some(&json!({
+            "description": current["description"],
+            "kind": current["kind"],
+            "scope": current["scope"],
+            "source": current["source"],
+            "body": format!("# Cut bench power before rewiring\n\n{NEW_LINE}\n"),
+            "base_version": current["version"],
+            "author": AUTHOR,
+            "commit_title": described_title,
+            "commit_body": described_body,
+        })),
+    );
+    assert_eq!(status, 200, "the described write must land, got {answer}");
+    put_body_ok(
+        &server,
+        "bracket-order",
+        &version(&document(&server, "bracket-order")),
+        &bracket_order_body("The first bracket moved", SECOND_PARAGRAPH, THIRD_PARAGRAPH),
+        bare_title,
+        Some(&branch),
+    );
+    let (status, landed) = server.api(
+        "POST",
+        &format!("/api/branches/{branch}/land"),
+        Some(&json!({
+            "commit_title": "tidy the workshop notes",
+            "commit_body": land_body,
+            "author": AUTHOR,
+        })),
+    );
+    assert_eq!(status, 200, "{branch} must land, got {landed}");
+
+    let (status, history) = server.api("GET", "/api/history", None);
+    assert_eq!(status, 200, "the history must be readable, got {history}");
+    let squash = &history["commits"][0];
+    assert_eq!(
+        squash["oid"], landed["commit_oid"],
+        "the newest commit must be the land, got {history}"
+    );
+    let body = squash["body"].as_str().expect("a commit's body is text");
+    assert!(
+        body.starts_with(&format!("{land_body}\n\n")),
+        "the squash commit's body must open with the lander's body and a blank line, got {body:?}"
+    );
+    assert_eq!(
+        squashed_body_lines(body, described_title),
+        vec![
+            "The binder moved to the shelf by the door.".to_string(),
+            "The old shelf is gone.".to_string()
+        ],
+        "the described write's body must be kept beneath its title, got {body:?}"
+    );
+    assert_eq!(
+        squashed_body_lines(body, bare_title),
+        Vec::<String>::new(),
+        "a write with no body must have nothing beneath its title, got {body:?}"
+    );
+    assert!(
+        !body.contains("memory: bench-power") && !body.contains("memory: bracket-order"),
+        "the squashed commits' own trailer lines must not be repeated, got {body:?}"
     );
 }
 
@@ -739,7 +844,7 @@ fn a_branch_that_deletes_a_memory_another_landed_branch_modified_conflicts() {
         Some(&json!({
             "base_version": base,
             "author": AUTHOR,
-            "message": "retire the bracket order note",
+            "commit_title": "retire the bracket order note",
         })),
     );
     assert_eq!(
@@ -812,7 +917,7 @@ fn landing_a_branch_whose_merged_tree_fails_validation_is_refused_and_nothing_la
         Some(&json!({
             "to": "rocket-stage-numbering",
             "author": AUTHOR,
-            "message": "rename the stage numbering memory",
+            "commit_title": "rename the stage numbering memory",
         })),
     );
     assert_eq!(
@@ -831,7 +936,7 @@ fn landing_a_branch_whose_merged_tree_fails_validation_is_refused_and_nothing_la
             "source": "user",
             "body": "# Stage audit\n\nThe audit reads [[rocket-stages]] first.\n",
             "author": AUTHOR,
-            "message": "record the stage audit",
+            "commit_title": "record the stage audit",
         })),
     );
     assert_eq!(status, 200, "the write on main must land, got {added}");
@@ -890,7 +995,7 @@ fn replace_text_on_a_branch_changes_only_the_snippet_and_lands_with_the_branch()
             "old_string": "at the wall",
             "new_string": "at the wall switch",
             "author": AUTHOR,
-            "message": "say which switch cuts the bench supply",
+            "commit_title": "say which switch cuts the bench supply",
         })),
     );
     assert_eq!(status, 200, "the replacement must be made, got {answer}");
@@ -939,7 +1044,7 @@ fn replace_text_refuses_a_snippet_that_is_missing_or_ambiguous_and_changes_nothi
             "old_string": "measured by the machine",
             "new_string": "measured by hand",
             "author": AUTHOR,
-            "message": "say how the bracket is measured",
+            "commit_title": "say how the bracket is measured",
         })),
     );
     assert_eq!(
@@ -955,7 +1060,7 @@ fn replace_text_refuses_a_snippet_that_is_missing_or_ambiguous_and_changes_nothi
         "old_string": "measured twice",
         "new_string": "measured three times",
         "author": AUTHOR,
-        "message": "say how often the bracket is measured",
+        "commit_title": "say how often the bracket is measured",
     });
     let (status, answer) = server.api(
         "POST",
@@ -1010,7 +1115,7 @@ fn renaming_a_memory_rewrites_every_linker_and_the_landed_tree_has_no_link_to_th
         Some(&json!({
             "to": "rocket-stage-numbering",
             "author": AUTHOR,
-            "message": "rename the stage numbering memory",
+            "commit_title": "rename the stage numbering memory",
         })),
     );
     assert_eq!(status, 200, "the rename must be made, got {answer}");
@@ -1066,7 +1171,7 @@ fn set_fields_changes_the_field_and_leaves_the_body_byte_identical() {
             "kind": "critical",
             "description": "The workshop references are on paper in the binder only",
             "author": AUTHOR,
-            "message": "make the reading list a critical memory",
+            "commit_title": "make the reading list a critical memory",
         })),
     );
     assert_eq!(status, 200, "the field write must be made, got {answer}");
@@ -1350,7 +1455,7 @@ fn the_branch_diff_names_each_file_with_its_status_and_its_diff() {
             "source": "user",
             "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
             "author": AUTHOR,
-            "message": "record where the bracket jig lives",
+            "commit_title": "record where the bracket jig lives",
         })),
     );
     assert_eq!(
@@ -1491,7 +1596,7 @@ fn eight_concurrent_lands_of_branches_touching_distinct_files_all_succeed() {
                         "POST",
                         &format!("/api/branches/{branch}/land"),
                         Some(&json!({
-                            "message": format!("land note {index:02}"),
+                            "commit_title": format!("land note {index:02}"),
                             "author": AUTHOR,
                         })),
                     );
@@ -1551,7 +1656,7 @@ fn renaming_onto_an_id_that_exists_or_into_a_session_silo_is_refused() {
         Some(&json!({
             "to": "reading-list",
             "author": AUTHOR,
-            "message": "rename the stage numbering memory",
+            "commit_title": "rename the stage numbering memory",
         })),
     );
     let (silo_status, silo) = server.api(
@@ -1560,7 +1665,7 @@ fn renaming_onto_an_id_that_exists_or_into_a_session_silo_is_refused() {
         Some(&json!({
             "to": "sessions/alpha/session-1/stages",
             "author": AUTHOR,
-            "message": "move the stage numbering into a session",
+            "commit_title": "move the stage numbering into a session",
         })),
     );
 
@@ -1613,7 +1718,7 @@ fn create_memory(
             "source": "user",
             "body": body,
             "author": AUTHOR,
-            "message": format!("record {id}"),
+            "commit_title": format!("record {id}"),
         })),
     )
 }

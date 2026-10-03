@@ -111,8 +111,13 @@ pub struct MemoryPutParams {
     /// The memory itself, as markdown. `[[name]]` links to another memory.
     pub body: String,
     /// The commit's title line: one line, at most 72 characters, saying what
-    /// changed and why.
-    pub message: String,
+    /// changed.
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write replaces, as `memory_get` reported it. Absent
     /// creates a memory at an id that is free.
     #[serde(default)]
@@ -133,7 +138,12 @@ pub struct MemoryDeleteParams {
     pub id: String,
     /// The commit's title line: one line, at most 72 characters, saying why the
     /// memory is no longer in force.
-    pub message: String,
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write removes, as `memory_get` reported it. Absent
     /// deletes whatever version the store holds now.
     #[serde(default)]
@@ -161,8 +171,14 @@ pub struct MemoryReplaceTextParams {
     /// once is refused rather than one of them being picked.
     #[serde(default)]
     pub replace_all: bool,
-    /// The commit's title line: one line, at most 72 characters.
-    pub message: String,
+    /// The commit's title line: one line, at most 72 characters, saying what
+    /// changed.
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write replaces. Absent edits whatever version the store
     /// holds now.
     #[serde(default)]
@@ -198,8 +214,14 @@ pub struct MemorySetFieldsParams {
     /// not given keeps its value.
     #[serde(default)]
     pub metadata: Option<RequestedMetadata>,
-    /// The commit's title line: one line, at most 72 characters.
-    pub message: String,
+    /// The commit's title line: one line, at most 72 characters, saying what
+    /// changed.
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write replaces. Absent edits whatever version the store
     /// holds now.
     #[serde(default)]
@@ -219,8 +241,14 @@ pub struct MemoryRenameParams {
     pub from: String,
     /// The memory id it takes. It has to be free.
     pub to: String,
-    /// The commit's title line: one line, at most 72 characters.
-    pub message: String,
+    /// The commit's title line: one line, at most 72 characters, saying what
+    /// changed.
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write moves. Absent moves whatever version the store
     /// holds now.
     #[serde(default)]
@@ -354,8 +382,13 @@ pub struct ScopePutParams {
     #[serde(default)]
     pub forget: Option<RequestedForget>,
     /// The commit's title line: one line, at most 72 characters, saying what
-    /// changed and why. Named apart from `message`, which is the scope's own.
-    pub message_title: String,
+    /// changed. The scope's own text is `message`.
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write replaces, as `scope_get` reported it. Absent
     /// creates a scope at an id that has no file.
     #[serde(default)]
@@ -376,7 +409,12 @@ pub struct ScopeDeleteParams {
     pub id: String,
     /// The commit's title line: one line, at most 72 characters, saying why the
     /// scope is gone.
-    pub message_title: String,
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// The version this write removes, as `scope_get` reported it. Absent
     /// deletes whatever version the store holds now.
     #[serde(default)]
@@ -411,7 +449,13 @@ pub struct BranchLandParams {
     pub branch: String,
     /// The title line of the one commit every write on the branch becomes: one
     /// line, at most 72 characters, saying what the whole change did.
-    pub message: String,
+    pub commit_title: String,
+    /// The rest of that commit's message: why the change was made and anything
+    /// the title has no room for, in as many lines as it needs. Leave it out
+    /// when the title says everything. The body each write on the branch was
+    /// given is kept beneath its title in the commit either way.
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// Which setting to change, and to what.
@@ -426,7 +470,12 @@ pub struct SettingsSetParams {
     pub value: serde_json::Value,
     /// The commit's title line: one line, at most 72 characters, saying what the
     /// new behaviour is for.
-    pub message: String,
+    pub commit_title: String,
+    /// The rest of the commit message: why the change was made and anything the
+    /// title has no room for, in as many lines as it needs. Leave it out when
+    /// the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     /// A branch from `branch_create`. With it the change is committed to that
     /// branch instead of to main, so no session behaves differently until the
     /// branch is landed.

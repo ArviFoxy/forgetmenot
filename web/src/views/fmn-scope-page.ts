@@ -15,6 +15,7 @@ import '../components/fmn-tag-field';
 import '../components/fmn-trigger-table';
 import '../components/fmn-trigger-test';
 import '../components/fmn-validation-errors';
+import type { CommitText } from '../components/fmn-commit-bar';
 import type { TagsChange } from '../components/fmn-tag-field';
 
 /** A scope that is being written and has no file yet. */
@@ -35,8 +36,9 @@ interface ScopeDraft {
   scopeMessage: string;
   /** The context tokens the scope is forgotten after; empty means it is not. */
   forgetTokens: string;
-  /** The commit message of the write. */
-  message: string;
+  /** The title line and the rest of the message of the commit a save makes. */
+  commitTitle: string;
+  commitBody: string;
   saving: boolean;
   errors: ValidationError[];
   conflict: ScopeDoc | null;
@@ -50,7 +52,8 @@ function draftOf(scope: ScopeDoc): ScopeDraft {
     triggers: scope.triggers,
     scopeMessage: scope.message ?? '',
     forgetTokens: scope.forget === null ? '' : String(scope.forget.tokens_since_trigger),
-    message: '',
+    commitTitle: '',
+    commitBody: '',
     saving: false,
     errors: [],
     conflict: null,
@@ -109,7 +112,8 @@ export class FmnScopePage extends PageElement {
     newId: { state: true },
     draft: { state: true },
     editing: { state: true },
-    deleteMessage: { state: true },
+    deleteTitle: { state: true },
+    deleteBody: { state: true },
     deleting: { state: true },
     deleteOpen: { state: true },
     deleteErrors: { state: true },
@@ -132,7 +136,8 @@ export class FmnScopePage extends PageElement {
   private newId = '';
   private draft: ScopeDraft | null = null;
   private editing: string | null = null;
-  private deleteMessage = '';
+  private deleteTitle = '';
+  private deleteBody = '';
   private deleting = false;
   private deleteOpen = false;
   private deleteErrors: ValidationError[] = [];
@@ -198,7 +203,7 @@ export class FmnScopePage extends PageElement {
   /** The panel the tree asked for, brought on screen with its field ready. */
   private async showDeletePanel(): Promise<void> {
     await this.updateComplete;
-    const panel = this.querySelector('sl-details[open] .delete-message');
+    const panel = this.querySelector('sl-details[open] .delete-title');
     panel?.scrollIntoView?.({ block: 'center' });
     (panel as HTMLElement | null)?.focus?.();
   }
@@ -216,10 +221,12 @@ export class FmnScopePage extends PageElement {
       const outcome = await api.deleteScope(this.scopeId, {
         base_version: scope.version,
         author: frontendAuthor,
-        message: this.deleteMessage,
+        commit_title: this.deleteTitle,
+        commit_body: this.deleteBody,
       });
       if (outcome.kind === 'written') {
-        this.deleteMessage = '';
+        this.deleteTitle = '';
+        this.deleteBody = '';
         this.deleteOpen = false;
         announceStoreChange();
         navigate(paths.dashboard());
@@ -261,19 +268,21 @@ export class FmnScopePage extends PageElement {
             id: this.newId,
             implies: parseIdList(draft.impliesText),
             triggers: draft.triggers,
-            scope_message: messageToSave(draft),
+            message: messageToSave(draft),
             forget: forgetToSave(draft),
             author: frontendAuthor,
-            message: draft.message,
+            commit_title: draft.commitTitle,
+            commit_body: draft.commitBody,
           })
         : await api.putScope(this.scopeId, {
             implies: parseIdList(draft.impliesText),
             triggers: draft.triggers,
-            scope_message: messageToSave(draft),
+            message: messageToSave(draft),
             forget: forgetToSave(draft),
             base_version: draft.baseVersion,
             author: frontendAuthor,
-            message: draft.message,
+            commit_title: draft.commitTitle,
+            commit_body: draft.commitBody,
           });
       if (outcome.kind === 'written') {
         announceStoreChange();
@@ -363,11 +372,11 @@ export class FmnScopePage extends PageElement {
       ></fmn-trigger-table>
       ${this.dirty(scope, draft)
         ? html`<fmn-commit-bar
-            .message=${draft.message}
+            .commitTitle=${draft.commitTitle}
+            .commitBody=${draft.commitBody}
             .saving=${draft.saving}
             saveLabel=${this.creating ? 'Create' : 'Save'}
-            @fmn-message-change=${(event: CustomEvent<{ message: string }>) =>
-              this.change({ message: event.detail.message })}
+            @fmn-commit-change=${(event: CustomEvent<CommitText>) => this.change(event.detail)}
             @fmn-save=${() => void this.save()}
             @fmn-discard=${() => {
               if (this.creating) {
@@ -500,19 +509,30 @@ export class FmnScopePage extends PageElement {
                     memory still lists cannot be removed.
                   </p>
                   <sl-input
-                    class="delete-message"
+                    class="delete-title"
                     size="small"
-                    label="Commit message"
+                    label="Commit title"
                     maxlength="72"
-                    value=${this.deleteMessage}
+                    value=${this.deleteTitle}
                     @sl-input=${(event: Event) => {
-                      this.deleteMessage = (event.target as HTMLInputElement).value;
+                      this.deleteTitle = (event.target as HTMLInputElement).value;
                     }}
                   ></sl-input>
+                  <sl-textarea
+                    class="delete-description"
+                    size="small"
+                    label="Commit description"
+                    rows="2"
+                    resize="auto"
+                    value=${this.deleteBody}
+                    @sl-input=${(event: Event) => {
+                      this.deleteBody = (event.target as HTMLTextAreaElement).value;
+                    }}
+                  ></sl-textarea>
                   <sl-button
                     size="small"
                     variant="danger"
-                    ?disabled=${this.deleting || this.deleteMessage.trim() === ''}
+                    ?disabled=${this.deleting || this.deleteTitle.trim() === ''}
                     ?loading=${this.deleting}
                     @click=${() => void this.deleteScope(scope)}
                     >Delete scope</sl-button

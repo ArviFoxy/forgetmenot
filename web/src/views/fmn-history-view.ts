@@ -151,7 +151,7 @@ export class FmnHistoryView extends PageElement {
       ${gate(
         this.commit.state,
         (commit) => html`
-          <fmn-history-list .commits=${[commit.commit]}></fmn-history-list>
+          <fmn-history-list .commits=${[commit.commit]} bodies></fmn-history-list>
           ${commit.files.map((file) => this.renderFile(file))}
         `,
       )}

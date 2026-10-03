@@ -12,6 +12,7 @@ use crate::app::AppState;
 use crate::service::{WriteError, is_valid_message_title};
 use crate::store::branch::BranchName;
 use crate::store::catalog::Catalog;
+use crate::store::git;
 use crate::store::settings::{self, KEYS, SETTINGS_PATH, SettingKey, SettingProblem};
 
 use super::{
@@ -53,7 +54,11 @@ pub struct SettingsWriteRequest {
     pub base_version: Option<String>,
     pub author: String,
     /// The commit's title line.
-    pub message: String,
+    pub commit_title: String,
+    /// The rest of the commit message, in as many lines as it needs; absent
+    /// when the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// The settings of one revision of the store.
@@ -127,7 +132,7 @@ pub async fn settings_set(
         .map_err(|error| OperationError::invalid(SETTINGS_PATH, &error.to_string()))?;
 
     let mut errors = problems_of(&text);
-    if !is_valid_message_title(&request.message) {
+    if !is_valid_message_title(&request.commit_title) {
         errors.push(ValidationMessage {
             path: SETTINGS_PATH.to_string(),
             message: WriteError::BadMessage.to_string(),
@@ -141,8 +146,11 @@ pub async fn settings_set(
         state,
         branch,
         &request.author,
-        &request.message,
-        &format!("setting: {key}\nauthor: {}", request.author),
+        &request.commit_title,
+        &git::commit_body(
+            request.commit_body.as_deref(),
+            &[("setting", key.as_str()), ("author", &request.author)],
+        ),
         vec![(SETTINGS_PATH.to_string(), Some(text.into_bytes()))],
         vec![(SETTINGS_PATH.to_string(), expected)],
     )

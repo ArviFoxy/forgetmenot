@@ -114,7 +114,7 @@ test('a write the server has already moved past is accepted, losing the other ve
       body: `${String(doc.body)}\nthe other writer version of the line\n`,
       base_version: doc.version,
       author: 'other',
-      message: 'change from another writer',
+      commit_title: 'change from another writer',
     },
   });
   expect(sideWrite.status()).toBe(200);
@@ -231,7 +231,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
       source: 'user',
       body: `# ${id}\n\nMade to be deleted.\n`,
       author: 'wiki',
-      message: `add ${id}`,
+      commit_title: `add ${id}`,
     },
   });
   expect(created.status()).toBe(200);
@@ -239,7 +239,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
   // The delete route is new; until the server has it there is nothing to test here.
   const probe = await page.request.fetch(`/api/memories/${id}`, {
     method: 'DELETE',
-    data: { base_version: 'f'.repeat(40), author: 'wiki', message: 'probe' },
+    data: { base_version: 'f'.repeat(40), author: 'wiki', commit_title: 'probe' },
   });
   test.skip(probe.status() === 405, 'the server has no delete route yet');
 
@@ -250,7 +250,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
     .click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Delete memory' }).click();
 
-  const panel = page.locator('sl-details[open] .delete-message input');
+  const panel = page.locator('sl-details[open] .delete-title input');
   await expect(panel).toBeVisible();
   await panel.fill(`delete ${id}`);
   await page.getByRole('button', { name: 'Delete memory' }).click();
@@ -264,7 +264,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
 async function scopeDeleteReady(page: Page): Promise<boolean> {
   const probe = await page.request.fetch('/api/scopes/probe-absent-scope', {
     method: 'DELETE',
-    data: { base_version: 'f'.repeat(40), author: 'wiki', message: 'probe' },
+    data: { base_version: 'f'.repeat(40), author: 'wiki', commit_title: 'probe' },
   });
   return probe.status() !== 405;
 }
@@ -293,7 +293,7 @@ test('a scope picked in the field is not the one the memory is written into', as
 test('a scope nothing refers to is kept when it is deleted from the tree', async ({ page }) => {
   const id = `probe-lonely-${Date.now()}`;
   const created = await page.request.post('/api/scopes', {
-    data: { id, implies: [], triggers: [], author: 'wiki', message: `add ${id}` },
+    data: { id, implies: [], triggers: [], author: 'wiki', commit_title: `add ${id}` },
   });
   expect(created.status()).toBe(200);
   test.skip(!(await scopeDeleteReady(page)), 'the server has no scope delete route yet');
@@ -303,7 +303,7 @@ test('a scope nothing refers to is kept when it is deleted from the tree', async
   await page.locator(`sl-tree-item[data-target="/scopes/${id}"] > .tree-row`).click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Delete scope' }).click();
 
-  const field = page.locator('sl-details[open] .delete-message input');
+  const field = page.locator('sl-details[open] .delete-title input');
   await expect(field).toBeVisible();
   await field.fill(`delete ${id}`);
   await page.getByRole('button', { name: 'Delete scope' }).click();
@@ -319,7 +319,7 @@ test('a scope a memory still lists is deleted without saying what refers to it',
 
   await page.goto('/scopes/widgets');
   await page.locator('sl-details').filter({ hasText: 'Delete' }).first().click();
-  const field = page.locator('sl-details[open] .delete-message input');
+  const field = page.locator('sl-details[open] .delete-title input');
   await expect(field).toBeVisible();
   await field.fill('remove the widgets scope');
   await page.getByRole('button', { name: 'Delete scope' }).click();

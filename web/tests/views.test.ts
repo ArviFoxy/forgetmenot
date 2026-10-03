@@ -154,8 +154,8 @@ const answers = vi.hoisted(() => ({
   statsRows: true,
   contexts: [] as unknown[],
   contextPrompt: null as unknown,
-  memoryWrites: [] as { scope: string }[],
-  scopeWrites: [] as { scope_message: string | null; forget: { tokens_since_trigger: number } | null }[],
+  memoryWrites: [] as { scope: string; commit_title: string; commit_body?: string }[],
+  scopeWrites: [] as { message: string | null; forget: { tokens_since_trigger: number } | null }[],
   storeHistory: null as unknown,
   storeCommit: null as unknown,
 }));
@@ -171,11 +171,11 @@ vi.mock('../src/api/client', () => ({
       super(`${method} ${url} failed with ${status}`);
     }
   },
-  MissingCommitMessage: class MissingCommitMessage extends Error {},
+  MissingCommitTitle: class MissingCommitTitle extends Error {},
   api: {
     memoryIndex: () => Promise.resolve([]),
     memory: () => Promise.resolve(serverDoc),
-    putMemory: (_id: string, request: { scope: string }) => {
+    putMemory: (_id: string, request: { scope: string; commit_title: string; commit_body?: string }) => {
       answers.memoryWrites.push(request);
       return Promise.resolve({ kind: 'written' });
     },
@@ -195,7 +195,7 @@ vi.mock('../src/api/client', () => ({
       }),
     putScope: (
       _id: string,
-      request: { scope_message: string | null; forget: { tokens_since_trigger: number } | null },
+      request: { message: string | null; forget: { tokens_since_trigger: number } | null },
     ) => {
       answers.scopeWrites.push(request);
       return Promise.resolve({ kind: 'written' });
@@ -284,12 +284,14 @@ const storeHistory: StoreHistory = {
       time: '2026-01-02T03:04:05+00:00',
       author: 'wiki',
       title: 'widen the widget rule',
+      body: 'Resold widgets keep the number they shipped with.\n\nmemory: widget-naming\nauthor: wiki',
     },
     {
       oid: 'd'.repeat(40),
       time: '2026-01-01T00:00:00+00:00',
       author: 'seed',
       title: 'seed the example store',
+      body: '',
     },
   ],
   next_before: null,
@@ -738,12 +740,15 @@ test('the scope page hides the message the scope carries, or writes back another
   const bar = page.querySelector('fmn-commit-bar');
   expect(bar, 'an edited message must offer to be saved').not.toBeNull();
   bar?.dispatchEvent(
-    new CustomEvent('fmn-message-change', { detail: { message: 'reword it' }, bubbles: true }),
+    new CustomEvent('fmn-commit-change', {
+      detail: { commitTitle: 'reword it', commitBody: '' },
+      bubbles: true,
+    }),
   );
   bar?.dispatchEvent(new CustomEvent('fmn-save', { bubbles: true }));
   await settle(page);
 
-  expect(answers.scopeWrites.map((request) => request.scope_message)).toEqual([edited]);
+  expect(answers.scopeWrites.map((request) => request.message)).toEqual([edited]);
 });
 
 // The source of this expectation is this ticket: a scope file may declare when it
@@ -774,7 +779,10 @@ test('the scope page shows the forget count the scope carries and writes back an
   const bar = page.querySelector('fmn-commit-bar');
   expect(bar, 'an edited forget count must offer to be saved').not.toBeNull();
   bar?.dispatchEvent(
-    new CustomEvent('fmn-message-change', { detail: { message: 'forget it sooner' }, bubbles: true }),
+    new CustomEvent('fmn-commit-change', {
+      detail: { commitTitle: 'forget it sooner', commitBody: '' },
+      bubbles: true,
+    }),
   );
   bar?.dispatchEvent(new CustomEvent('fmn-save', { bubbles: true }));
   await settle(page);
@@ -821,12 +829,61 @@ test('the memory page shows more than one scope, or writes a scope it was not gi
   const bar = page.querySelector('fmn-commit-bar');
   expect(bar, 'a memory moved to another scope must offer to be saved').not.toBeNull();
   bar?.dispatchEvent(
-    new CustomEvent('fmn-message-change', { detail: { message: 'move it' }, bubbles: true }),
+    new CustomEvent('fmn-commit-change', {
+      detail: { commitTitle: 'move it', commitBody: '' },
+      bubbles: true,
+    }),
   );
   bar?.dispatchEvent(new CustomEvent('fmn-save', { bubbles: true }));
   await settle(page);
 
   expect(answers.memoryWrites.map((request) => request.scope)).toEqual([picked]);
+});
+
+// The source of these expectations is the commit contract: a write names its commit by
+// a title, without which it is not saved, and may add a description of any number of
+// lines, which is sent as it was typed.
+
+test('the commit bar saves without a title, or drops the description typed into it', async () => {
+  const page = document.createElement('fmn-memory-page') as HTMLElement & {
+    memoryId: string;
+    mode: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.memoryId = serverDoc.id;
+  page.mode = 'document';
+  document.body.append(page);
+  await settle(page);
+  page.querySelector<HTMLElement>('sl-icon-button[label="Edit Scope"]')?.click();
+  await settle(page);
+  const select = page.querySelector('sl-select.scope-select') as HTMLInputElement;
+  select.value = 'global';
+  select.dispatchEvent(new CustomEvent('sl-change'));
+  await settle(page);
+
+  const bar = page.querySelector('fmn-commit-bar');
+  expect(bar, 'a changed memory must offer to be saved').not.toBeNull();
+  const save = bar!.querySelector<HTMLElement>('sl-button.commit-save');
+  const description = 'Resold widgets keep the number they shipped with.\n\nThe old rule said otherwise.';
+  const body = bar!.querySelector('sl-textarea.commit-description') as HTMLTextAreaElement;
+  body.value = description;
+  body.dispatchEvent(new CustomEvent('sl-input'));
+  await settle(page);
+  expect(save?.hasAttribute('disabled'), 'a description without a title must not be saved').toBe(
+    true,
+  );
+
+  const title = bar!.querySelector('sl-input.commit-title') as HTMLInputElement;
+  title.value = 'move it';
+  title.dispatchEvent(new CustomEvent('sl-input'));
+  await settle(page);
+  expect(save?.hasAttribute('disabled'), 'a title must make the change savable').toBe(false);
+  save?.click();
+  await settle(page);
+
+  expect(
+    answers.memoryWrites.map((request) => [request.commit_title, request.commit_body]),
+  ).toEqual([['move it', description]]);
 });
 
 // The source of these two expectations is what the tree menu can act on: the file is
@@ -919,4 +976,18 @@ test('the page of one commit folds its files into one diff, or leaves a file unr
       commitFileTargets[index] ?? null,
     );
   }
+});
+
+test('the page of one commit leaves out the rest of its message', async () => {
+  const page = document.createElement('fmn-history-view') as HTMLElement & {
+    mode: string;
+    oid: string;
+    updateComplete?: Promise<unknown>;
+  };
+  page.mode = 'commit';
+  page.oid = storeCommit.commit.oid;
+  document.body.append(page);
+  await settle(page);
+
+  expect(page.querySelector('.commit-body')?.textContent).toBe(storeCommit.commit.body);
 });

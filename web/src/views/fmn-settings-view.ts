@@ -15,18 +15,21 @@ import '../components/fmn-commit-bar';
 import '../components/fmn-side-by-side';
 import '../components/fmn-tag-field';
 import '../components/fmn-validation-errors';
+import type { CommitText } from '../components/fmn-commit-bar';
 import type { TagsChange } from '../components/fmn-tag-field';
 import type { ValidationError } from '../api/types';
 
 /**
  * The store's behaviour settings: what the schema says, with a control for each
  * type and the same commit bar as everywhere else. The server writes one key per
- * commit, so a save with two keys changed makes two commits with the same message.
+ * commit, so a save with two keys changed makes two commits with the same title and
+ * description.
  */
 export class FmnSettingsView extends PageElement {
   static override properties: PropertyDeclarations = {
     edited: { state: true },
-    message: { state: true },
+    commitTitle: { state: true },
+    commitBody: { state: true },
     saving: { state: true },
     errors: { state: true },
     conflict: { state: true },
@@ -38,7 +41,8 @@ export class FmnSettingsView extends PageElement {
 
   /** The values the reader has changed, by key; anything else is the server's. */
   private edited: Record<string, SettingValue> = {};
-  private message = '';
+  private commitTitle = '';
+  private commitBody = '';
   private saving = false;
   private errors: ValidationError[] = [];
   private conflict: SettingsDoc | null = null;
@@ -52,7 +56,8 @@ export class FmnSettingsView extends PageElement {
 
   private reload(): void {
     this.edited = {};
-    this.message = '';
+    this.commitTitle = '';
+    this.commitBody = '';
     this.conflict = null;
     this.errors = [];
     this.failure = null;
@@ -84,7 +89,8 @@ export class FmnSettingsView extends PageElement {
           value: this.edited[key] ?? null,
           ...(version === null ? {} : { base_version: version }),
           author: frontendAuthor,
-          message: this.message,
+          commit_title: this.commitTitle,
+          commit_body: this.commitBody,
         });
         if (outcome.kind === 'conflict') {
           this.conflict = outcome.conflict.current;
@@ -209,17 +215,20 @@ export class FmnSettingsView extends PageElement {
           ${changed.length === 0
             ? nothing
             : html`<fmn-commit-bar
-                .message=${this.message}
+                .commitTitle=${this.commitTitle}
+                .commitBody=${this.commitBody}
                 .saving=${this.saving}
                 saveLabel="Save"
                 label=${`Unsaved settings: ${changed.join(', ')}`}
-                @fmn-message-change=${(event: CustomEvent<{ message: string }>) => {
-                  this.message = event.detail.message;
+                @fmn-commit-change=${(event: CustomEvent<CommitText>) => {
+                  this.commitTitle = event.detail.commitTitle;
+                  this.commitBody = event.detail.commitBody;
                 }}
                 @fmn-save=${() => void this.save(doc)}
                 @fmn-discard=${() => {
                   this.edited = {};
-                  this.message = '';
+                  this.commitTitle = '';
+                  this.commitBody = '';
                 }}
               ></fmn-commit-bar>`}
           <fmn-validation-errors .errors=${this.errors}></fmn-validation-errors>

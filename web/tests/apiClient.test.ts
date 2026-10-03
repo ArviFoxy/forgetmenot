@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, expect, test } from 'vitest';
-import { MissingCommitMessage, createApiClient } from '../src/api/client';
+import { MissingCommitTitle, createApiClient } from '../src/api/client';
 import type { MemoryDoc } from '../src/api/types';
 
 type Recorded = { method: string; url: string; body: string };
@@ -60,6 +60,7 @@ const serverDoc: MemoryDoc = {
     time: '2026-01-02T03:04:05Z',
     author: 'wiki',
     title: 'widen the widget rule',
+    body: '',
   },
 };
 
@@ -84,7 +85,7 @@ test('a 409 is thrown as a failure instead of returned as a conflict with the se
     body: 'the version the editor holds\n',
     base_version: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     author: 'wiki',
-    message: 'widen the widget rule',
+    commit_title: 'widen the widget rule',
   });
 
   expect(outcome.kind).toBe('conflict');
@@ -105,7 +106,7 @@ test('a 422 is thrown as a failure instead of returned with the validation error
     body: 'body\n',
     base_version: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     author: 'wiki',
-    message: 'widen the widget rule',
+    commit_title: 'widen the widget rule',
   });
 
   expect(outcome.kind).toBe('invalid');
@@ -125,8 +126,8 @@ test('a 500 is returned as a value instead of throwing with the status and body'
 });
 
 const blankMessages: [string, string][] = [
-  ['an empty message', ''],
-  ['a message of spaces', '   '],
+  ['an empty commit title', ''],
+  ['a commit title of spaces', '   '],
 ];
 
 for (const [label, message] of blankMessages) {
@@ -144,15 +145,15 @@ for (const [label, message] of blankMessages) {
           body: 'body\n',
           base_version: 'a'.repeat(40),
           author: 'wiki',
-          message,
+          commit_title: message,
         }),
       ),
-    ).rejects.toThrow(MissingCommitMessage);
+    ).rejects.toThrow(MissingCommitTitle);
     expect(fixture.requests).toEqual([]);
   });
 }
 
-test('a memory creation with a blank message reaches the server', async () => {
+test('a memory creation with a blank commit title reaches the server', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{}');
@@ -161,13 +162,13 @@ test('a memory creation with a blank message reaches the server', async () => {
 
   await expect(
     Promise.resolve().then(() =>
-      client.createMemory({ id: 'widgets', ...memoryFields, body: 'body\n', author: 'wiki', message: '' }),
+      client.createMemory({ id: 'widgets', ...memoryFields, body: 'body\n', author: 'wiki', commit_title: '' }),
     ),
-  ).rejects.toThrow(MissingCommitMessage);
+  ).rejects.toThrow(MissingCommitTitle);
   expect(fixture.requests).toEqual([]);
 });
 
-test('a deletion with a blank message reaches the server', async () => {
+test('a deletion with a blank commit title reaches the server', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{}');
@@ -176,13 +177,13 @@ test('a deletion with a blank message reaches the server', async () => {
 
   await expect(
     Promise.resolve().then(() =>
-      client.deleteMemory('widgets', { base_version: 'a'.repeat(40), author: 'wiki', message: ' ' }),
+      client.deleteMemory('widgets', { base_version: 'a'.repeat(40), author: 'wiki', commit_title: ' ' }),
     ),
-  ).rejects.toThrow(MissingCommitMessage);
+  ).rejects.toThrow(MissingCommitTitle);
   expect(fixture.requests).toEqual([]);
 });
 
-test('a scope deletion with a blank message reaches the server', async () => {
+test('a scope deletion with a blank commit title reaches the server', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{}');
@@ -191,9 +192,9 @@ test('a scope deletion with a blank message reaches the server', async () => {
 
   await expect(
     Promise.resolve().then(() =>
-      client.deleteScope('rocketry', { base_version: 'a'.repeat(40), author: 'wiki', message: '' }),
+      client.deleteScope('rocketry', { base_version: 'a'.repeat(40), author: 'wiki', commit_title: '' }),
     ),
-  ).rejects.toThrow(MissingCommitMessage);
+  ).rejects.toThrow(MissingCommitTitle);
   expect(fixture.requests).toEqual([]);
 });
 
@@ -209,7 +210,7 @@ test('a scope that is still referenced is deleted instead of reporting what refe
   const outcome = await client.deleteScope('widgets', {
     base_version: 'a'.repeat(40),
     author: 'wiki',
-    message: 'remove the widgets scope',
+    commit_title: 'remove the widgets scope',
   });
 
   expect(outcome.kind).toBe('invalid');
@@ -218,7 +219,7 @@ test('a scope that is still referenced is deleted instead of reporting what refe
   expect(fixture.requests[0]?.method).toBe('DELETE');
 });
 
-test('a scope write with a blank message reaches the server', async () => {
+test('a scope write with a blank commit title reaches the server', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{}');
@@ -230,18 +231,18 @@ test('a scope write with a blank message reaches the server', async () => {
       client.putScope('rocketry', {
         implies: [],
         triggers: [{ on: 'user_message', pattern: 'rocket' }],
-        scope_message: null,
+        message: null,
         forget: null,
         base_version: 'a'.repeat(40),
         author: 'wiki',
-        message: '',
+        commit_title: '',
       }),
     ),
-  ).rejects.toThrow(MissingCommitMessage);
+  ).rejects.toThrow(MissingCommitTitle);
   expect(fixture.requests).toEqual([]);
 });
 
-test('a write with a message is sent without the base version or the message', async () => {
+test('a write with a commit title is sent without the base version or the commit title', async () => {
   fixture = await serveOnce((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ commit_oid: 'd'.repeat(40), version: 'e'.repeat(40) }));
@@ -253,13 +254,13 @@ test('a write with a message is sent without the base version or the message', a
     body: 'body\n',
     base_version: 'a'.repeat(40),
     author: 'wiki',
-    message: 'widen the widget rule',
+    commit_title: 'widen the widget rule',
   });
 
   expect(outcome.kind).toBe('written');
   expect(fixture.requests).toHaveLength(1);
   const sent = JSON.parse(fixture.requests[0]?.body ?? '{}') as Record<string, unknown>;
-  expect(sent.message).toBe('widen the widget rule');
+  expect(sent.commit_title).toBe('widen the widget rule');
   expect(sent.base_version).toBe('a'.repeat(40));
   expect(fixture.requests[0]?.url).toBe('/api/memories/sessions/alpha/s1/notes');
 });

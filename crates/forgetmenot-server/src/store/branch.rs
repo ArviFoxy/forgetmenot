@@ -136,17 +136,27 @@ pub struct BranchRecord {
     /// When the branch was last written to, which is when its newest commit was
     /// made; the retention window is measured from this.
     pub last_activity: Option<DateTime<Utc>>,
-    /// The titles of the commits on the branch that changed a file, oldest
-    /// first. The commit that opened the branch changes nothing and is not one
-    /// of them, so this is the branch's writes.
-    pub titles: Vec<String>,
+    /// The commits on the branch that changed a file, oldest first. The commit
+    /// that opened the branch changes nothing and is not one of them, so this is
+    /// the branch's writes.
+    pub writes: Vec<BranchWrite>,
 }
 
 impl BranchRecord {
     /// How many writes the branch holds, which is what it is ahead of `main` by.
-    pub fn writes(&self) -> usize {
-        self.titles.len()
+    pub fn write_count(&self) -> usize {
+        self.writes.len()
     }
+}
+
+/// One write on a branch, as its commit message records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchWrite {
+    /// The commit's title line.
+    pub title: String,
+    /// What the writer put beneath the title, without the server's trailers;
+    /// empty when the title was all there was.
+    pub body: String,
 }
 
 /// The message of the commit that opens a branch: what it is, and who opened it.

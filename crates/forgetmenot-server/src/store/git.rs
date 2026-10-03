@@ -17,7 +17,7 @@ use git2::{
     Tree,
 };
 
-use super::branch::{BranchName, BranchRecord, opening_message, owner_in_message};
+use super::branch::{BranchName, BranchRecord, BranchWrite, opening_message, owner_in_message};
 
 /// The branch a new store is created on.
 pub const DEFAULT_BRANCH: &str = "main";
@@ -83,6 +83,10 @@ pub struct CommitSummary {
     pub author: String,
     /// The first line of the commit message.
     pub title: String,
+    /// Everything in the commit message after the title, trimmed: what the
+    /// writer put there and the server's trailers. Empty when the message is
+    /// the title alone.
+    pub body: String,
 }
 
 /// One line of a file with the commit that last changed it.
@@ -657,8 +661,8 @@ impl GitRepo {
     }
 
     /// What the commits `head` has and `upstream` does not say about the branch:
-    /// who opened it, when, when it was last written to, and the title of every
-    /// commit that changed a file, oldest first.
+    /// who opened it, when, when it was last written to, and the title and the
+    /// writer's body of every commit that changed a file, oldest first.
     ///
     /// Everything comes from the commits themselves, so a restart rediscovers it
     /// and there is no state file that could disagree with the refs.
@@ -682,9 +686,10 @@ impl GitRepo {
             // A commit whose tree is its parent's tree wrote nothing: the commit
             // that opens a branch is one, and it is not one of the writes.
             if self.changes_a_file(&commit)? {
-                record
-                    .titles
-                    .push(message.lines().next().unwrap_or_default().to_string());
+                record.writes.push(BranchWrite {
+                    title: message.lines().next().unwrap_or_default().to_string(),
+                    body: written_body(&message).to_string(),
+                });
             }
         }
         Ok(record)
@@ -707,6 +712,9 @@ impl GitRepo {
     /// branch was opened is merged rather than lost. A file the two changed
     /// incompatibly is reported as a conflict and nothing is written.
     ///
+    /// `message_body` is what the lander wrote beneath the title; the commit's
+    /// body adds the branch's record after it.
+    ///
     /// The commit object exists after this returns but no reference names it,
     /// so a caller that refuses it leaves the store exactly as it was; git
     /// collects the unreferenced object.
@@ -715,6 +723,7 @@ impl GitRepo {
         branch: &BranchName,
         author_name: &str,
         message_title: &str,
+        message_body: &str,
     ) -> Result<LandAttempt, GitError> {
         let main_head = self.head_oid()?;
         let branch_head = self
@@ -724,8 +733,8 @@ impl GitRepo {
             })?;
         let main_commit = self.repository.find_commit(main_head)?;
         let branch_commit = self.repository.find_commit(branch_head)?;
-        let titles = self.branch_record(branch_head, main_head)?.titles;
-        if titles.is_empty() {
+        let writes = self.branch_record(branch_head, main_head)?.writes;
+        if writes.is_empty() {
             return Err(GitError::NothingToLand {
                 name: branch.to_string(),
             });
@@ -742,7 +751,7 @@ impl GitRepo {
         let mut merged = merged;
         let tree_oid = merged.write_tree_to(&self.repository)?;
 
-        let body = land_message_body(branch, author_name, &titles);
+        let body = land_message_body(message_body, branch, author_name, &writes);
         let commit_oid = self.write_commit(
             author_name,
             message_title,
@@ -1128,14 +1137,85 @@ pub enum LandAttempt {
     Conflicts(Vec<FileConflict>),
 }
 
-/// The body of a squash commit: the branch it came from, who landed it, and the
-/// title of every commit it holds, so the one commit still says what was in it.
-fn land_message_body(branch: &BranchName, author: &str, titles: &[String]) -> String {
-    let mut body = format!("branch: {branch}\nauthor: {author}\nsquashed:");
-    for title in titles {
-        body.push_str(&format!("\n- {title}"));
+/// The body of a squash commit: what the lander wrote, then the branch it came
+/// from, who landed it, and every commit it holds with its title and, indented
+/// beneath it, what its writer put in its body, so the one commit still says
+/// what was in it.
+fn land_message_body(
+    written: &str,
+    branch: &BranchName,
+    author: &str,
+    writes: &[BranchWrite],
+) -> String {
+    let mut record = format!(
+        "{}\n{}\nsquashed:",
+        trailer_line("branch", branch.as_str()),
+        trailer_line("author", author)
+    );
+    for write in writes {
+        record.push_str(&format!("\n- {}", write.title));
+        for line in write.body.lines() {
+            record.push('\n');
+            if !line.is_empty() {
+                record.push_str(&format!("  {line}"));
+            }
+        }
     }
-    body
+    with_written_part(written, record)
+}
+
+/// The body of a commit the server writes: what the writer put beneath the
+/// title, then the server's own `key: value` lines, which git calls trailers and
+/// keeps last.
+///
+/// Each trailer is one line whatever its value holds, so the trailers are always
+/// the body's last paragraph and [`written_body`] can take them off again.
+pub fn commit_body(written: Option<&str>, trailers: &[(&str, &str)]) -> String {
+    let trailers: Vec<String> = trailers
+        .iter()
+        .map(|(key, value)| trailer_line(key, value))
+        .collect();
+    with_written_part(written.unwrap_or_default(), trailers.join("\n"))
+}
+
+/// What the writer put in a commit message beneath the title: the body without
+/// its last paragraph when that paragraph is the server's trailers.
+///
+/// A body whose last paragraph is not trailers, as in a commit made by hand, is
+/// the writer's in full.
+fn written_body(message: &str) -> &str {
+    let body = message.split_once('\n').map_or("", |(_, rest)| rest).trim();
+    match body.rsplit_once("\n\n") {
+        Some((written, last)) if is_trailers(last) => written.trim(),
+        None if is_trailers(body) => "",
+        _ => body,
+    }
+}
+
+/// One trailer, with the lines of the value joined by spaces.
+fn trailer_line(key: &str, value: &str) -> String {
+    let lines: Vec<&str> = value.lines().filter(|line| !line.is_empty()).collect();
+    format!("{key}: {}", lines.join(" "))
+}
+
+/// Whether every line of `paragraph` is a `key: value` trailer.
+fn is_trailers(paragraph: &str) -> bool {
+    !paragraph.is_empty()
+        && paragraph.lines().all(|line| {
+            line.split_once(':')
+                .is_some_and(|(key, _)| !key.is_empty() && !key.contains(char::is_whitespace))
+        })
+}
+
+/// The writer's text, trimmed, then a blank line and `record`; `record` alone
+/// when the writer wrote nothing.
+fn with_written_part(written: &str, record: String) -> String {
+    let written = written.trim();
+    if written.is_empty() {
+        record
+    } else {
+        format!("{written}\n\n{record}")
+    }
 }
 
 /// The path a merge conflict is about, from whichever of its three sides has a
@@ -1244,16 +1324,16 @@ fn compose_message(title: &str, body: &str) -> String {
 
 /// One commit as every history reports it: the whole store's and one file's.
 fn summary_of(commit: &git2::Commit<'_>) -> CommitSummary {
+    let message = commit.message().unwrap_or_default();
     CommitSummary {
         oid: commit.id(),
         time: commit_time(commit),
         author: commit.author().name().unwrap_or_default().to_string(),
-        title: commit
-            .message()
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .unwrap_or_default()
+        title: message.lines().next().unwrap_or_default().to_string(),
+        body: message
+            .split_once('\n')
+            .map_or("", |(_, rest)| rest)
+            .trim()
             .to_string(),
     }
 }
@@ -1285,6 +1365,48 @@ mod tests {
     #[test]
     fn a_message_without_a_body_is_just_the_title() {
         assert_eq!(compose_message("record the rule", ""), "record the rule\n");
+    }
+
+    /// Detects a split of a commit message that cuts the writer's body at its
+    /// first blank line, takes a line of it that reads like `key: value` for a
+    /// trailer, or keeps the server's trailers in it: a land would then lose a
+    /// writer's reasons or repeat the server's lines as if a writer had written
+    /// them. Expectation source: the writer's text is what was sent, trimmed.
+    #[test]
+    fn the_writers_body_is_taken_back_out_of_a_message_word_for_word() {
+        let written = "The rule came from the bench audit.\n\nNote: the old rule\nwas never used.";
+        let message = compose_message(
+            "record the rule",
+            &commit_body(
+                Some(&format!("\n{written}\n\n")),
+                &[("memory", "widgets"), ("author", "alpha/session-1")],
+            ),
+        );
+        assert_eq!(written_body(&message), written);
+        let without = compose_message(
+            "record the rule",
+            &commit_body(None, &[("memory", "widgets"), ("author", "user")]),
+        );
+        assert_eq!(written_body(&without), "");
+    }
+
+    /// Detects a trailer value written across lines: an author with a blank
+    /// line in it would split the trailers into two paragraphs, and the writer's
+    /// body read back would then carry the server's first lines.
+    #[test]
+    fn a_trailer_value_with_line_breaks_stays_one_line() {
+        let message = compose_message(
+            "record the rule",
+            &commit_body(
+                Some("why"),
+                &[("memory", "widgets"), ("author", "Ada\n\nLovelace")],
+            ),
+        );
+        assert_eq!(written_body(&message), "why");
+        assert!(
+            message.ends_with("\nauthor: Ada Lovelace\n"),
+            "the author must be one trailer line, got {message:?}"
+        );
     }
 
     /// Detects an author name that git refuses reaching the signature, which

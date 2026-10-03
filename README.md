@@ -87,7 +87,7 @@ See [[rocketry-notes]].
 
 `kind` is `critical` or `knowledge` and defaults to `knowledge`; `scope` defaults to `global`; `source` records who wrote the memory, `user` or `assistant` by convention; any other value is kept. A file written when a memory could name several scopes carries a `scopes` list instead; it is read as the first entry of that list, reported by `forgetmenot check` when it names more than one, and written back as `scope` the next time anything writes the file. Any other key is preserved untouched, so an existing Claude Code memory directory becomes a valid store the moment it is a git repository.
 
-Every change to the store is a git commit with a title line. A write carries the version of the file it was based on, and is refused if someone else changed the file in between.
+Every change to the store is a git commit. A write names the commit's title line in `commit_title`, one line of at most 72 characters, and may add the rest of the commit message in `commit_body`, any number of lines. The server adds its own `key: value` lines after the body, naming the file written and the author. A write carries the version of the file it was based on, and is refused if someone else changed the file in between.
 
 ### Settings
 
@@ -115,7 +115,7 @@ An unknown key, or a value of the wrong type, is a validation error: `forgetmeno
 Claude Code does not show the model a long hook answer. Past 10 000 characters (Claude Code 2.1.270; the length in UTF-16 code units) it writes the answer to a file under the session's `tool-results` directory and shows the model the file's path and the first 2000 characters, cut back to the last newline when that lies past the first 1000. An answer longer than `answer_file_threshold` therefore opens with a short notice telling the model to read the file in full before doing anything else; the notice sits inside the part of the preview that is never cut. The notice is a workaround: the server still records every memory in such an answer as delivered, and the fix, an answer budget with the rest carried to the next event, is [issue 19](https://github.com/ArviFoxy/forgetmenot/issues/19).
 - `/mcp`: MCP over streamable HTTP, for the agent.
 - `/api/*`: the JSON API used by the frontend. `GET /api/scopes` answers one row per scope that exists, carrying its `id`, its `kind`, the `name` of a session and the `file` of a scope that has one.
-- `GET /api/history?before=<oid>&limit=<n>`: the store's commits on `main`, newest first, each with its oid, time, author and title. `before` starts the page after that commit and `next_before` in the answer is the value that reads the next page, `null` at the end of the history. `limit` defaults to 50 and is capped at 200.
+- `GET /api/history?before=<oid>&limit=<n>`: the store's commits on `main`, newest first, each with its oid, time, author, title and body. `before` starts the page after that commit and `next_before` in the answer is the value that reads the next page, `null` at the end of the history. `limit` defaults to 50 and is capped at 200.
 - `GET /api/history/<oid>`: one commit with every file it changed, each carrying its status, its own diff, and the `memory_id` or `scope_id` the file holds.
 - `GET /api/contexts/<key>/prompt?mode=due|all`: the text one context would be given, rendered by the renderer the hook uses and recording nothing. `due` is what its next hook event would deliver; `all` is every critical memory of its active scopes in full and every knowledge memory as its description, as if the context had been told nothing.
 - `GET /api/stats/*`: what the log holds. `summary` reports delivered tokens, events, held calls and forgettings over the last five minutes, hour, day and week, with the contexts live now. `series?bucket=auto|minute|hour|day` reports delivered tokens per bucket, `auto` choosing the coarsest bucket that gives a readable number of points. `session/<key>/series` reports, per hook event of one context, the context size Claude Code measured and the tokens that event's answer carried. `memories`, `scopes`, `sessions` and `triggers` report per memory, scope, session and trigger pattern, `sessions` giving one row per main context. Every one of them takes `from` and `to` as RFC 3339 times and, where it applies, `session=<key>`, `scope=<id>` and `include_subagents=true|false`, which decides whether a session's subagents count towards it and is on by default; an unreadable time, bucket or flag is a 400 and a context the log has no event of is a 404. Every token figure is `chars / characters_per_token` rounded up, computed here so the frontend converts nothing.
@@ -125,13 +125,13 @@ Claude Code templates for the hooks block and the MCP registration are in `examp
 
 ### MCP tools
 
-Memory tools read and change the store; every change is one commit.
+Memory tools read and change the store; every change is one commit, titled by the write's `commit_title`, with `commit_body` as the rest of its message when it is given.
 
 | Tool | What it does |
 |---|---|
 | `memory_index` | List memories with their descriptions, kinds and scopes |
 | `memory_get` | Read one memory |
-| `memory_history` | List the commits that changed one memory, newest first, each with its oid, time, author and title |
+| `memory_history` | List the commits that changed one memory, newest first, each with its oid, time, author, title and body |
 | `memory_blame` | Read one memory's file line by line, each line with the oid, time and author of the commit that last changed it |
 | `memory_put` | Create a memory or replace one whole, including any extra metadata keys |
 | `memory_replace_text` | Replace one exact snippet in a body, leaving the rest as it is |
@@ -177,11 +177,11 @@ To land several changes as one commit, work on a branch:
 branch_create                     start a branch from main
 memory_put ... branch=<name>      any write, made on the branch instead of main
 branch_diff                       see what the branch would change
-branch_land message="..."         merge into main as one commit with that title
+branch_land commit_title="..."    merge into main as one commit with that title
 branch_abandon                    throw the branch away
 ```
 
-Nothing on a branch reaches any session until it lands. A write on a branch is checked on its own; whether every link resolves and every scope exists is checked when the branch lands, so memories that link to each other can be written in any order. Landing is a three-way merge, so changes made on `main` in the meantime are kept, and two branches that edited different parts of the same memory both land. When the branch and `main` changed the same lines, landing reports the file with its three versions and leaves everything as it was; write the version you want on the branch and land again. Branches are ordinary git refs under `tx/`, so nothing about them is lost on a restart.
+Nothing on a branch reaches any session until it lands. The commit a land makes carries the `commit_body` given to `branch_land`, then the title of every write on the branch with that write's own `commit_body` beneath it. A write on a branch is checked on its own; whether every link resolves and every scope exists is checked when the branch lands, so memories that link to each other can be written in any order. Landing is a three-way merge, so changes made on `main` in the meantime are kept, and two branches that edited different parts of the same memory both land. When the branch and `main` changed the same lines, landing reports the file with its three versions and leaves everything as it was; write the version you want on the branch and land again. Branches are ordinary git refs under `tx/`, so nothing about them is lost on a restart.
 
 ## Running
 

@@ -220,7 +220,7 @@ impl<'s, 'w> Mcp<'s, 'w> {
     /// is on when it is on one.
     fn write_params(&self, params: Value, message: &str, branch: Option<&str>) -> Value {
         let mut params = as_object(self.with_session_key(params));
-        params.insert("message".to_string(), json!(message));
+        params.insert("commit_title".to_string(), json!(message));
         if let Some(branch) = branch {
             params.insert("branch".to_string(), json!(branch));
         }

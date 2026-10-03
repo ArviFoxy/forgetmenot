@@ -53,7 +53,7 @@ pub enum StoreError {
 pub enum WriteError {
     /// The commit message's title line is missing, multi-line or too long.
     #[error(
-        "the commit message must be one non-empty line of at most {MAX_MESSAGE_TITLE} characters"
+        "the commit title must be one non-empty line of at most {MAX_MESSAGE_TITLE} characters"
     )]
     BadMessage,
     /// The document changed since the caller read it. `current` is the version
@@ -394,7 +394,7 @@ impl Store {
                     statuses.push(BranchStatus {
                         // The writes on the branch, not every commit on it: the
                         // commit that opened it wrote nothing.
-                        ahead: record.writes(),
+                        ahead: record.write_count(),
                         record,
                         name,
                         behind,
@@ -422,7 +422,7 @@ impl Store {
                 let base = repository.merge_base(head, main_head)?;
                 let (_, behind) = repository.ahead_behind(head, main_head)?;
                 Ok(Some(BranchChanges {
-                    ahead: repository.branch_record(head, main_head)?.writes(),
+                    ahead: repository.branch_record(head, main_head)?.write_count(),
                     behind,
                     files: repository.changes_between(base, head)?,
                 }))
@@ -563,12 +563,14 @@ impl Store {
     /// merge and the reference move, up to [`LAND_ATTEMPTS`] times; after that
     /// the caller is told the store is too busy rather than being made to wait.
     /// A merge that conflicts, or a merged store the validator refuses, leaves
-    /// `main` and the branch exactly as they were.
+    /// `main` and the branch exactly as they were. `message_body` is what the
+    /// lander wrote beneath the title, empty when nothing.
     pub async fn land_branch(
         &self,
         branch: &BranchName,
         author: &str,
         message_title: &str,
+        message_body: &str,
     ) -> Result<Oid, LandError> {
         if !is_valid_message_title(message_title) {
             return Err(LandError::BadMessage);
@@ -579,9 +581,10 @@ impl Store {
             let name = branch.clone();
             let author = author.to_string();
             let title = message_title.to_string();
+            let body = message_body.to_string();
             let step = self
                 .with_repository(move |repository| {
-                    let prepared = match repository.prepare_land(&name, &author, &title)? {
+                    let prepared = match repository.prepare_land(&name, &author, &title, &body)? {
                         LandAttempt::Conflicts(conflicts) => {
                             return Ok(LandStep::Conflicts(conflicts));
                         }
@@ -697,7 +700,7 @@ pub struct BranchChanges {
 #[derive(Debug, thiserror::Error)]
 pub enum LandError {
     #[error(
-        "the commit message must be one non-empty line of at most {MAX_MESSAGE_TITLE} characters"
+        "the commit title must be one non-empty line of at most {MAX_MESSAGE_TITLE} characters"
     )]
     BadMessage,
     #[error("there is no branch `{0}`")]

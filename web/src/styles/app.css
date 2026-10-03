@@ -1158,16 +1158,17 @@ table.stats td:first-child {
 /* ---------- Commit bar ---------- */
 
 /* The bar is fixed over the content column, so it is on screen as soon as anything
-   changes, however short the document is. */
+   changes, however short the document is. The title and the description are one
+   column, with the buttons beside the title. */
 .commit-bar {
   position: fixed;
   inset-inline: calc(var(--fmn-sidebar-width) + var(--sl-spacing-medium)) var(--sl-spacing-medium);
   bottom: var(--sl-spacing-medium);
   z-index: 15;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: var(--sl-spacing-x-small);
-  align-items: center;
-  flex-wrap: wrap;
+  align-items: start;
   margin-top: var(--sl-spacing-large);
   padding: var(--sl-spacing-x-small);
   border: 1px solid var(--fmn-border);
@@ -1176,29 +1177,79 @@ table.stats td:first-child {
   box-shadow: var(--sl-shadow-medium);
 }
 
-.commit-bar sl-input {
-  flex: 1 1 16rem;
-  min-width: 0;
+.commit-bar .commit-title {
+  grid-area: 1 / 1;
 }
 
-/* The label sits beside the field rather than above it, so the bar stays one row
-   and the field is still plainly labelled. */
-.commit-bar sl-input::part(form-control) {
+.commit-bar .commit-description {
+  grid-area: 2 / 1;
+}
+
+.commit-bar .commit-save {
+  grid-area: 1 / 2;
+}
+
+.commit-bar .commit-discard {
+  grid-area: 1 / 3;
+}
+
+/* Each label sits beside its field rather than above it, so the bar stays low and
+   the fields are still plainly labelled; the labels share one width, so the two
+   fields start at the same place. */
+.commit-bar sl-input::part(form-control),
+.commit-bar sl-textarea::part(form-control) {
   display: flex;
   gap: var(--sl-spacing-x-small);
   align-items: center;
 }
 
-.commit-bar sl-input::part(form-control-label) {
+.commit-bar sl-input::part(form-control-label),
+.commit-bar sl-textarea::part(form-control-label) {
+  flex: 0 0 9rem;
   margin: 0;
   color: var(--fmn-fg-muted);
   font-size: 0.9rem;
   white-space: nowrap;
 }
 
-.commit-bar sl-input::part(form-control-input) {
+.commit-bar sl-input::part(form-control-input),
+.commit-bar sl-textarea::part(form-control-input) {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* On a phone the fields take the whole width and the buttons go beneath them. */
+@media (max-width: 700px) {
+  .commit-bar .commit-title {
+    grid-area: 1 / 1 / 2 / -1;
+  }
+
+  .commit-bar .commit-description {
+    grid-area: 2 / 1 / 3 / -1;
+  }
+
+  .commit-bar .commit-save {
+    grid-area: 3 / 2;
+  }
+
+  .commit-bar .commit-discard {
+    grid-area: 3 / 3;
+  }
+}
+
+/* The rest of a commit message keeps its own line breaks. */
+.commit-body {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* In a table it keeps a readable width, and on a narrow screen the table scrolls
+   rather than squeezing it to a word a line. */
+table.data .commit-body {
+  min-width: 16rem;
+  margin-top: var(--sl-spacing-3x-small);
+  color: var(--fmn-fg-muted);
+  font-size: 0.85rem;
 }
 
 /* ---------- Diffs and conflicts ---------- */
@@ -1213,6 +1264,9 @@ pre.prompt {
   background-color: var(--fmn-raised);
   font-size: 0.8rem;
   line-height: 1.55;
+  /* A diff line is not wrapped, so on a narrow screen the block scrolls rather
+     than the page. */
+  overflow-x: auto;
 }
 
 pre.diff code {

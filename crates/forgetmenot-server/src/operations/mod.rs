@@ -34,7 +34,7 @@ use crate::stats::{StatsError, ToolCallRecord, tokens_of};
 use crate::store::branch::{BranchName, BranchNameError};
 use crate::store::catalog::{Catalog, MemoryEntry, ScopeEntry};
 use crate::store::frontmatter::FrontmatterError;
-use crate::store::git::{CommitSummary, FileConflict, GitError, GitRepo};
+use crate::store::git::{self, CommitSummary, FileConflict, GitError, GitRepo};
 use crate::store::memory::{
     MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource, rewrite_links,
 };
@@ -243,6 +243,10 @@ pub struct Commit {
     pub author: String,
     /// The commit message's first line.
     pub title: String,
+    /// The rest of the commit message, trimmed: what the writer wrote beneath
+    /// the title, then the server's own `key: value` lines. Empty when the
+    /// message is the title alone.
+    pub body: String,
 }
 
 impl Commit {
@@ -252,6 +256,7 @@ impl Commit {
             time: iso8601(summary.time),
             author: summary.author.clone(),
             title: summary.title.clone(),
+            body: summary.body.clone(),
         }
     }
 }
@@ -594,7 +599,11 @@ pub struct MemoryWriteRequest {
     /// the frontend sends.
     pub author: String,
     /// The commit's title line.
-    pub message: String,
+    pub commit_title: String,
+    /// The rest of the commit message, in as many lines as it needs; absent
+    /// when the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// A memory to create, which needs the id the new file goes to.
@@ -619,7 +628,9 @@ pub struct ReplaceTextRequest {
     #[serde(default)]
     pub base_version: Option<String>,
     pub author: String,
-    pub message: String,
+    pub commit_title: String,
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// The frontmatter fields of one memory to set. A field that is absent is left
@@ -643,7 +654,9 @@ pub struct SetFieldsRequest {
     #[serde(default)]
     pub base_version: Option<String>,
     pub author: String,
-    pub message: String,
+    pub commit_title: String,
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 impl SetFieldsRequest {
@@ -666,7 +679,9 @@ pub struct RenameRequest {
     #[serde(default)]
     pub base_version: Option<String>,
     pub author: String,
-    pub message: String,
+    pub commit_title: String,
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// A deletion, which removes the file and so carries no content.
@@ -677,7 +692,9 @@ pub struct RenameRequest {
 pub struct DeleteRequest {
     pub base_version: String,
     pub author: String,
-    pub message: String,
+    pub commit_title: String,
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// A write of one scope.
@@ -686,9 +703,8 @@ pub struct ScopeWriteRequest {
     pub implies: Vec<ScopeId>,
     pub triggers: Vec<Trigger>,
     /// The scope's own `message`, the text it delivers whenever it is active.
-    /// Named apart from `message`, which is this write's commit title.
     #[serde(default)]
-    pub scope_message: Option<String>,
+    pub message: Option<String>,
     /// When the scope turns itself off in a context; absent when it stays on
     /// until the agent turns it off.
     #[serde(default)]
@@ -696,7 +712,9 @@ pub struct ScopeWriteRequest {
     #[serde(default)]
     pub base_version: Option<String>,
     pub author: String,
-    pub message: String,
+    pub commit_title: String,
+    #[serde(default)]
+    pub commit_body: Option<String>,
 }
 
 /// A scope to create, which needs the id the new file goes to.
@@ -909,7 +927,8 @@ pub async fn memory_put(
         mode,
         expected,
         &request.author,
-        &request.message,
+        &request.commit_title,
+        request.commit_body.as_deref(),
         branch,
     )
     .await
@@ -938,7 +957,7 @@ pub async fn memory_delete(
         Err(_) => return Err(OperationError::invalid(&path, UNREADABLE_BASE_VERSION)),
     };
 
-    if !is_valid_message_title(&request.message) {
+    if !is_valid_message_title(&request.commit_title) {
         return Err(OperationError::invalid(
             &path,
             &WriteError::BadMessage.to_string(),
@@ -949,8 +968,13 @@ pub async fn memory_delete(
         state,
         branch,
         &request.author,
-        &request.message,
-        &commit_body("memory", id.as_str(), &request.author),
+        &request.commit_title,
+        &document_commit_body(
+            request.commit_body.as_deref(),
+            "memory",
+            id.as_str(),
+            &request.author,
+        ),
         // No content: the commit removes the file.
         vec![(path.clone(), None)],
         vec![(path.clone(), Some(expected))],
@@ -1030,7 +1054,8 @@ pub async fn memory_replace_text(
         WriteMode::Update,
         Some(expected),
         &request.author,
-        &request.message,
+        &request.commit_title,
+        request.commit_body.as_deref(),
         branch,
     )
     .await
@@ -1090,7 +1115,8 @@ pub async fn memory_set_fields(
         WriteMode::Update,
         Some(expected),
         &request.author,
-        &request.message,
+        &request.commit_title,
+        request.commit_body.as_deref(),
         branch,
     )
     .await
@@ -1137,7 +1163,7 @@ pub async fn memory_rename(
     );
     let mut errors: Vec<ValidationMessage> =
         report.errors().iter().map(ValidationMessage::of).collect();
-    if !is_valid_message_title(&request.message) {
+    if !is_valid_message_title(&request.commit_title) {
         errors.push(ValidationMessage {
             path: to_path.clone(),
             message: WriteError::BadMessage.to_string(),
@@ -1195,10 +1221,14 @@ pub async fn memory_rename(
         state,
         branch,
         &request.author,
-        &request.message,
-        &format!(
-            "memory: {to}\nrenamed-from: {from}\nauthor: {}",
-            request.author
+        &request.commit_title,
+        &git::commit_body(
+            request.commit_body.as_deref(),
+            &[
+                ("memory", to.as_str()),
+                ("renamed-from", from.as_str()),
+                ("author", &request.author),
+            ],
         ),
         files,
         expected_versions,
@@ -1266,7 +1296,8 @@ async fn commit_memory(
     // The version the write replaces, `None` when it creates the file.
     expected: Option<Oid>,
     author: &str,
-    message: &str,
+    commit_title: &str,
+    commit_body: Option<&str>,
     branch: Option<&BranchName>,
 ) -> Result<WriteOutcome, OperationError> {
     let id = document.id.clone();
@@ -1281,7 +1312,7 @@ async fn commit_memory(
     );
     let mut errors: Vec<ValidationMessage> =
         report.errors().iter().map(ValidationMessage::of).collect();
-    if !is_valid_message_title(message) {
+    if !is_valid_message_title(commit_title) {
         errors.push(ValidationMessage {
             path: path.clone(),
             message: WriteError::BadMessage.to_string(),
@@ -1296,8 +1327,8 @@ async fn commit_memory(
         state,
         branch,
         author,
-        message,
-        &commit_body("memory", id.as_str(), author),
+        commit_title,
+        &document_commit_body(commit_body, "memory", id.as_str(), author),
         vec![(path.clone(), Some(bytes))],
         vec![(path.clone(), expected)],
     )
@@ -1557,7 +1588,7 @@ pub async fn scope_put(
 
     let document = ScopeDocument {
         id: id.clone(),
-        message: request.scope_message.clone(),
+        message: request.message.clone(),
         implies: request.implies.clone(),
         triggers: request.triggers.clone(),
         forget: request.forget,
@@ -1573,7 +1604,7 @@ pub async fn scope_put(
     );
     let mut errors: Vec<ValidationMessage> =
         report.errors().iter().map(ValidationMessage::of).collect();
-    if !is_valid_message_title(&request.message) {
+    if !is_valid_message_title(&request.commit_title) {
         errors.push(ValidationMessage {
             path: path.clone(),
             message: WriteError::BadMessage.to_string(),
@@ -1588,8 +1619,13 @@ pub async fn scope_put(
         state,
         branch,
         &request.author,
-        &request.message,
-        &commit_body("scope", id.as_str(), &request.author),
+        &request.commit_title,
+        &document_commit_body(
+            request.commit_body.as_deref(),
+            "scope",
+            id.as_str(),
+            &request.author,
+        ),
         vec![(path.clone(), Some(bytes))],
         vec![(path.clone(), expected)],
     )
@@ -1644,7 +1680,7 @@ pub async fn scope_delete(
     };
 
     let mut errors = scope_references(&catalog, id);
-    if !is_valid_message_title(&request.message) {
+    if !is_valid_message_title(&request.commit_title) {
         errors.push(ValidationMessage {
             path: path.clone(),
             message: WriteError::BadMessage.to_string(),
@@ -1658,8 +1694,13 @@ pub async fn scope_delete(
         state,
         branch,
         &request.author,
-        &request.message,
-        &commit_body("scope", id.as_str(), &request.author),
+        &request.commit_title,
+        &document_commit_body(
+            request.commit_body.as_deref(),
+            "scope",
+            id.as_str(),
+            &request.author,
+        ),
         // No content: the commit removes the file.
         vec![(path.clone(), None)],
         vec![(path.clone(), Some(expected))],
@@ -2425,7 +2466,7 @@ pub(crate) async fn commit_to(
     state: &AppState,
     branch: Option<&BranchName>,
     author: &str,
-    message: &str,
+    title: &str,
     body: &str,
     files: Vec<(String, Option<Vec<u8>>)>,
     expected_versions: Vec<(String, Option<Oid>)>,
@@ -2434,22 +2475,22 @@ pub(crate) async fn commit_to(
         None => {
             state
                 .store
-                .commit_documents(author, message, body, files, expected_versions)
+                .commit_documents(author, title, body, files, expected_versions)
                 .await
         }
         Some(branch) => {
             state
                 .store
-                .commit_documents_on_branch(branch, author, message, body, files, expected_versions)
+                .commit_documents_on_branch(branch, author, title, body, files, expected_versions)
                 .await
         }
     }
 }
 
-/// The commit's body, which records what was written and by whom, since the
-/// title line is the author's own words.
-fn commit_body(kind: &str, id: &str, author: &str) -> String {
-    format!("{kind}: {id}\nauthor: {author}")
+/// The body of a commit that writes one document: the writer's own body, then
+/// trailers recording what was written and by whom.
+fn document_commit_body(written: Option<&str>, kind: &str, id: &str, author: &str) -> String {
+    git::commit_body(written, &[(kind, id), ("author", author)])
 }
 
 pub(crate) fn write_outcome(outcome: &crate::service::WriteOutcome, path: &str) -> WriteOutcome {

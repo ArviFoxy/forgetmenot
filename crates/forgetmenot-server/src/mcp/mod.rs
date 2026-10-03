@@ -292,7 +292,8 @@ impl ToolServer {
             body: params.body,
             base_version: params.base_version,
             author: author.to_string(),
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         match operations::memory_put(&self.state, &id, &request, mode, branch.as_ref()).await {
             Ok(outcome) => {
@@ -341,7 +342,8 @@ impl ToolServer {
         let request = DeleteRequest {
             base_version,
             author: author.to_string(),
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         match operations::memory_delete(&self.state, &id, &request, branch.as_ref()).await {
             Ok(outcome) => {
@@ -375,7 +377,8 @@ impl ToolServer {
             replace_all: params.replace_all,
             base_version: params.base_version,
             author: author.to_string(),
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         let id = MemoryId::new(params.id);
         match operations::memory_replace_text(&self.state, &id, &request, branch.as_ref()).await {
@@ -414,7 +417,8 @@ impl ToolServer {
             metadata: params.metadata,
             base_version: params.base_version,
             author: author.to_string(),
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         let id = MemoryId::new(params.id);
         match operations::memory_set_fields(&self.state, &id, &request, branch.as_ref()).await {
@@ -446,7 +450,8 @@ impl ToolServer {
             to: MemoryId::new(params.to),
             base_version: params.base_version,
             author: author.to_string(),
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         let from = MemoryId::new(params.from);
         match operations::memory_rename(&self.state, &from, &request, branch.as_ref()).await {
@@ -541,11 +546,12 @@ impl ToolServer {
         let request = ScopeWriteRequest {
             implies: requested_scopes(params.implies),
             triggers: params.triggers.into_iter().map(Into::into).collect(),
-            scope_message: params.message,
+            message: params.message,
             forget: params.forget.map(Into::into),
             base_version: params.base_version,
             author: author.to_string(),
-            message: params.message_title,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         match operations::scope_put(&self.state, &id, &request, mode, branch.as_ref()).await {
             Ok(outcome) => json_text(&outcome),
@@ -593,7 +599,8 @@ impl ToolServer {
         let request = DeleteRequest {
             base_version,
             author: author.to_string(),
-            message: params.message_title,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         match operations::scope_delete(&self.state, &id, &request, branch.as_ref()).await {
             Ok(outcome) => json_text(&outcome),
@@ -652,7 +659,7 @@ impl ToolServer {
 
     #[tool(
         description = "Branch family: land one branch, so every write on it becomes one commit on \
-                       main with message as its title, and the branch is gone. A change made on \
+                       main with commit_title as its title, and the branch is gone. A change made on \
                        main meanwhile is merged in. A file the branch and main both changed \
                        incompatibly is reported with the text of both sides and nothing lands: \
                        write the version you want on the branch and land again."
@@ -667,7 +674,8 @@ impl ToolServer {
             Err(failure) => return Ok(*failure),
         };
         let request = LandRequest {
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
             author: author.to_string(),
         };
         match branches::branch_land(&self.state, &branch, &request).await {
@@ -739,7 +747,8 @@ impl ToolServer {
             // that read it and writes it back is not resolving an edit conflict.
             base_version: None,
             author: author.to_string(),
-            message: params.message,
+            commit_title: params.commit_title,
+            commit_body: params.commit_body,
         };
         match settings_operations::settings_set(&self.state, &params.key, &request, branch.as_ref())
             .await

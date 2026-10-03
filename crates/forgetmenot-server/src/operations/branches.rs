@@ -80,7 +80,11 @@ pub struct BranchCreateRequest {
 #[derive(Clone, Debug, Deserialize)]
 pub struct LandRequest {
     /// The commit's title line: what all the writes on the branch did.
-    pub message: String,
+    pub commit_title: String,
+    /// The rest of the commit message, in as many lines as it needs; absent
+    /// when the title says everything.
+    #[serde(default)]
+    pub commit_body: Option<String>,
     pub author: String,
 }
 
@@ -149,7 +153,12 @@ pub async fn branch_land(
 ) -> Result<BranchLanded, OperationError> {
     match state
         .store
-        .land_branch(branch, &request.author, &request.message)
+        .land_branch(
+            branch,
+            &request.author,
+            &request.commit_title,
+            request.commit_body.as_deref().unwrap_or_default(),
+        )
         .await
     {
         Ok(commit_oid) => Ok(BranchLanded {
