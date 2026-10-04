@@ -6,3 +6,5 @@
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+# The statistics fixtures of the migration tests are committed.
+!/crates/forgetmenot-server/tests/fixtures/stats/*.sqlite

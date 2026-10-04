@@ -11,7 +11,11 @@
 //! those columns existed, which is what "recorded before this was recorded"
 //! means. The schema itself is [`SCHEMA`] and the queries over a span of time
 //! are in [`queries`].
+//!
+//! The scope activation log is written by the same thread into tables of its
+//! own, and read and pruned by [`activations`].
 
+pub mod activations;
 pub mod queries;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +30,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::context::ContextKey;
 use crate::store::{ScopeId, ScopeKind};
 
+pub use activations::{ActivationLog, ActivationRecord, Activations};
 pub use queries::{
     Bucket, Filter, SUMMARY_WINDOWS, SeriesPoint, SessionEventRow, SummaryRow, Window, tokens_of,
 };
@@ -129,6 +134,9 @@ pub struct HookEventRecord {
     pub triggers: Vec<TriggerFire>,
     pub forgotten: Vec<ForgottenScope>,
     pub deliveries: Vec<Delivery>,
+    /// The scopes this event turned on, for the activation log; empty when the
+    /// log is off.
+    pub activations: Activations,
 }
 
 /// One MCP tool call.
@@ -146,6 +154,9 @@ pub struct ToolCallRecord {
 enum Record {
     Hook(Box<HookEventRecord>),
     ToolCall(Box<ToolCallRecord>),
+    Activations(Box<ActivationRecord>),
+    /// Delete the activation log's entries recorded before this instant.
+    PruneActivations(DateTime<Utc>),
     /// Answered once everything queued before it has been inserted.
     Flush(oneshot::Sender<()>),
 }
@@ -184,6 +195,21 @@ impl StatsWriter {
     /// Queue one tool call.
     pub async fn record_tool_call(&self, record: ToolCallRecord) {
         let _ = self.sender.send(Record::ToolCall(Box::new(record))).await;
+    }
+
+    /// Queue the activation entries of a step that is not a hook event.
+    pub(crate) async fn record_activations(&self, record: ActivationRecord) {
+        let _ = self
+            .sender
+            .send(Record::Activations(Box::new(record)))
+            .await;
+    }
+
+    /// Queue the deletion of the activation entries recorded before `cutoff`,
+    /// and of the texts only they named. Returns once it is queued, not once it
+    /// is done.
+    pub async fn prune_activations(&self, cutoff: DateTime<Utc>) {
+        let _ = self.sender.send(Record::PruneActivations(cutoff)).await;
     }
 
     /// Wait until everything queued so far has been written.
@@ -970,6 +996,8 @@ pub enum Table {
     ScopeForgettings,
     Deliveries,
     ToolCalls,
+    ScopeActivations,
+    ActivationMessages,
 }
 
 impl Table {
@@ -980,6 +1008,8 @@ impl Table {
             Table::ScopeForgettings => "scope_forgettings",
             Table::Deliveries => "deliveries",
             Table::ToolCalls => "tool_calls",
+            Table::ScopeActivations => "scope_activations",
+            Table::ActivationMessages => "activation_messages",
         }
     }
 }
@@ -987,15 +1017,21 @@ impl Table {
 /// The schema, one entry per version of it, applied through sqlite's own
 /// `user_version`.
 ///
-/// Version 1 is the whole schema, so a database with no tables reaches the
-/// current shape in one step. A database that carries the tables and still
-/// reports `user_version` 0 was created by a bootstrap that recorded no
-/// version, and its shape is version 1's; [`stamp_existing_schema`] stamps it
-/// at that version before the migrations run, so it is adopted rather than
-/// created a second time. A change to the schema is one more entry here and
-/// nothing else.
-const SCHEMA: &[M<'static>] = &[M::up(
-    "CREATE TABLE hook_events (
+/// Version 1 is the schema the statistics began with, created in one step. A
+/// database that carries its tables and still reports `user_version` 0 was
+/// created by a bootstrap that recorded no version, and its shape is version
+/// 1's; [`stamp_existing_schema`] stamps it at that version before the
+/// migrations run, so it is adopted rather than created a second time and the
+/// later versions are applied to it. A change to the schema is one more entry
+/// here and nothing else.
+///
+/// Version 2 adds the scope activation log: `scope_activations`, one row per
+/// scope that came on in a context, and `activation_messages`, the texts the
+/// trigger rows among them were found in. What is particular to one kind of
+/// trigger is JSON in `trigger` and `evidence`; see [`activations`].
+const SCHEMA: &[M<'static>] = &[
+    M::up(
+        "CREATE TABLE hook_events (
          id INTEGER PRIMARY KEY,
          ts TEXT NOT NULL,
          machine TEXT NOT NULL,
@@ -1044,7 +1080,37 @@ const SCHEMA: &[M<'static>] = &[M::up(
      CREATE INDEX deliveries_event ON deliveries (event_id);
      CREATE INDEX deliveries_memory ON deliveries (memory);
      CREATE INDEX tool_calls_tool ON tool_calls (tool, memory);",
-)];
+    ),
+    M::up(
+        "CREATE TABLE activation_messages (
+         id INTEGER PRIMARY KEY,
+         text TEXT NOT NULL,
+         chars INTEGER NOT NULL
+     );
+     CREATE TABLE scope_activations (
+         id INTEGER PRIMARY KEY,
+         ts TEXT NOT NULL,
+         machine TEXT NOT NULL,
+         session_id TEXT NOT NULL,
+         agent TEXT NOT NULL,
+         scope_id TEXT NOT NULL,
+         cause TEXT NOT NULL,
+         trigger_kind TEXT,
+         trigger TEXT,
+         scope_version TEXT,
+         field TEXT,
+         evidence TEXT,
+         message_id INTEGER REFERENCES activation_messages (id),
+         cause_scope TEXT,
+         cause_entry_id INTEGER,
+         cause_context TEXT
+     );
+     CREATE INDEX scope_activations_session ON scope_activations (session_id, scope_id, ts);
+     CREATE INDEX scope_activations_ts ON scope_activations (ts);
+     CREATE INDEX scope_activations_scope ON scope_activations (scope_id, ts);
+     CREATE INDEX scope_activations_message ON scope_activations (message_id);",
+    ),
+];
 
 /// [`SCHEMA`] as the connection applies it.
 const MIGRATIONS: Migrations<'static> = Migrations::from_slice(SCHEMA);
@@ -1055,6 +1121,11 @@ pub const SCHEMA_VERSION: usize = SCHEMA.len();
 /// The table every other one hangs off, whose presence says a database already
 /// carries the schema.
 const ROOT_TABLE: &str = "hook_events";
+
+/// The version whose shape a database carrying [`ROOT_TABLE`] and no
+/// `user_version` has: the bootstrap that recorded no version created the
+/// tables of version 1 and nothing after them.
+const BOOTSTRAPPED_VERSION: i64 = 1;
 
 /// Open the database and bring its schema to [`SCHEMA_VERSION`].
 fn open_connection(path: &Path) -> Result<Connection, StatsError> {
@@ -1094,7 +1165,7 @@ fn open_connection(path: &Path) -> Result<Connection, StatsError> {
 /// sqlite reports `user_version` 0 both for a database with nothing in it and
 /// for one created before the version was recorded, and the two need opposite
 /// treatment: the empty one is built by the migrations, the other is already at
-/// the shape of [`SCHEMA_VERSION`] and would be built over. [`ROOT_TABLE`] in
+/// the shape of [`BOOTSTRAPPED_VERSION`] and would be built over. [`ROOT_TABLE`] in
 /// `sqlite_master` is what tells them apart.
 fn stamp_existing_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     let version: i64 =
@@ -1110,7 +1181,7 @@ fn stamp_existing_schema(connection: &Connection) -> Result<(), rusqlite::Error>
     if carried == 0 {
         return Ok(());
     }
-    connection.pragma_update(None, "user_version", SCHEMA_VERSION as i64)
+    connection.pragma_update(None, "user_version", BOOTSTRAPPED_VERSION)
 }
 
 /// Insert records in the order they were queued, each group in one transaction
@@ -1128,6 +1199,16 @@ fn write_records(mut connection: Connection, mut receiver: mpsc::Receiver<Record
                     tracing::warn!("statistics write failed: {error}");
                 }
             }
+            Record::Activations(record) => {
+                if let Err(error) = insert_activations(&mut connection, &record) {
+                    tracing::warn!("activation log write failed: {error}");
+                }
+            }
+            Record::PruneActivations(cutoff) => {
+                if let Err(error) = activations::prune(&mut connection, cutoff) {
+                    tracing::warn!("pruning the activation log failed: {error}");
+                }
+            }
             Record::Flush(answer) => {
                 let _ = answer.send(());
             }
@@ -1140,13 +1221,14 @@ fn insert_hook_event(
     record: &HookEventRecord,
 ) -> Result<(), rusqlite::Error> {
     let transaction = connection.transaction()?;
+    let ts = record.ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     transaction.execute(
         "INSERT INTO hook_events
              (ts, machine, session_id, agent, event, context_tokens, answer_chars,
               latency_us, decision)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
-            record.ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            ts,
             record.machine,
             record.session_id,
             record.agent,
@@ -1200,6 +1282,18 @@ fn insert_hook_event(
             ],
         )?;
     }
+    let key = ContextKey::subagent(&record.machine, &record.session_id, &record.agent);
+    activations::insert(&transaction, &ts, &key, &record.activations)?;
+    transaction.commit()
+}
+
+fn insert_activations(
+    connection: &mut Connection,
+    record: &ActivationRecord,
+) -> Result<(), rusqlite::Error> {
+    let transaction = connection.transaction()?;
+    let ts = record.ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    activations::insert(&transaction, &ts, &record.key, &record.activations)?;
     transaction.commit()
 }
 
@@ -1261,6 +1355,7 @@ mod tests {
                         bytes: 100,
                     })
                     .collect(),
+                activations: Activations::default(),
             },
         )
         .expect("the event is written");
@@ -1300,6 +1395,7 @@ mod tests {
                         bytes: chars,
                     })
                     .collect(),
+                activations: Activations::default(),
             },
         )
         .expect("the event is written");

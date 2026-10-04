@@ -15,6 +15,7 @@
 //! validated against that branch, and reaches no context until the branch is
 //! landed. The branch operations themselves are in [`branches`].
 
+pub mod activations;
 pub mod branches;
 pub mod settings;
 
@@ -30,7 +31,8 @@ use crate::context::registry::{ContextRecord, ContextRegistry, Creation, Registr
 use crate::context::{ContextKey, ContextState, PreviousTexts, compute_needs};
 use crate::render::{self, Delivery};
 use crate::service::{self, StoreError, WriteError, is_valid_message_title};
-use crate::stats::{StatsError, ToolCallRecord, tokens_of};
+use crate::stats::activations::{Activation, Cause, implied_activations};
+use crate::stats::{ActivationRecord, Activations, StatsError, ToolCallRecord, tokens_of};
 use crate::store::branch::{BranchName, BranchNameError};
 use crate::store::catalog::{Catalog, MemoryEntry, ScopeEntry};
 use crate::store::frontmatter::FrontmatterError;
@@ -113,6 +115,11 @@ pub enum OperationError {
     /// overwrite the file on it and land again.
     #[error("the branch cannot be landed: {} file(s) changed on both sides", conflicts.len())]
     MergeConflicts { conflicts: Vec<ConflictedFile> },
+
+    /// The server was started with `--no-activation-log`, so the log records
+    /// nothing and an empty answer would read as nothing having come on.
+    #[error("the activation log is turned off on this server")]
+    ActivationLogOff,
 
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -2258,13 +2265,14 @@ pub async fn session_scope_on(
         return Err(OperationError::UnknownScope(unknown.clone()));
     }
     let now = state.clock.now();
-    let active = state
+    let (active, activations) = state
         .contexts
         .with_context(
             key,
             now,
             Creation::in_session(catalog.settings()),
             |context| {
+                let before = context.active.clone();
                 context.active.extend(scopes.iter().cloned());
                 context.active = catalog.closure(&context.active);
                 // The call has no hook event of its own, so the activation is
@@ -2274,12 +2282,55 @@ pub async fn session_scope_on(
                     context.note_activation(scope, tokens, &catalog);
                 }
                 context.last_seen = now;
-                context.active.clone()
+                let activations = scope_on_activations(&catalog, &before, scopes, &context.active);
+                (context.active.clone(), activations)
             },
         )
         .await;
+    state
+        .activations
+        .record(ActivationRecord {
+            ts: now,
+            key: key.clone(),
+            activations,
+        })
+        .await;
     record_tool_call(state, "session_scope_on", key, scopes, true).await;
     Ok(session_scopes_of(&catalog, active))
+}
+
+/// The activation entries of a `session_scope_on` call: one for each scope it
+/// named that was off, then one for each other scope their implications turned
+/// on.
+fn scope_on_activations(
+    catalog: &Catalog,
+    before: &BTreeSet<ScopeId>,
+    named: &[ScopeId],
+    after: &BTreeSet<ScopeId>,
+) -> Activations {
+    let mut direct: Vec<ScopeId> = Vec::new();
+    for scope in named {
+        if !before.contains(scope) && !direct.contains(scope) {
+            direct.push(scope.clone());
+        }
+    }
+    let mut entries: Vec<Activation> = direct
+        .iter()
+        .map(|scope| Activation {
+            scope: scope.clone(),
+            cause: Cause::SessionScopeOn,
+        })
+        .collect();
+    entries.extend(implied_activations(
+        |scope, target| catalog.implies(scope, target),
+        before,
+        &direct,
+        after,
+    ));
+    Activations {
+        messages: Vec::new(),
+        entries,
+    }
 }
 
 /// Turn scopes off for one context: it stops working in them, and nothing
@@ -2348,18 +2399,38 @@ pub async fn session_inherit(
 
     let mut inherited = source.state.active.clone();
     inherited.insert(from.session_scope());
-    let active = state
+    let (active, taken) = state
         .contexts
         .with_context(
             key,
             now,
             Creation::in_session(catalog.settings()),
             |context| {
+                let taken: Vec<ScopeId> = inherited.difference(&context.active).cloned().collect();
                 context.active.extend(inherited);
                 context.last_seen = now;
-                context.active.clone()
+                (context.active.clone(), taken)
             },
         )
+        .await;
+    state
+        .activations
+        .record(ActivationRecord {
+            ts: now,
+            key: key.clone(),
+            activations: Activations {
+                messages: Vec::new(),
+                entries: taken
+                    .into_iter()
+                    .map(|scope| Activation {
+                        scope,
+                        cause: Cause::SessionInherit {
+                            source: from.clone(),
+                        },
+                    })
+                    .collect(),
+            },
+        })
         .await;
     record_tool_call(state, "session_inherit", key, &[], true).await;
     Ok(session_scopes_of(&catalog, active))

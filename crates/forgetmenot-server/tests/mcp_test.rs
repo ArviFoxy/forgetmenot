@@ -48,7 +48,14 @@ const BRANCH_TOOLS: [&str; 5] = [
 ];
 
 /// The scope tools, which read and change the scopes themselves.
-const SCOPE_TOOLS: [&str; 4] = ["scope_index", "scope_get", "scope_put", "scope_delete"];
+const SCOPE_TOOLS: [&str; 6] = [
+    "scope_index",
+    "scope_get",
+    "scope_put",
+    "scope_delete",
+    "scope_activations",
+    "scope_activation_get",
+];
 
 /// The settings tools, which read and change the store's behaviour settings.
 const SETTINGS_TOOLS: [&str; 2] = ["settings_get", "settings_set"];
@@ -1107,4 +1114,311 @@ fn initialize_with_host(server: &TestServer, host: &str) -> (u16, String) {
         .read_to_string()
         .expect("the answer is text");
     (status, text)
+}
+
+// ---------------------------------------------------------------------------
+// The activation log tools.
+// ---------------------------------------------------------------------------
+
+/// A prompt of the example store that turns `widgets` on by its user-message
+/// trigger, and `rocketry` through `widgets`.
+const WIDGET_PROMPT: &str = "rename the widget brackets";
+
+/// Send `prompt` as the user's prompt in `session` on `alpha`.
+fn prompt_in(server: &TestServer, session: &str, prompt: &str) {
+    let (status, answer) = server.hook(
+        "alpha",
+        Some(10_000),
+        &json!({
+            "session_id": session,
+            "transcript_path": "/nonexistent/transcript.jsonl",
+            "cwd": "/home/dev/notes",
+            "permission_mode": "default",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": prompt,
+        }),
+    );
+    assert_eq!(status, 200, "the prompt must be answered, got {answer}");
+}
+
+/// Start the subagent `agent_id` of `session` on `alpha`.
+fn subagent_in(server: &TestServer, session: &str, agent_id: &str) {
+    let (status, answer) = server.hook(
+        "alpha",
+        Some(10_000),
+        &json!({
+            "session_id": session,
+            "transcript_path": "/nonexistent/transcript.jsonl",
+            "cwd": "/home/dev/notes",
+            "permission_mode": "default",
+            "hook_event_name": "SubagentStart",
+            "agent_id": agent_id,
+            "agent_type": "general-purpose",
+        }),
+    );
+    assert_eq!(
+        status, 200,
+        "the subagent start must be answered, got {answer}"
+    );
+}
+
+/// The entries of one `scope_activations` answer.
+fn listed_entries(answer: &Value) -> Vec<Value> {
+    answer["entries"]
+        .as_array()
+        .expect("the answer lists its entries in an array")
+        .clone()
+}
+
+/// The values of one key of every entry, in the order listed.
+fn values_of(entries: &[Value], key: &str) -> Vec<Value> {
+    entries.iter().map(|entry| entry[key].clone()).collect()
+}
+
+/// Detects a list that carries the whole text a trigger matched, which a tool
+/// answer listing many entries cannot afford, and an entry that leaves out what
+/// the caller needs to tell why the scope came on: the trigger as written, the
+/// field, what the regex found and where, and the length of the text. Detects
+/// too a `scope_activation_get` that does not return that text whole, or that
+/// describes the entry differently from the list.
+///
+/// Expectation source: the example store's `widgets` trigger, `\bwidget\b` on
+/// what the user writes, and the prompt, in which `widget` follows the eleven
+/// characters of `rename the `.
+#[test]
+fn the_activation_list_leaves_the_message_out_and_one_entry_is_read_with_it() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    prompt_in(&server, "session-1", WIDGET_PROMPT);
+    let session = server.mcp();
+
+    let listed = tool_json(&session.call("scope_activations", json!({ "scope": "widgets" })));
+
+    let entries = listed_entries(&listed);
+    assert_eq!(entries.len(), 1, "widgets came on once, got {listed}");
+    let entry = &entries[0];
+    let keys: BTreeSet<&str> = entry
+        .as_object()
+        .expect("an entry is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from([
+            "id",
+            "time",
+            "context",
+            "scope",
+            "cause",
+            "trigger_kind",
+            "trigger",
+            "scope_version",
+            "field",
+            "evidence",
+            "message_id",
+            "message_chars",
+        ]),
+        "a listed trigger entry carries its cause's details and not the message, got {entry}"
+    );
+    assert_eq!(
+        (
+            entry["cause"].clone(),
+            entry["trigger"].clone(),
+            entry["field"].clone()
+        ),
+        (
+            json!("trigger"),
+            json!({ "on": "user_message", "pattern": "\\bwidget\\b" }),
+            json!("user_message"),
+        ),
+        "the entry names the trigger as the scope file writes it and the field it matched"
+    );
+    assert_eq!(
+        entry["evidence"],
+        json!({
+            "kind": "regex",
+            "pattern": "\\bwidget\\b",
+            "start": 11,
+            "end": 17,
+            "matched": "widget",
+        }),
+        "the evidence is the pattern, the span in characters and the text in it"
+    );
+    assert_eq!(
+        entry["message_chars"],
+        json!(WIDGET_PROMPT.chars().count()),
+        "the entry gives the length of the message it leaves out"
+    );
+
+    let read =
+        tool_json(&session.call("scope_activation_get", json!({ "id": entry["id"].clone() })));
+    assert_eq!(
+        read["message"],
+        json!(WIDGET_PROMPT),
+        "one entry is read with the whole message"
+    );
+    let mut without_message = read.clone();
+    without_message
+        .as_object_mut()
+        .expect("an entry is an object")
+        .remove("message");
+    assert_eq!(
+        &without_message, entry,
+        "an entry read on its own is the entry the list gives, with the message"
+    );
+}
+
+/// Detects a filter of `scope_activations` that is ignored or reads the wrong
+/// rows: a session's own entries without its subagents, one subagent alone, one
+/// scope, and the two ends of a span of time.
+///
+/// Expectation source: `session-1` turns `widgets` and `rocketry` on, its
+/// subagent inherits both, and an hour later `session-2` turns them on too.
+#[test]
+fn scope_activations_filters_by_session_subagent_scope_and_time() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    prompt_in(&server, "session-1", WIDGET_PROMPT);
+    subagent_in(&server, "session-1", "agent-1");
+    server.advance(chrono::Duration::hours(1));
+    prompt_in(&server, "session-2", WIDGET_PROMPT);
+    let session = server.mcp();
+    let contexts_of = |params: Value| -> BTreeSet<String> {
+        let answer = tool_json(&session.call("scope_activations", params));
+        values_of(&listed_entries(&answer), "context")
+            .into_iter()
+            .map(|context| context.as_str().expect("a context key").to_string())
+            .collect()
+    };
+
+    assert_eq!(
+        contexts_of(json!({ "session": "alpha/session-1" })),
+        BTreeSet::from([
+            "alpha/session-1".to_string(),
+            "alpha/session-1/agent-1".to_string()
+        ]),
+        "a session's key reads the session and its subagents"
+    );
+    assert_eq!(
+        contexts_of(json!({ "session": "alpha/session-1", "include_subagents": false })),
+        BTreeSet::from(["alpha/session-1".to_string()]),
+        "without its subagents a session's key reads the session alone"
+    );
+    assert_eq!(
+        contexts_of(json!({ "session": "alpha/session-1/agent-1" })),
+        BTreeSet::from(["alpha/session-1/agent-1".to_string()]),
+        "a subagent's key reads that subagent alone"
+    );
+    let rocketry = tool_json(&session.call("scope_activations", json!({ "scope": "rocketry" })));
+    assert_eq!(
+        values_of(&listed_entries(&rocketry), "scope"),
+        vec![json!("rocketry"); 3],
+        "a scope reads that scope's entries: session-1, its subagent and session-2"
+    );
+    assert_eq!(
+        contexts_of(json!({ "from": "2026-01-02T03:34:05Z" })),
+        BTreeSet::from(["alpha/session-2".to_string()]),
+        "from half an hour in reads what came on an hour in"
+    );
+    assert_eq!(
+        contexts_of(json!({ "to": "2026-01-02T03:34:05+00:00" })),
+        BTreeSet::from([
+            "alpha/session-1".to_string(),
+            "alpha/session-1/agent-1".to_string()
+        ]),
+        "to half an hour in reads what came on at the start"
+    );
+}
+
+/// Detects pages that overlap, skip an entry, come in the wrong order, or end
+/// with a cursor that leads nowhere: the model reads a long log one page after
+/// another and has to see every entry once.
+///
+/// Expectation source: four entries, `widgets` and `rocketry` in each of two
+/// sessions, whose ids rise in the order they were written.
+#[test]
+fn scope_activations_pages_both_ways_with_the_cursor_it_answers() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    prompt_in(&server, "session-1", WIDGET_PROMPT);
+    prompt_in(&server, "session-2", WIDGET_PROMPT);
+    let session = server.mcp();
+    let page = |params: Value| tool_json(&session.call("scope_activations", params));
+    let every = values_of(&listed_entries(&page(json!({ "order": "oldest" }))), "id");
+    assert_eq!(every.len(), 4, "the two prompts turned four scopes on");
+
+    let newest = page(json!({ "limit": 3 }));
+    assert_eq!(
+        values_of(&listed_entries(&newest), "id"),
+        vec![every[3].clone(), every[2].clone(), every[1].clone()],
+        "newest first by default, as many as the limit"
+    );
+    assert_eq!(newest["next"], every[1], "the cursor is the last id listed");
+    let rest = page(json!({ "limit": 3, "before": newest["next"].clone() }));
+    assert_eq!(
+        values_of(&listed_entries(&rest), "id"),
+        vec![every[0].clone()],
+        "before the cursor is the rest"
+    );
+    assert_eq!(rest["next"], Value::Null, "the last page has no cursor");
+
+    let oldest = page(json!({ "order": "oldest", "limit": 3 }));
+    assert_eq!(
+        values_of(&listed_entries(&oldest), "id"),
+        every[..3].to_vec(),
+        "oldest first when asked"
+    );
+    let rest = page(json!({ "order": "oldest", "limit": 3, "after": oldest["next"].clone() }));
+    assert_eq!(
+        values_of(&listed_entries(&rest), "id"),
+        vec![every[3].clone()],
+        "after the cursor is the rest"
+    );
+}
+
+/// Detects activation tools that answer an empty log on a server that records
+/// none, which the model would read as no scope ever having come on.
+///
+/// Expectation source: the `--no-activation-log` flag.
+#[test]
+fn the_activation_tools_say_the_log_is_off_on_a_server_that_keeps_none() {
+    let server = TestServer::start(example_store_files(), |config| {
+        config.activation_log = false;
+    });
+    prompt_in(&server, "session-1", WIDGET_PROMPT);
+    let session = server.mcp();
+
+    for (tool, params) in [
+        ("scope_activations", json!({})),
+        ("scope_activation_get", json!({ "id": 1 })),
+    ] {
+        let answer = session.call(tool, params);
+        assert_eq!(
+            (answer.is_error, tool_text(&answer)),
+            (
+                Some(true),
+                "the activation log is turned off on this server".to_string()
+            ),
+            "{tool} must say that the log is off"
+        );
+    }
+}
+
+/// Detects a time bound that is not a time being read as no bound, which lists
+/// the whole log as if it were the span asked for.
+#[test]
+fn a_time_bound_that_is_not_iso_8601_is_an_invalid_parameter() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+
+    let refused = session
+        .try_call("scope_activations", json!({ "from": "yesterday" }))
+        .expect_err("a bound that is not a time must be refused");
+
+    match &refused {
+        ServiceError::McpError(error) => assert_eq!(
+            error.code,
+            ErrorCode::INVALID_PARAMS,
+            "a malformed bound must be reported as an invalid parameter, got {refused}"
+        ),
+        other => panic!("a malformed bound must be an MCP error, got {other}"),
+    }
 }

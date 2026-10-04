@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use forgetmenot_server::store::ScopeId;
-use forgetmenot_server::store::scope::TriggerField;
+use forgetmenot_server::store::scope::{Trigger, TriggerField};
 use forgetmenot_server::triggers::{TriggerIndex, TriggerIndexBuilder};
 
 use common::store_with;
@@ -29,9 +29,11 @@ fn index_with(triggers: &[(&str, TriggerField, &str, Option<&str>)]) -> TriggerI
         builder
             .push(
                 ScopeId::new(*scope),
-                *field,
-                pattern,
-                machine.map(str::to_string),
+                &Trigger {
+                    on: Some(*field),
+                    pattern: pattern.to_string(),
+                    machine: machine.map(str::to_string),
+                },
             )
             .expect("the fixture patterns compile");
     }
@@ -282,9 +284,11 @@ fn matching_a_large_text_against_many_patterns_stays_within_the_time_limit() {
         builder
             .push(
                 ScopeId::new(format!("scope-{number}")),
-                TriggerField::ToolResult,
-                &format!(r"\bmarker{number}\b"),
-                None,
+                &Trigger {
+                    on: Some(TriggerField::ToolResult),
+                    pattern: format!(r"\bmarker{number}\b"),
+                    machine: None,
+                },
             )
             .expect("the generated patterns compile");
     }

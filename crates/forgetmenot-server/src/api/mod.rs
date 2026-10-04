@@ -159,6 +159,10 @@ impl IntoResponse for OperationError {
             OperationError::UnknownBranch(_) | OperationError::UnknownContext(_) => {
                 error_response(StatusCode::NOT_FOUND, &self.to_string())
             }
+            // A log this server keeps none of is not there to read.
+            OperationError::ActivationLogOff => {
+                error_response(StatusCode::NOT_FOUND, &self.to_string())
+            }
             OperationError::BadBranchName(_) => {
                 error_response(StatusCode::BAD_REQUEST, &self.to_string())
             }

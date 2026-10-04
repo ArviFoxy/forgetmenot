@@ -13,6 +13,7 @@ use rmcp::schemars::{self, JsonSchema};
 use serde::Deserialize;
 
 use crate::context::ContextKey;
+use crate::stats::activations::Order;
 use crate::store::memory::{MemoryKind, MemorySource};
 use crate::store::scope::{Forget, Trigger, TriggerField};
 
@@ -481,6 +482,72 @@ pub struct SettingsSetParams {
     /// branch is landed.
     #[serde(default)]
     pub branch: Option<String>,
+}
+
+/// Which end of the activation log a page starts from.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestedOrder {
+    /// The oldest entry first; the next page is read with `after`.
+    Oldest,
+    /// The newest entry first; the next page is read with `before`.
+    Newest,
+}
+
+impl From<RequestedOrder> for Order {
+    fn from(order: RequestedOrder) -> Self {
+        match order {
+            RequestedOrder::Oldest => Order::Oldest,
+            RequestedOrder::Newest => Order::Newest,
+        }
+    }
+}
+
+/// Which entries of the scope activation log to list.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScopeActivationsParams {
+    /// Only this context: `machine/session-id` for a session, together with
+    /// its subagents unless `include_subagents` is false, or
+    /// `machine/session-id/agent-id` for that one subagent. Every context when
+    /// absent.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Whether the entries of a session's subagents are listed with the
+    /// session's own; true when absent.
+    #[serde(default)]
+    pub include_subagents: Option<bool>,
+    /// Only entries of this scope id.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Only entries at or after this time, in ISO 8601 with an offset, such as
+    /// `2026-10-04T12:00:00Z`.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Only entries at or before this time, in the same form as `from`.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// `newest` first, which is the default, or `oldest` first.
+    #[serde(default)]
+    pub order: Option<RequestedOrder>,
+    /// How many entries to list, at most 200; 50 when absent.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Only entries with an id below this one: the `next` of a page read
+    /// newest first.
+    #[serde(default)]
+    pub before: Option<i64>,
+    /// Only entries with an id above this one: the `next` of a page read
+    /// oldest first.
+    #[serde(default)]
+    pub after: Option<i64>,
+}
+
+/// Which entry of the scope activation log to read.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScopeActivationGetParams {
+    /// The entry's id, as `scope_activations` lists it, or as an implied or
+    /// inherited entry names the entry it follows from.
+    pub id: i64,
 }
 
 /// Which session is asking.

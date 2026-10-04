@@ -152,6 +152,15 @@ Scope tools read and change the scopes themselves, so the agent defines a scope 
 
 `global`, `machine:<name>` and `session:<machine>/<id>` have no file: `scope_index` lists them, and `scope_get` and `scope_delete` refuse them as having none.
 
+Two scope tools read the scope activation log, which has one entry for every time a scope went from off to on in a session or a subagent, with the cause: a trigger match, an `implies` of a scope that came on in the same step, inheritance by a subagent from the context it was started from, `session_scope_on`, or `session_inherit`. A trigger that fires on a scope already on, a scope turned off, and a session start or compaction carrying the active scopes over add no entry.
+
+| Tool | What it does |
+|---|---|
+| `scope_activations` | List entries, newest first or oldest first, filtered by `session` (a session's key reads its subagents too unless `include_subagents` is false; a subagent's key reads that subagent), `scope`, and `from`/`to` as ISO 8601 times. `limit` defaults to 50 and is capped at 200; `next` in the answer is the `before` (newest first) or `after` (oldest first) of the next page. A trigger entry carries the trigger as its scope file writes it, the scope file's version, the field the text came from, the text's length in characters, and the evidence: for a regex trigger the pattern, the start and end of the match in characters, and the matched text, cut to 200 characters in the list. An implied entry names the implying scope and its entry; an inherited entry names the parent context and the parent's entry for that scope; a `session_inherit` entry names the source session. The full message text is not in the list |
+| `scope_activation_get` | Read one entry by id with the full text the trigger matched |
+
+What a trigger records beyond the columns every entry has (time, machine, session, agent, scope, cause) is JSON, the trigger definition and the evidence, so another kind of trigger needs no change to the log's tables or tools.
+
 Settings tools read and change the store's behaviour settings; a change is one commit and is in force for every session.
 
 | Tool | What it does |
@@ -197,6 +206,8 @@ forgetmenot stats --stats-path /var/lib/forgetmenot/stats.sqlite
 
 `--allowed-host` lists every `Host` header value clients use to reach `/mcp`; loopback is always accepted. Session state and open branches are kept indefinitely unless `--context-retention-days` or `--branch-retention-days` is set. How the server behaves towards the agent is the store's own [`config.yml`](#settings), not a flag. `forgetmenot stats` prints the same statistics the frontend shows, with byte counts in the unit that fits them (`24.6 KB`, `1.2 MB`, 1024 per step) and token figures through the same conversion the routes use; it reads a file rather than a store, so it divides by the documented default of 3.5. `--json` prints raw byte and character counts.
 
+The scope activation log is on by default. It stores, in the statistics database, the full text of every message that turned a scope on: the user's prompt, the assistant's message, the tool input or the tool result as the trigger matched it, after the `tool_result_match_limit` cut. `--no-activation-log` turns recording off; entries already stored are kept, and the two activation tools answer that the log is turned off on this server. `--activation-log-retention-days <N>` deletes entries older than N days, and then every stored message no remaining entry refers to; without it entries are kept forever. The deletion runs with the other housekeeping after context changes and at start, whether or not recording is on.
+
 On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the hooks block from `examples/claude-code/settings-hooks.json` to Claude Code's settings with the server address and a machine name filled in, and register the MCP server with `claude mcp add --transport http forgetmenot http://SERVER/mcp`.
 
 ## State the server holds
@@ -210,6 +221,7 @@ On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the
 | Parsed catalog and compiled triggers | in memory, derived from the repository's head; rebuilt whenever it moves | Nothing to lose; rebuilt on start |
 | Context state (active scopes, what each context has seen) | in memory; snapshot to a JSON file about a second after each change and on shutdown | A crash loses at most the last second of changes |
 | Statistics | sqlite in write-ahead-log mode; each record committed as it is written | Durable once written; a crash can lose only records still in the queue |
+| Scope activation log and the messages it stores | the same sqlite database, written by the same writer | Same as the statistics |
 | MCP transport sessions | in memory | Lost; clients reconnect |
 
 ## Testing
@@ -222,7 +234,7 @@ Paths below without a crate are under `crates/forgetmenot-server/`.
 |---|---|---|
 | Units | Pure rules: id forms, frontmatter parsing and rendering, trigger compilation and matching, validation, settings parsing, which texts an event contributes, what a context is owed, how it is rendered | `#[cfg(test)]` beside the code, on the store fixture in `src/test_support.rs` |
 | Store | git behaviour: compare-and-swap commits, branches, landing and conflicts, history, blame, diffs, catalog loading, retention | `tests/store_test.rs`, `tests/branch_test.rs` |
-| Operations | Application rules over the store, the registry and the statistics, called in-process with no HTTP: write semantics, own-write marking, the scope index, the rendered prompt, the contexts order, history paging, the session operations | `tests/operations_test.rs` |
+| Operations | Application rules over the store, the registry and the statistics, called in-process with no HTTP: write semantics, own-write marking, the scope index, the rendered prompt, the contexts order, history paging, the session operations, the scope activation log | `tests/operations_test.rs`, `tests/activation_log_test.rs` |
 | Interface contracts | One test per route and per tool: status codes, JSON shapes, parameter parsing, the tool list, the error texts the model reads | `tests/api_test.rs`, `tests/mcp_test.rs`, `tests/hook_test.rs` |
 | Hook client | Argument parsing, transcript and subagent-metadata reading, forwarding the answer unchanged, failure modes | `crates/forgetmenot-hook/tests` |
 | Scenarios | What emerges only when Claude Code drives the server over time: event order and harness semantics, cross-context effects, persistence across a restart, what the model was shown | `tests/scenario/`, `tests/scenarios_*.rs` |

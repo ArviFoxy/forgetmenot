@@ -182,7 +182,7 @@ impl Filter {
 ///
 /// The log records whole seconds, so a bound is compared at that resolution: a
 /// sub-second part is dropped rather than rounded, at both ends.
-fn stamp(instant: DateTime<Utc>) -> String {
+pub(super) fn stamp(instant: DateTime<Utc>) -> String {
     instant.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 

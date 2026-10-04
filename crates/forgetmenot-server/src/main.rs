@@ -79,6 +79,16 @@ struct ServeArgs {
     /// kept forever without it.
     #[arg(long, value_name = "DAYS")]
     branch_retention_days: Option<u64>,
+    /// Record nothing in the scope activation log, which otherwise records
+    /// every scope that comes on in a session with the full text of the message
+    /// that turned it on. What is already recorded is kept.
+    #[arg(long)]
+    no_activation_log: bool,
+    /// Delete scope activation log entries older than this many days, and the
+    /// message texts no remaining entry names; they are kept forever without
+    /// it.
+    #[arg(long, value_name = "DAYS")]
+    activation_log_retention_days: Option<u64>,
 }
 
 impl ServeArgs {
@@ -98,6 +108,8 @@ impl ServeArgs {
         config.snapshot_debounce_ms = self.snapshot_debounce_ms;
         config.context_retention_days = self.context_retention_days;
         config.branch_retention_days = self.branch_retention_days;
+        config.activation_log = !self.no_activation_log;
+        config.activation_log_retention_days = self.activation_log_retention_days;
         config
     }
 }

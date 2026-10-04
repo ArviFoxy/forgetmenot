@@ -8,7 +8,7 @@
 
 pub mod events;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -24,12 +24,16 @@ use crate::context::registry::Creation;
 use crate::context::{ContextState, Needs, PreviousTexts, compute_needs, record_delivery};
 use crate::render::{self, Delivery, Rendered};
 use crate::service::Store;
-use crate::stats::{Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, TriggerFire};
+use crate::stats::activations::{Activation, Cause, implied_activations};
+use crate::stats::{
+    Activations, Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, TriggerFire,
+};
 use crate::store::catalog::Catalog;
 use crate::store::memory::MemoryKind;
 use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 use crate::store::{MemoryId, ScopeId};
+use crate::triggers::{TriggerEvidence, TriggerHit};
 use events::EventPlan;
 
 /// Why a tool call was stopped. Fixed text: the model has to be able to tell
@@ -90,6 +94,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         first_prompt: request.first_prompt.as_deref(),
     };
     let previous = previous_texts_of_event(&state, &plan, &catalog, now).await;
+    let log_activations = state.activations.is_on();
     let outcome = state
         .contexts
         .with_context(&plan.key, now, creation_of(&plan, settings), |context| {
@@ -101,6 +106,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
                 now,
                 named,
                 &previous,
+                log_activations,
             )
         })
         .await;
@@ -157,6 +163,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
             triggers: outcome.fires,
             forgotten: outcome.forgotten,
             deliveries: deliveries_of(&outcome.needs, &catalog, rendered.as_ref()),
+            activations: outcome.activations,
         })
         .await;
 
@@ -267,6 +274,8 @@ struct Outcome {
     fires: Vec<TriggerFire>,
     /// The scopes this event turned off because their `forget` rule was reached.
     forgotten: Vec<ForgottenScope>,
+    /// What the activation log records of this event; empty when it is off.
+    activations: Activations,
 }
 
 /// What this event's client read from the session's transcript about what the
@@ -285,6 +294,7 @@ struct SessionName<'event> {
 ///
 /// Pure, so that the decision a context makes depends on the catalog snapshot,
 /// the state and the event alone.
+#[allow(clippy::too_many_arguments)]
 fn apply(
     context: &mut ContextState,
     plan: &EventPlan,
@@ -293,6 +303,7 @@ fn apply(
     now: chrono::DateTime<chrono::Utc>,
     named: SessionName<'_>,
     previous: &PreviousTexts,
+    log_activations: bool,
 ) -> Outcome {
     // A session start makes the session's state anew: it is the one event that
     // says a context begins here, so nothing counts as delivered into it and
@@ -367,11 +378,18 @@ fn apply(
     // pattern fired; the implies closure is applied to the whole active set
     // afterwards, which has the same effect.
     let mut fires = Vec::new();
-    for (field, text) in &texts {
+    let mut logged = ActivationsOfEvent::default();
+    for (position, (field, text)) in texts.iter().enumerate() {
         for hit in catalog.triggers().fire(*field, text, &plan.key.machine) {
             let activated_new = !context.active.contains(&hit.scope);
             context.active.insert(hit.scope.clone());
             context.note_activation(&hit.scope, tokens_now, catalog);
+            // Where the match lies is asked only of a hit that turns its scope
+            // on, so an event that finds its scopes on already costs nothing
+            // more than the one pass of the set.
+            if activated_new && log_activations {
+                logged.triggered(catalog, &hit, position, text);
+            }
             fires.push(TriggerFire {
                 scope_id: hit.scope.to_string(),
                 field: hit.field.to_string(),
@@ -382,6 +400,10 @@ fn apply(
     }
     context.active = catalog.closure(&context.active);
     let activated: Vec<ScopeId> = context.active.difference(&active_before).cloned().collect();
+    let activations = match log_activations {
+        true => logged.with_implied(catalog, &active_before, &context.active, &texts),
+        false => Activations::default(),
+    };
 
     let needs = compute_needs(catalog, context, tokens_now, previous);
     record_delivery(context, &needs, catalog, tokens_now);
@@ -392,6 +414,90 @@ fn apply(
         activated,
         fires,
         forgotten,
+        activations,
+    }
+}
+
+/// The scopes one event's triggers turned on, gathered while the triggers are
+/// matched.
+#[derive(Default)]
+struct ActivationsOfEvent {
+    triggered: Vec<Triggered>,
+}
+
+/// One scope a trigger turned on, and where among the event's texts the text it
+/// matched is.
+struct Triggered {
+    scope: ScopeId,
+    field: TriggerField,
+    scope_version: Option<String>,
+    found: TriggerEvidence,
+    position: usize,
+}
+
+impl ActivationsOfEvent {
+    /// Note that `hit`, found in `text`, the event's text at `position`, turned
+    /// its scope on.
+    fn triggered(&mut self, catalog: &Catalog, hit: &TriggerHit, position: usize, text: &str) {
+        self.triggered.push(Triggered {
+            scope: hit.scope.clone(),
+            field: hit.field,
+            scope_version: catalog
+                .scope(&hit.scope)
+                .map(|entry| entry.version.to_string()),
+            found: catalog.triggers().evidence(hit, text),
+            position,
+        });
+    }
+
+    /// The entries of the event: one per scope a trigger turned on, then one
+    /// for every other scope the implies closure turned on. The texts kept are
+    /// the ones a trigger entry was found in, each once however many scopes it
+    /// turned on.
+    fn with_implied(
+        self,
+        catalog: &Catalog,
+        before: &BTreeSet<ScopeId>,
+        after: &BTreeSet<ScopeId>,
+        texts: &[(TriggerField, String)],
+    ) -> Activations {
+        let mut kept: Vec<usize> = Vec::new();
+        let mut entries = Vec::with_capacity(self.triggered.len());
+        for triggered in self.triggered {
+            let message = match kept
+                .iter()
+                .position(|position| *position == triggered.position)
+            {
+                Some(message) => message,
+                None => {
+                    kept.push(triggered.position);
+                    kept.len() - 1
+                }
+            };
+            entries.push(Activation {
+                scope: triggered.scope,
+                cause: Cause::Trigger {
+                    field: triggered.field,
+                    scope_version: triggered.scope_version,
+                    found: triggered.found,
+                    message,
+                },
+            });
+        }
+        let direct: Vec<ScopeId> = entries.iter().map(|entry| entry.scope.clone()).collect();
+        entries.extend(implied_activations(
+            |scope, target| catalog.implies(scope, target),
+            before,
+            &direct,
+            after,
+        ));
+        Activations {
+            messages: kept
+                .into_iter()
+                .map(|position| texts[position].1.clone())
+                .collect(),
+            entries,
+        }
     }
 }
 
@@ -616,6 +722,7 @@ mod tests {
             chrono::Utc::now(),
             named,
             &PreviousTexts::new(),
+            true,
         )
     }
 

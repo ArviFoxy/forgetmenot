@@ -295,6 +295,14 @@ impl Catalog {
         due
     }
 
+    /// Whether `scope` implies `target`, directly or through the scopes it
+    /// implies.
+    pub fn implies(&self, scope: &ScopeId, target: &ScopeId) -> bool {
+        self.implied
+            .get(scope)
+            .is_some_and(|implied| implied.contains(target))
+    }
+
     /// `active` plus every scope those scopes imply, transitively.
     pub fn closure(&self, active: &BTreeSet<ScopeId>) -> BTreeSet<ScopeId> {
         let mut closed = active.clone();
@@ -427,12 +435,7 @@ fn compile_triggers(
     let mut builder = TriggerIndexBuilder::new();
     for entry in scopes.values() {
         for trigger in &entry.document.triggers {
-            if let Err(error) = builder.push(
-                entry.id.clone(),
-                trigger.field(),
-                &trigger.pattern,
-                trigger.machine.clone(),
-            ) {
+            if let Err(error) = builder.push(entry.id.clone(), trigger) {
                 load_errors.push(ValidationError::InvalidTriggerPattern {
                     path: entry.path.clone(),
                     scope: entry.id.clone(),

@@ -45,7 +45,7 @@ fn every_answered_hook_event_is_logged_once() {
 ///
 /// Expectation source: the columns `stats` and `stats::queries` select and
 /// bind. A database missing any of them cannot answer the reports.
-const TABLE_COLUMNS: [(&str, &[&str]); 5] = [
+const TABLE_COLUMNS: [(&str, &[&str]); 7] = [
     (
         "hook_events",
         &[
@@ -79,6 +79,28 @@ const TABLE_COLUMNS: [(&str, &[&str]); 5] = [
         "tool_calls",
         &["id", "ts", "tool", "session_key", "memory", "scope", "ok"],
     ),
+    (
+        "scope_activations",
+        &[
+            "id",
+            "ts",
+            "machine",
+            "session_id",
+            "agent",
+            "scope_id",
+            "cause",
+            "trigger_kind",
+            "trigger",
+            "scope_version",
+            "field",
+            "evidence",
+            "message_id",
+            "cause_scope",
+            "cause_entry_id",
+            "cause_context",
+        ],
+    ),
+    ("activation_messages", &["id", "text", "chars"]),
 ];
 
 /// The schema version the database at `path` records.
@@ -210,8 +232,8 @@ VALUES (1, 'bench-power', 'critical', 'full', 'new', 400, 'global', 400);
 ///
 /// Expectation source: [`BOOTSTRAP_SQL`] for what the database holds, and the
 /// rule that a database already carrying the schema is stamped at the version
-/// whose shape it has, which is the version a database created from nothing
-/// ends at.
+/// whose shape it has, version 1, and then migrated to the version a database
+/// created from nothing ends at.
 #[test]
 fn a_log_bootstrapped_before_the_version_was_recorded_is_adopted_and_keeps_its_rows() {
     let directory = tempfile::TempDir::new().expect("a temporary directory");
@@ -235,9 +257,15 @@ fn a_log_bootstrapped_before_the_version_was_recorded_is_adopted_and_keeps_its_r
     assert_eq!(
         user_version(&path),
         SCHEMA_VERSION as i64,
-        "the database carried the schema already, so it must be stamped at the version \
-         whose shape it has"
+        "the database carried the schema of version 1, so it must be stamped at that version \
+         and brought from there to the current one"
     );
+    for (table, _) in TABLE_COLUMNS {
+        assert!(
+            !columns_of(&path, table).is_empty(),
+            "the versions after the first must have been applied, so {table} must be there"
+        );
+    }
     let stats = server.stats();
     assert_eq!(
         stats.count_rows(Table::HookEvents),

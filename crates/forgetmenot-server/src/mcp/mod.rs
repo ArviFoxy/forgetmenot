@@ -10,7 +10,9 @@
 //! - `memory_*` changes the store. Every write is a git commit and affects every
 //!   context the memory's scope covers.
 //! - `scope_*` changes the scopes themselves, which is the same kind of change:
-//!   one git commit, and the scope's triggers then fire in every context.
+//!   one git commit, and the scope's triggers then fire in every context. Two of
+//!   them only read the activation log, which records when and why a scope came
+//!   on in a context.
 //! - `settings_*` reads and changes the store's behaviour settings, which is the
 //!   same kind of change: one git commit, in force for every context.
 //! - `branch_*` opens, inspects and lands a transaction, which is a git branch:
@@ -34,22 +36,24 @@ use serde::Serialize;
 
 use crate::app::AppState;
 use crate::context::ContextKey;
+use crate::operations::activations as activation_operations;
 use crate::operations::branches::{self, LandRequest};
 use crate::operations::settings::{self as settings_operations, SettingsWriteRequest};
 use crate::operations::{
     self, CurrentDocument, DeleteRequest, DocumentKind, MemoryFilter, MemoryWriteRequest,
     OperationError, RenameRequest, ReplaceTextRequest, ScopeWriteRequest, SetFieldsRequest,
 };
-use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord};
+use crate::stats::activations::{ActivationFilter, PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX};
+use crate::stats::{MEMORY_GET_TOOL, ToolCallRecord, Window};
 use crate::store::branch::BranchName;
 use crate::store::validate::WriteMode;
 use crate::store::{MemoryId, ScopeId};
 use params::{
     BranchCreateParams, BranchLandParams, BranchParams, MemoryDeleteParams, MemoryGetParams,
     MemoryIdParams, MemoryIndexParams, MemoryPutParams, MemoryRenameParams,
-    MemoryReplaceTextParams, MemorySetFieldsParams, ScopeDeleteParams, ScopeGetParams,
-    ScopePutParams, SessionInheritParams, SessionParams, SessionScopeParams, SettingsSetParams,
-    parse_session_key,
+    MemoryReplaceTextParams, MemorySetFieldsParams, ScopeActivationGetParams,
+    ScopeActivationsParams, ScopeDeleteParams, ScopeGetParams, ScopePutParams,
+    SessionInheritParams, SessionParams, SessionScopeParams, SettingsSetParams, parse_session_key,
 };
 
 /// What the model is told about this server when it connects.
@@ -71,7 +75,10 @@ scope is a label that groups memories, turned on by its triggers, and every memo
 is delivered to a session the moment one of them fires; a scope is part of the store, so \
 writing one is a git commit and its triggers then fire in every session. A memory has one \
 scope, so a rule two subjects need gets a scope of its own that both of them imply, rather than \
-being written twice. The settings management tools \
+being written twice. scope_activations and scope_activation_get read the activation log, which \
+records every time a scope came on in a session or a subagent and why: the trigger and the \
+text it matched, the scope that implied it, the parent a subagent inherited it from, or the \
+session tool that turned it on. The settings management tools \
 (settings_get, settings_set) read and change the shared store's behaviour settings, which say \
 when memories are repeated, when a tool call is held and what a subagent starts with; a change \
 is one git commit and takes effect in every session. The session management tools \
@@ -102,6 +109,8 @@ pub const FORGETMENOT_TOOL_NAMES: &[&str] = &[
     "scope_get",
     "scope_put",
     "scope_delete",
+    "scope_activations",
+    "scope_activation_get",
     "branch_create",
     "branch_list",
     "branch_diff",
@@ -609,6 +618,70 @@ impl ToolServer {
     }
 
     #[tool(
+        description = "Scope management family: a scope is a label that groups memories, turned \
+                       on in a session by its triggers, by a scope that implies it, by being \
+                       inherited from the context a subagent was started from, or by \
+                       session_scope_on and session_inherit. This call only reads the activation \
+                       log, which has one entry for every time a scope went from off to on in a \
+                       session or a subagent. Lists entries as JSON, newest first unless order \
+                       is oldest, each with its id, time, context key, scope and cause. A \
+                       trigger entry carries the trigger as its scope file wrote it, the scope \
+                       file's version, the field the text came from, the length of that text and \
+                       what the trigger found, for a regex its pattern, its start and end in \
+                       characters and the matched text; the text itself is read with \
+                       scope_activation_get. An implied entry names the implying scope and its \
+                       entry, an inherited entry the parent context and the parent's entry, \
+                       which is where to follow a subagent's scope back to the message that \
+                       turned it on. next is the cursor of the following page."
+    )]
+    async fn scope_activations(
+        &self,
+        Parameters(params): Parameters<ScopeActivationsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let filter = ActivationFilter {
+            context: match params.session.as_deref() {
+                Some(key) => Some(parse_session_key(key)?),
+                None => None,
+            },
+            include_subagents: params.include_subagents.unwrap_or(true),
+            scope: params.scope,
+            window: Window {
+                from: requested_time("from", params.from.as_deref())?,
+                to: requested_time("to", params.to.as_deref())?,
+            },
+            order: params.order.map(Into::into).unwrap_or_default(),
+            limit: params
+                .limit
+                .map_or(PAGE_LIMIT_DEFAULT, |limit| limit as usize)
+                .clamp(1, PAGE_LIMIT_MAX),
+            before: params.before,
+            after: params.after,
+        };
+        match activation_operations::scope_activations(&self.state, filter).await {
+            Ok(page) => json_text(&page),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
+        description = "Scope management family: a scope is a label that groups memories, turned \
+                       on in a session by its triggers and by the other causes \
+                       scope_activations lists. This call only reads the activation log. \
+                       Returns one entry as JSON, as scope_activations lists it, together with \
+                       message: the whole text of the hook event the trigger matched, as it was \
+                       matched, absent for an entry no trigger made."
+    )]
+    async fn scope_activation_get(
+        &self,
+        Parameters(params): Parameters<ScopeActivationGetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match activation_operations::scope_activation_get(&self.state, params.id).await {
+            Ok(detail) => json_text(&detail),
+            Err(error) => Ok(tool_failure(&error)),
+        }
+    }
+
+    #[tool(
         description = "Branch family: open a branch, which is how several writes become one \
                        commit on main. Answers with its name; pass that name as branch to every \
                        write, and nothing any session is delivered changes until branch_land \
@@ -872,6 +945,25 @@ fn requested_branch(branch: Option<&str>) -> Result<Option<BranchName>, Box<Call
         None => Ok(None),
         Some(name) => parse_branch(name).map(Some),
     }
+}
+
+/// A time a tool was given in ISO 8601, refused as an invalid parameter when it
+/// is not one: the model wrote it and can write it again.
+fn requested_time(
+    name: &str,
+    time: Option<&str>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, ErrorData> {
+    let Some(time) = time else {
+        return Ok(None);
+    };
+    chrono::DateTime::parse_from_rfc3339(time)
+        .map(|time| Some(time.with_timezone(&chrono::Utc)))
+        .map_err(|error| {
+            ErrorData::invalid_params(
+                format!("{name} must be a time in ISO 8601 with an offset, such as 2026-10-04T12:00:00Z: {error}"),
+                None,
+            )
+        })
 }
 
 /// The scope ids a tool was given, in the order they were named.

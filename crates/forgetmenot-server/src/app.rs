@@ -19,13 +19,15 @@ use crate::config::Config;
 use crate::context::registry::{ContextRegistry, SnapshotError};
 use crate::hook;
 use crate::service::{Store, StoreError};
-use crate::stats::{StatsError, StatsWriter};
+use crate::stats::{ActivationLog, StatsError, StatsWriter};
 
 /// Everything a request handler needs.
 pub struct AppState {
     pub store: Arc<Store>,
     pub contexts: Arc<ContextRegistry>,
     pub stats: StatsWriter,
+    /// The scope activation log, written through `stats` when it is on.
+    pub activations: ActivationLog,
     pub config: Arc<Config>,
     pub clock: Arc<dyn Clock>,
 }
@@ -111,21 +113,27 @@ pub struct RunningServer {
 /// request cannot arrive before the server can answer it.
 pub async fn start(config: Config, clock: Arc<dyn Clock>) -> Result<RunningServer, ServeError> {
     let store = Arc::new(Store::open(&config.store_path).await?);
+    let stats = StatsWriter::open(&config.stats_path)?;
+    let activations = match config.activation_log {
+        true => ActivationLog::on(stats.clone()),
+        false => ActivationLog::off(),
+    };
     let contexts = Arc::new(
         ContextRegistry::load_from(
             &config.state_path,
             config.snapshot_debounce_ms,
             config.context_retention_days,
             clock.now(),
+            activations.clone(),
         )
         .await?,
     );
-    let stats = StatsWriter::open(&config.stats_path)?;
     let config = Arc::new(config);
     let state = Arc::new(AppState {
         store,
         contexts: contexts.clone(),
         stats,
+        activations,
         config: config.clone(),
         clock: clock.clone(),
     });
@@ -145,6 +153,7 @@ pub async fn start(config: Config, clock: Arc<dyn Clock>) -> Result<RunningServe
     // longer than the window does not have to wait for the next event to clear
     // the branches nobody is working on.
     prune_branches(&state).await;
+    prune_activation_log(&state).await;
 
     let cancel = CancellationToken::new();
     let snapshots = tokio::spawn(snapshot_loop(state.clone(), cancel.clone()));
@@ -194,11 +203,12 @@ impl RunningServer {
 }
 
 /// Write the contexts whenever they change, no more often than the debounce
-/// window allows, and delete the branches nobody has written to for as long as
-/// the retention window allows.
+/// window allows, delete the branches nobody has written to for as long as
+/// the retention window allows, and the activation log entries older than
+/// theirs.
 ///
-/// The two run together because both are housekeeping on a timer nothing else
-/// provides, and neither is on the path of a request.
+/// They run together because all of them are housekeeping on a timer nothing
+/// else provides, and none of them is on the path of a request.
 async fn snapshot_loop(state: Arc<AppState>, cancel: CancellationToken) {
     while state.contexts.wait_for_change(&cancel).await {
         if let Err(error) = state
@@ -209,6 +219,23 @@ async fn snapshot_loop(state: Arc<AppState>, cancel: CancellationToken) {
             tracing::error!("writing the context state failed: {error}");
         }
         prune_branches(&state).await;
+        prune_activation_log(&state).await;
+    }
+}
+
+/// Queue the deletion of the activation log entries older than the retention
+/// window, and of the message texts only they named. Without a window they are
+/// kept forever.
+///
+/// The statistics writer does the deleting, so this returns once the work is
+/// queued. It runs whether or not the log is on: turning the log off stops new
+/// entries and leaves the old ones to the window like any others.
+pub async fn prune_activation_log(state: &AppState) {
+    let Some(retention) = state.config.activation_log_retention() else {
+        return;
+    };
+    if let Some(cutoff) = state.clock.now().checked_sub_signed(retention) {
+        state.stats.prune_activations(cutoff).await;
     }
 }
 

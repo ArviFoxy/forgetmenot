@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify};
 
 use super::{ContextKey, ContextState, initial_active, migrate};
+use crate::stats::activations::{Activation, Cause};
+use crate::stats::{ActivationLog, ActivationRecord, Activations};
 use crate::store::settings::Settings;
 
 /// What a subagent's context starts with, which the store's settings decide.
@@ -71,6 +73,14 @@ impl Creation {
     }
 }
 
+/// What a subagent's context records about the subagent, each part absent
+/// when no event has said it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentDescription {
+    pub agent_type: Option<String>,
+    pub task: Option<String>,
+}
+
 /// What went wrong loading or writing a snapshot of the registry.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -123,17 +133,24 @@ pub struct ContextRegistry {
     /// Contexts not seen for this long are dropped when the registry is loaded
     /// or snapshotted; unset keeps them forever.
     retention: Option<Duration>,
+    /// Where the scopes a subagent's context is created with are recorded.
+    activations: ActivationLog,
 }
 
 impl ContextRegistry {
     /// An empty registry.
-    pub fn new(snapshot_debounce_ms: u64, context_retention_days: Option<u64>) -> Self {
+    pub fn new(
+        snapshot_debounce_ms: u64,
+        context_retention_days: Option<u64>,
+        activations: ActivationLog,
+    ) -> Self {
         Self {
             contexts: Mutex::new(HashMap::new()),
             changed: Notify::new(),
             debounce: Duration::from_millis(snapshot_debounce_ms),
             retention: context_retention_days
                 .map(|days| Duration::from_secs(days.saturating_mul(24 * 60 * 60))),
+            activations,
         }
     }
 
@@ -146,8 +163,9 @@ impl ContextRegistry {
         snapshot_debounce_ms: u64,
         context_retention_days: Option<u64>,
         now: DateTime<Utc>,
+        activations: ActivationLog,
     ) -> Result<Self, SnapshotError> {
-        let registry = Self::new(snapshot_debounce_ms, context_retention_days);
+        let registry = Self::new(snapshot_debounce_ms, context_retention_days, activations);
         let bytes = match tokio::fs::read(path).await {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(registry),
@@ -187,7 +205,8 @@ impl ContextRegistry {
     ///
     /// The scopes are copied and the activations behind them are not: a
     /// forgetting count is per context, so an inherited scope is counted from
-    /// the child's own first event.
+    /// the child's own first event. Each scope copied that the child would not
+    /// have started with anyway is one entry of the activation log.
     pub async fn with_context<R>(
         &self,
         key: &ContextKey,
@@ -214,7 +233,7 @@ impl ContextRegistry {
         if let Some(existing) = self.contexts.lock().await.get(key).cloned() {
             return existing;
         }
-        let (active, parent, session_directory) = if key.is_subagent() {
+        let (active, parent, session_directory, inherited) = if key.is_subagent() {
             let parent_key = creation.parent.unwrap_or_else(|| key.session_context());
             let parent = self.handle_parent(&parent_key, now).await;
             // The map lock is not held here, so the parent's own events are not
@@ -232,18 +251,49 @@ impl ContextRegistry {
                 // subagent runs in, not a scope, so it is inherited either way.
                 (active, parent.session_directory.clone())
             };
-            (active, Some(parent_key), session_directory)
+            let implicit = initial_active(&key.machine, &key.session_id);
+            let inherited = Activations {
+                messages: Vec::new(),
+                entries: active
+                    .difference(&implicit)
+                    .map(|scope| Activation {
+                        scope: scope.clone(),
+                        cause: Cause::Inherited {
+                            parent: parent_key.clone(),
+                        },
+                    })
+                    .collect(),
+            };
+            (active, Some(parent_key), session_directory, inherited)
         } else {
-            (initial_active(&key.machine, &key.session_id), None, None)
+            let active = initial_active(&key.machine, &key.session_id);
+            (active, None, None, Activations::default())
         };
-        let mut contexts = self.contexts.lock().await;
-        let handle = contexts.entry(key.clone()).or_insert_with(|| {
-            let mut state = ContextState::fresh(active, parent, now);
-            state.session_directory = session_directory;
-            Arc::new(Mutex::new(state))
-        });
+        // Only the call that inserts the context records what it was created
+        // with; one that finds it inserted meanwhile created nothing. The map
+        // lock is released before the record is queued.
+        let (handle, created) = {
+            let mut contexts = self.contexts.lock().await;
+            match contexts.entry(key.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let mut state = ContextState::fresh(active, parent, now);
+                    state.session_directory = session_directory;
+                    (entry.insert(Arc::new(Mutex::new(state))).clone(), true)
+                }
+            }
+        };
         self.changed.notify_one();
-        handle.clone()
+        if created {
+            self.activations
+                .record(ActivationRecord {
+                    ts: now,
+                    key: key.clone(),
+                    activations: inherited,
+                })
+                .await;
+        }
+        handle
     }
 
     /// The handle of the context a child is created from, created itself if
@@ -269,6 +319,17 @@ impl ContextRegistry {
                 )))
             })
             .clone()
+    }
+
+    /// What the context `key` records about the subagent it is; `None` when the
+    /// registry holds no such context. Never creates one.
+    pub async fn agent_of(&self, key: &ContextKey) -> Option<AgentDescription> {
+        let handle = self.contexts.lock().await.get(key).cloned()?;
+        let state = handle.lock().await;
+        Some(AgentDescription {
+            agent_type: state.agent_type.clone(),
+            task: state.task.clone(),
+        })
     }
 
     /// Every context and its state, for the snapshot and for the contexts page.
@@ -393,7 +454,7 @@ mod tests {
     /// and whatever the store says a subagent starts with in the way of scopes.
     #[tokio::test]
     async fn a_subagent_starts_with_the_session_directory_of_the_session_it_runs_in() {
-        let registry = ContextRegistry::new(0, None);
+        let registry = ContextRegistry::new(0, None, ActivationLog::off());
         let now = Utc::now();
         let session = ContextKey::main("alpha", "session-1");
         registry
@@ -437,7 +498,7 @@ mod tests {
         let path = directory.path().join("contexts.json");
         let now = Utc::now();
         let key = ContextKey::main("alpha", "session-1");
-        let registry = ContextRegistry::new(0, None);
+        let registry = ContextRegistry::new(0, None, ActivationLog::off());
         registry
             .with_context(&key, now, under_a_session(), |state| {
                 state.session_directory = Some(STARTED_IN.to_string());
@@ -448,7 +509,7 @@ mod tests {
             .snapshot_to(&path, now)
             .await
             .expect("the snapshot is written");
-        let loaded = ContextRegistry::load_from(&path, 0, None, now)
+        let loaded = ContextRegistry::load_from(&path, 0, None, now, ActivationLog::off())
             .await
             .expect("the snapshot is read back");
 
@@ -478,7 +539,7 @@ mod tests {
     /// is caught as well.
     #[tokio::test]
     async fn a_subagent_inherits_from_the_agent_that_spawned_it_rather_than_from_its_session() {
-        let registry = ContextRegistry::new(0, None);
+        let registry = ContextRegistry::new(0, None, ActivationLog::off());
         let now = Utc::now();
         let paint = ScopeId::new("paint");
         let lathe = ScopeId::new("lathe");
@@ -531,7 +592,7 @@ mod tests {
     /// session the subagent runs in.
     #[tokio::test]
     async fn a_subagent_first_seen_by_a_call_that_names_no_spawner_is_recorded_under_its_session() {
-        let registry = ContextRegistry::new(0, None);
+        let registry = ContextRegistry::new(0, None, ActivationLog::off());
         let now = Utc::now();
         let key = ContextKey::subagent("alpha", "session-1", "agent-1");
 
