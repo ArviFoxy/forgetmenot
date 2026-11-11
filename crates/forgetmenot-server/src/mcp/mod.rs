@@ -53,7 +53,8 @@ use params::{
     MemoryIdParams, MemoryIndexParams, MemoryPutParams, MemoryRenameParams,
     MemoryReplaceTextParams, MemorySetFieldsParams, ScopeActivationGetParams,
     ScopeActivationsParams, ScopeDeleteParams, ScopeGetParams, ScopePutParams,
-    SessionInheritParams, SessionParams, SessionScopeParams, SettingsSetParams, parse_session_key,
+    SessionInheritParams, SessionParams, SessionScopeOffParams, SessionScopeParams,
+    SettingsSetParams, parse_session_key,
 };
 
 /// What the model is told about this server when it connects.
@@ -623,13 +624,15 @@ impl ToolServer {
                        inherited from the context a subagent was started from, or by \
                        session_scope_on and session_inherit. This call only reads the activation \
                        log, which has one entry for every time a scope went from off to on in a \
-                       session or a subagent. Lists entries as JSON, newest first unless order \
+                       session or a subagent, and one for every hook event at which a trigger \
+                       matched a scope the context keeps off (session_scope_off with keep_off), \
+                       which stayed off. Lists entries as JSON, newest first unless order \
                        is oldest, each with its id, time, context key, scope and cause. A \
                        trigger entry carries the trigger as its scope file wrote it, the scope \
                        file's version, the field the text came from, the length of that text and \
                        what the trigger found, for a regex its pattern, its start and end in \
                        characters and the matched text; the text itself is read with \
-                       scope_activation_get. An implied entry names the implying scope and its \
+                       scope_activation_get. A kept_off entry carries the same. An implied entry names the implying scope and its \
                        entry, an inherited entry the parent context and the parent's entry, \
                        which is where to follow a subagent's scope back to the message that \
                        turned it on. next is the cursor of the following page."
@@ -833,8 +836,9 @@ impl ToolServer {
 
     #[tool(
         description = "Session management family: changes only the calling session and never \
-                       touches the store. Reports the scope ids this session works in, and the \
-                       ones it could turn on."
+                       touches the store. Reports the scope ids this session works in, the ones \
+                       it could turn on, and among those the ones it keeps off, which only \
+                       session_scope_on turns on."
     )]
     async fn session_scopes(
         &self,
@@ -851,9 +855,11 @@ impl ToolServer {
         description = "Session management family: changes only the calling session and never \
                        touches the store. This session starts working in every scope in scopes, \
                        and those scopes' memories, together with everything they imply, are \
-                       delivered at the next hook event. Name every scope to turn on in the \
-                       one call; one scope is a list of one. An id that is not a scope of this \
-                       store refuses the whole call, naming that id, and turns none of them on."
+                       delivered at the next hook event. A scope named here is no longer kept \
+                       off; one it implies that the session keeps off stays off. Name every \
+                       scope to turn on in the one call; one scope is a list of one. An id that \
+                       is not a scope of this store refuses the whole call, naming that id, and \
+                       turns none of them on."
     )]
     async fn session_scope_on(
         &self,
@@ -872,17 +878,21 @@ impl ToolServer {
                        touches the store. This session stops working in every scope in scopes; \
                        nothing happens to any memory, and every other session keeps getting \
                        them. Those scopes' memories are reported as withdrawn at the next hook \
-                       event. Name every scope to turn off in the one call; one scope is a \
-                       list of one. An id that is always on for a session refuses the whole \
-                       call, naming that id, and turns none of them off."
+                       event. Without keep_off a trigger or an implying scope can turn them on \
+                       again at any later event; with keep_off true they stay off for the rest \
+                       of this session, in the subagents it starts afterwards too, until \
+                       session_scope_on names them, and each trigger match of them is logged \
+                       with the cause kept_off. Name every scope to turn off in the one call; \
+                       one scope is a list of one. An id that is always on for a session \
+                       refuses the whole call, naming that id, and turns none of them off."
     )]
     async fn session_scope_off(
         &self,
-        Parameters(params): Parameters<SessionScopeParams>,
+        Parameters(params): Parameters<SessionScopeOffParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let key = parse_session_key(&params.session_key)?;
         let scopes = requested_scopes(params.scopes);
-        match operations::session_scope_off(&self.state, &key, &scopes).await {
+        match operations::session_scope_off(&self.state, &key, &scopes, params.keep_off).await {
             Ok(scopes) => json_text(&scopes),
             Err(error) => Ok(tool_failure(&error)),
         }

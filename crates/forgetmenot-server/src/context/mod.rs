@@ -154,6 +154,12 @@ pub struct Shown {
 pub struct ContextState {
     /// The scopes this context works in.
     pub active: BTreeSet<ScopeId>,
+    /// The scopes this context keeps off: no trigger, implying scope or
+    /// inheritance turns them on until `session_scope_on` names them. A subagent
+    /// starts with its spawner's. Defaulted, so that a snapshot an older build
+    /// wrote loads with none.
+    #[serde(default)]
+    pub kept_off: BTreeSet<ScopeId>,
     /// What has been delivered, and in what form.
     pub delivered: BTreeMap<MemoryId, Shown>,
     /// The context this one inherited its scopes from, for a subagent: the
@@ -212,6 +218,7 @@ impl ContextState {
     ) -> Self {
         Self {
             active,
+            kept_off: BTreeSet::new(),
             delivered: BTreeMap::new(),
             parent,
             session_directory: None,

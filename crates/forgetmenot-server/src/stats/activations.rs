@@ -1,5 +1,6 @@
 //! The scope activation log: one entry each time a scope goes from off to on in
-//! a context, with what turned it on.
+//! a context, with what turned it on, and one each time a trigger matches a scope
+//! the context keeps off, which stays off.
 //!
 //! The log answers how a scope came to be active in a session, and follows a
 //! scope a subagent inherited back to the entry of the context it came from.
@@ -60,6 +61,15 @@ pub enum Cause {
         /// The position of the matched text in [`Activations::messages`].
         message: usize,
     },
+    /// A trigger of a scope the context keeps off matched a text of a hook
+    /// event, and the scope stayed off. The fields are those of
+    /// [`Cause::Trigger`].
+    KeptOff {
+        field: TriggerField,
+        scope_version: Option<String>,
+        found: TriggerEvidence,
+        message: usize,
+    },
     /// A scope that came on in the same step implies this one, or a scope that
     /// was already on does and this one had been turned off.
     Implied { by: ScopeId },
@@ -76,6 +86,7 @@ impl Cause {
     pub fn as_str(&self) -> &'static str {
         match self {
             Cause::Trigger { .. } => "trigger",
+            Cause::KeptOff { .. } => "kept_off",
             Cause::Implied { .. } => "implied",
             Cause::Inherited { .. } => "inherited",
             Cause::SessionScopeOn => "session_scope_on",
@@ -203,6 +214,12 @@ pub(super) fn insert(
         };
         match &entry.cause {
             Cause::Trigger {
+                field,
+                scope_version,
+                found,
+                message,
+            }
+            | Cause::KeptOff {
                 field,
                 scope_version,
                 found,
@@ -412,6 +429,17 @@ pub enum CauseDetails {
         /// The length of that text in characters.
         message_chars: u64,
     },
+    /// A trigger matched a scope the context keeps off, which stayed off. The
+    /// fields are those of a trigger entry.
+    KeptOff {
+        trigger_kind: String,
+        trigger: serde_json::Value,
+        scope_version: Option<String>,
+        field: String,
+        evidence: serde_json::Value,
+        message_id: i64,
+        message_chars: u64,
+    },
     Implied {
         /// The scope that implies this one.
         implied_by: String,
@@ -488,20 +516,34 @@ fn entry_of(row: &rusqlite::Row<'_>) -> Result<ActivationEntry, rusqlite::Error>
     };
     let cause: String = row.get(6)?;
     let details = match cause.as_str() {
-        "trigger" => {
+        "trigger" | "kept_off" => {
             let mut evidence = json(11)?;
             let matched: Option<String> = row.get(17)?;
             if let (Some(object), Some(matched)) = (evidence.as_object_mut(), matched) {
                 object.insert("matched".to_string(), serde_json::Value::String(matched));
             }
-            CauseDetails::Trigger {
-                trigger_kind: row.get(7)?,
-                trigger: json(8)?,
-                scope_version: row.get(9)?,
-                field: row.get(10)?,
-                evidence,
-                message_id: row.get(12)?,
-                message_chars: row.get::<_, i64>(13)?.max(0) as u64,
+            let (trigger_kind, trigger, scope_version, field) =
+                (row.get(7)?, json(8)?, row.get(9)?, row.get(10)?);
+            let (message_id, message_chars) = (row.get(12)?, row.get::<_, i64>(13)?.max(0) as u64);
+            match cause.as_str() {
+                "trigger" => CauseDetails::Trigger {
+                    trigger_kind,
+                    trigger,
+                    scope_version,
+                    field,
+                    evidence,
+                    message_id,
+                    message_chars,
+                },
+                _ => CauseDetails::KeptOff {
+                    trigger_kind,
+                    trigger,
+                    scope_version,
+                    field,
+                    evidence,
+                    message_id,
+                    message_chars,
+                },
             }
         }
         "implied" => CauseDetails::Implied {

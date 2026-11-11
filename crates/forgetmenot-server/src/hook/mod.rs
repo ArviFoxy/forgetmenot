@@ -313,7 +313,9 @@ fn apply(
     // session resumed or rebuilt from a summary, they are the scopes it was
     // working in.
     if plan.session_start {
+        let kept_off = std::mem::take(&mut context.kept_off);
         *context = ContextState::fresh(context.active.clone(), context.parent.clone(), now);
+        context.kept_off = kept_off;
     }
 
     // The first event this context is seen at says where the session started.
@@ -381,6 +383,20 @@ fn apply(
     let mut logged = ActivationsOfEvent::default();
     for (position, (field, text)) in texts.iter().enumerate() {
         for hit in catalog.triggers().fire(*field, text, &plan.key.machine) {
+            // A scope the context keeps off stays off; the first match of it at
+            // this event is logged, so the log says what was held off.
+            if context.kept_off.contains(&hit.scope) {
+                if log_activations {
+                    logged.kept_off(catalog, &hit, position, text);
+                }
+                fires.push(TriggerFire {
+                    scope_id: hit.scope.to_string(),
+                    field: hit.field.to_string(),
+                    pattern: hit.pattern,
+                    activated_new: false,
+                });
+                continue;
+            }
             let activated_new = !context.active.contains(&hit.scope);
             context.active.insert(hit.scope.clone());
             context.note_activation(&hit.scope, tokens_now, catalog);
@@ -399,6 +415,9 @@ fn apply(
         }
     }
     context.active = catalog.closure(&context.active);
+    // A scope kept off stays off when a scope that is on implies it.
+    let kept_off = &context.kept_off;
+    context.active.retain(|scope| !kept_off.contains(scope));
     let activated: Vec<ScopeId> = context.active.difference(&active_before).cloned().collect();
     let activations = match log_activations {
         true => logged.with_implied(catalog, &active_before, &context.active, &texts),
@@ -423,6 +442,8 @@ fn apply(
 #[derive(Default)]
 struct ActivationsOfEvent {
     triggered: Vec<Triggered>,
+    /// The scopes kept off that a trigger matched, each once.
+    kept_off: Vec<Triggered>,
 }
 
 /// One scope a trigger turned on, and where among the event's texts the text it
@@ -450,10 +471,27 @@ impl ActivationsOfEvent {
         });
     }
 
+    /// Note that `hit`, found in `text`, the event's text at `position`, matched
+    /// a scope the context keeps off. Only the first match of a scope is kept.
+    fn kept_off(&mut self, catalog: &Catalog, hit: &TriggerHit, position: usize, text: &str) {
+        if self.kept_off.iter().any(|held| held.scope == hit.scope) {
+            return;
+        }
+        self.kept_off.push(Triggered {
+            scope: hit.scope.clone(),
+            field: hit.field,
+            scope_version: catalog
+                .scope(&hit.scope)
+                .map(|entry| entry.version.to_string()),
+            found: catalog.triggers().evidence(hit, text),
+            position,
+        });
+    }
+
     /// The entries of the event: one per scope a trigger turned on, then one
-    /// for every other scope the implies closure turned on. The texts kept are
-    /// the ones a trigger entry was found in, each once however many scopes it
-    /// turned on.
+    /// for every other scope the implies closure turned on, then one per scope
+    /// kept off that a trigger matched. The texts kept are the ones a trigger or
+    /// kept-off entry was found in, each once however many entries it has.
     fn with_implied(
         self,
         catalog: &Catalog,
@@ -462,18 +500,17 @@ impl ActivationsOfEvent {
         texts: &[(TriggerField, String)],
     ) -> Activations {
         let mut kept: Vec<usize> = Vec::new();
+        let mut message_of = |position: usize| match kept.iter().position(|held| *held == position)
+        {
+            Some(message) => message,
+            None => {
+                kept.push(position);
+                kept.len() - 1
+            }
+        };
         let mut entries = Vec::with_capacity(self.triggered.len());
         for triggered in self.triggered {
-            let message = match kept
-                .iter()
-                .position(|position| *position == triggered.position)
-            {
-                Some(message) => message,
-                None => {
-                    kept.push(triggered.position);
-                    kept.len() - 1
-                }
-            };
+            let message = message_of(triggered.position);
             entries.push(Activation {
                 scope: triggered.scope,
                 cause: Cause::Trigger {
@@ -491,6 +528,18 @@ impl ActivationsOfEvent {
             &direct,
             after,
         ));
+        for held in self.kept_off {
+            let message = message_of(held.position);
+            entries.push(Activation {
+                scope: held.scope,
+                cause: Cause::KeptOff {
+                    field: held.field,
+                    scope_version: held.scope_version,
+                    found: held.found,
+                    message,
+                },
+            });
+        }
         Activations {
             messages: kept
                 .into_iter()

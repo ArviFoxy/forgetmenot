@@ -556,6 +556,9 @@ pub struct SessionScopes {
     /// File-backed scopes that are not active; the implicit scopes are not
     /// offered because they are on by construction.
     pub available: Vec<ScopeId>,
+    /// The scopes the context keeps off, which only `session_scope_on` turns on.
+    /// They are among `available`.
+    pub kept_off: Vec<ScopeId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2234,7 +2237,7 @@ pub async fn session_scopes(
             key,
             state.clock.now(),
             Creation::in_session(catalog.settings()),
-            |context| context.active.clone(),
+            |context| (context.active.clone(), context.kept_off.clone()),
         )
         .await;
     record_tool_call(state, "session_scopes", key, &[], true).await;
@@ -2242,6 +2245,9 @@ pub async fn session_scopes(
 }
 
 /// Turn scopes on for one context, with everything they imply.
+///
+/// A scope the call names is no longer kept off. One it does not name but turns
+/// on by implication stays off while the context keeps it off.
 ///
 /// The whole list is one change: every id is checked against the store before
 /// anything is turned on, so a list naming a scope this store does not have
@@ -2273,8 +2279,13 @@ pub async fn session_scope_on(
             Creation::in_session(catalog.settings()),
             |context| {
                 let before = context.active.clone();
+                for scope in scopes {
+                    context.kept_off.remove(scope);
+                }
                 context.active.extend(scopes.iter().cloned());
                 context.active = catalog.closure(&context.active);
+                let kept_off = &context.kept_off;
+                context.active.retain(|scope| !kept_off.contains(scope));
                 // The call has no hook event of its own, so the activation is
                 // counted from the context size the last event reported.
                 let tokens = context.tokens;
@@ -2283,7 +2294,10 @@ pub async fn session_scope_on(
                 }
                 context.last_seen = now;
                 let activations = scope_on_activations(&catalog, &before, scopes, &context.active);
-                (context.active.clone(), activations)
+                (
+                    (context.active.clone(), context.kept_off.clone()),
+                    activations,
+                )
             },
         )
         .await;
@@ -2340,12 +2354,17 @@ fn scope_on_activations(
 /// scope implies it stays on, because a scope is a flag and the state does not
 /// record which trigger or which implication set it.
 ///
+/// With `keep_off`, the context also keeps the scopes off: no trigger, implying
+/// scope or inheritance turns them on again until `session_scope_on` names them,
+/// and a subagent it starts afterwards keeps them off too.
+///
 /// The whole list is one change: a list naming a scope that cannot be turned off
 /// turns none of the others off either.
 pub async fn session_scope_off(
     state: &AppState,
     key: &ContextKey,
     scopes: &[ScopeId],
+    keep_off: bool,
 ) -> Result<SessionScopes, OperationError> {
     if scopes.is_empty() {
         record_tool_call(state, "session_scope_off", key, scopes, false).await;
@@ -2369,9 +2388,12 @@ pub async fn session_scope_off(
             |context| {
                 for scope in scopes {
                     context.active.remove(scope);
+                    if keep_off {
+                        context.kept_off.insert(scope.clone());
+                    }
                 }
                 context.last_seen = now;
-                context.active.clone()
+                (context.active.clone(), context.kept_off.clone())
             },
         )
         .await;
@@ -2406,10 +2428,12 @@ pub async fn session_inherit(
             now,
             Creation::in_session(catalog.settings()),
             |context| {
+                // What this context keeps off it keeps off from the other session too.
+                inherited.retain(|scope| !context.kept_off.contains(scope));
                 let taken: Vec<ScopeId> = inherited.difference(&context.active).cloned().collect();
                 context.active.extend(inherited);
                 context.last_seen = now;
-                (context.active.clone(), taken)
+                ((context.active.clone(), context.kept_off.clone()), taken)
             },
         )
         .await;
@@ -2436,7 +2460,10 @@ pub async fn session_inherit(
     Ok(session_scopes_of(&catalog, active))
 }
 
-fn session_scopes_of(catalog: &Catalog, active: BTreeSet<ScopeId>) -> SessionScopes {
+fn session_scopes_of(
+    catalog: &Catalog,
+    (active, kept_off): (BTreeSet<ScopeId>, BTreeSet<ScopeId>),
+) -> SessionScopes {
     let available = catalog
         .scopes()
         .map(|entry| entry.id.clone())
@@ -2445,6 +2472,7 @@ fn session_scopes_of(catalog: &Catalog, active: BTreeSet<ScopeId>) -> SessionSco
     SessionScopes {
         active: active.into_iter().collect(),
         available,
+        kept_off: kept_off.into_iter().collect(),
     }
 }
 

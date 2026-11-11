@@ -572,6 +572,23 @@ pub struct SessionScopeParams {
     pub scopes: Vec<String>,
 }
 
+/// Which session, which scopes of it to turn off, and whether to keep them off.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionScopeOffParams {
+    /// The calling session's key, printed in this session's first hook context.
+    pub session_key: String,
+    /// The scope ids to turn off, as `session_scopes` lists them, all in one
+    /// call. One scope is a list of one.
+    pub scopes: Vec<String>,
+    /// Keep the scopes off for the rest of this session: no trigger, implying
+    /// scope or inheritance turns them on again, and a subagent this session
+    /// starts afterwards keeps them off too, until `session_scope_on` names
+    /// them. False when absent: the scopes are off until something turns them
+    /// on.
+    #[serde(default)]
+    pub keep_off: bool,
+}
+
 /// Which session is asking, and which session it takes its scopes from.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionInheritParams {

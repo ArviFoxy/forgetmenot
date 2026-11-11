@@ -148,6 +148,15 @@ impl<'s, 'w> Mcp<'s, 'w> {
         self.wrapped("session_scope_off", params)
     }
 
+    /// Turn scopes off and keep them off for the rest of the session.
+    pub fn session_scope_keep_off<Id: AsRef<str>>(
+        &self,
+        scopes: impl IntoIterator<Item = Id>,
+    ) -> McpOutcome<'w> {
+        let params = self.with_session_key(json!({ "scopes": ids(scopes), "keep_off": true }));
+        self.wrapped("session_scope_off", params)
+    }
+
     /// Take over another session's scopes, including its own session scope.
     pub fn session_inherit(&self, from_session_key: &str) -> McpOutcome<'w> {
         let params = self.with_session_key(json!({ "from_session_key": from_session_key }));

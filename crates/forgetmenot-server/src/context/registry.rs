@@ -5,7 +5,7 @@
 //! to find or insert a context's handle, never while a context is being worked
 //! on, and the store lock is never taken inside a context lock.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -233,13 +233,14 @@ impl ContextRegistry {
         if let Some(existing) = self.contexts.lock().await.get(key).cloned() {
             return existing;
         }
-        let (active, parent, session_directory, inherited) = if key.is_subagent() {
+        let (active, parent, kept_off, session_directory, inherited) = if key.is_subagent() {
             let parent_key = creation.parent.unwrap_or_else(|| key.session_context());
             let parent = self.handle_parent(&parent_key, now).await;
             // The map lock is not held here, so the parent's own events are not
-            // blocked by a child being created. The scopes and the session
-            // directory are read in the one pass under the parent's lock.
-            let (active, session_directory) = {
+            // blocked by a child being created. The scopes, the scopes kept off
+            // and the session directory are read in the one pass under the
+            // parent's lock.
+            let (active, kept_off, session_directory) = {
                 let parent = parent.lock().await;
                 let active = match creation.inheritance {
                     Inheritance::FromParent => parent.active.clone(),
@@ -249,7 +250,14 @@ impl ContextRegistry {
                 };
                 // The session directory is a fact about the session the
                 // subagent runs in, not a scope, so it is inherited either way.
-                (active, parent.session_directory.clone())
+                // So are the scopes kept off: a subagent of a context that keeps
+                // a scope off would otherwise turn it on with its own triggers
+                // and hand its memories back in its report.
+                (
+                    active,
+                    parent.kept_off.clone(),
+                    parent.session_directory.clone(),
+                )
             };
             let implicit = initial_active(&key.machine, &key.session_id);
             let inherited = Activations {
@@ -264,10 +272,16 @@ impl ContextRegistry {
                     })
                     .collect(),
             };
-            (active, Some(parent_key), session_directory, inherited)
+            (
+                active,
+                Some(parent_key),
+                kept_off,
+                session_directory,
+                inherited,
+            )
         } else {
             let active = initial_active(&key.machine, &key.session_id);
-            (active, None, None, Activations::default())
+            (active, None, BTreeSet::new(), None, Activations::default())
         };
         // Only the call that inserts the context records what it was created
         // with; one that finds it inserted meanwhile created nothing. The map
@@ -278,6 +292,7 @@ impl ContextRegistry {
                 std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let mut state = ContextState::fresh(active, parent, now);
+                    state.kept_off = kept_off;
                     state.session_directory = session_directory;
                     (entry.insert(Arc::new(Mutex::new(state))).clone(), true)
                 }

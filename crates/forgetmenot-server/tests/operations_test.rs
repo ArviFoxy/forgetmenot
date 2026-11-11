@@ -163,6 +163,7 @@ fn a_scope_turned_off_is_reported_as_withdrawn_at_the_next_event() {
             &state,
             &key,
             std::slice::from_ref(&widgets),
+            false,
         ))
         .expect("a scope with a file can be turned off");
 
@@ -220,6 +221,7 @@ fn two_scopes_turned_off_in_one_call_are_both_withdrawn_at_the_next_event() {
             &state,
             &key,
             &[widgets.clone(), rocketry.clone()],
+            false,
         ))
         .expect("both scopes have a file and can be turned off");
 
@@ -265,6 +267,7 @@ fn turning_off_a_scope_that_is_always_on_is_refused() {
             &state,
             &key,
             std::slice::from_ref(&scope),
+            false,
         ));
         assert!(
             refused.is_err(),
@@ -307,6 +310,7 @@ fn a_list_naming_a_scope_that_is_always_on_turns_none_of_the_others_off() {
         &state,
         &key,
         &[widgets.clone(), ScopeId::global()],
+        false,
     ));
 
     assert!(
@@ -348,7 +352,7 @@ fn a_scope_change_that_names_no_scope_is_refused() {
         "the refusal must say that the list names no scope, got {refused_on}"
     );
 
-    let refused_off = server.run(operations::session_scope_off(&state, &key, &[]));
+    let refused_off = server.run(operations::session_scope_off(&state, &key, &[], false));
     let refused_off = refused_off
         .err()
         .unwrap_or_else(|| panic!("turning off no scope at all must be refused"));
@@ -550,7 +554,12 @@ fn every_session_operation_records_one_tool_call() {
         .run(operations::session_scope_on(&state, &source, &two_scopes))
         .expect("both are scopes of the example store");
     server
-        .run(operations::session_scope_off(&state, &source, &two_scopes))
+        .run(operations::session_scope_off(
+            &state,
+            &source,
+            &two_scopes,
+            false,
+        ))
         .expect("scopes with a file can be turned off");
     server
         .run(operations::session_inherit(&state, &caller, &source))

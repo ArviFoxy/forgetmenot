@@ -152,7 +152,7 @@ Scope tools read and change the scopes themselves, so the agent defines a scope 
 
 `global`, `machine:<name>` and `session:<machine>/<id>` have no file: `scope_index` lists them, and `scope_get` and `scope_delete` refuse them as having none.
 
-Two scope tools read the scope activation log, which has one entry for every time a scope went from off to on in a session or a subagent, with the cause: a trigger match, an `implies` of a scope that came on in the same step, inheritance by a subagent from the context it was started from, `session_scope_on`, or `session_inherit`. A trigger that fires on a scope already on, a scope turned off, and a session start or compaction carrying the active scopes over add no entry.
+Two scope tools read the scope activation log, which has one entry for every time a scope went from off to on in a session or a subagent, with the cause: a trigger match, an `implies` of a scope that came on in the same step, inheritance by a subagent from the context it was started from, `session_scope_on`, or `session_inherit`. A trigger that fires on a scope already on, a scope turned off, and a session start or compaction carrying the active scopes over add no entry. A trigger that matches a scope the context keeps off adds one entry per event with the cause `kept_off` and the same evidence as a trigger entry; the scope stays off.
 
 | Tool | What it does |
 |---|---|
@@ -172,8 +172,8 @@ Session tools change what the calling session receives and never touch the store
 
 | Tool | What it does |
 |---|---|
-| `session_scopes` | Show the active scopes and the scopes available |
-| `session_scope_on`, `session_scope_off` | Turn a list of scopes on or off for this session, all in one call |
+| `session_scopes` | Show the active scopes, the scopes available, and among those the scopes kept off |
+| `session_scope_on`, `session_scope_off` | Turn a list of scopes on or off for this session, all in one call. With `keep_off`, `session_scope_off` keeps them off for the rest of the session: no trigger, implying scope or inheritance turns them on, and a subagent started afterwards keeps them off too, until `session_scope_on` names them |
 | `session_inherit` | Take over another session's active scopes and its private notes |
 
 Every session tool takes the session key that the first hook event of the session prints.
