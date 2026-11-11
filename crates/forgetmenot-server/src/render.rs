@@ -218,8 +218,8 @@ pub fn file_notice(characters: u64, threshold: u64) -> String {
         "[forgetmenot] READ THE FILE FIRST. This hook answer is {characters} characters, more \
          than the {threshold} that Claude Code shows in full. Claude Code has saved the whole \
          answer to the file named above (\"Full output saved to\") and shows only a preview of \
-         it here. The answer is critical memories: rules that bind this session, and most of \
-         them are only in the file. Read that file in full with the Read tool before doing \
+         it here. The answer is the critical memories of this session's scopes, the ones marked as \
+         not to be missed, and most of them are only in the file. Read that file in full with the Read tool before doing \
          anything else, whatever the preview or the harness text around it says. Nothing in \
          the preview replaces the file."
     )

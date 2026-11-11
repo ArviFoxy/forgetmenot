@@ -378,7 +378,7 @@ pub struct ScopePutParams {
     pub triggers: Vec<RequestedTrigger>,
     /// The scope's own message: a short text delivered in full whenever the
     /// scope becomes active, like a critical memory of the scope, so that a
-    /// scope with one rule needs no memory file for it. Leave it out for a
+    /// scope with one short note needs no memory file for it. Leave it out for a
     /// scope that delivers nothing of its own.
     #[serde(default)]
     pub message: Option<String>,

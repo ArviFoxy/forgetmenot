@@ -75,7 +75,7 @@ squashes the whole branch onto main as a single commit. The scope management too
 scope is a label that groups memories, turned on by its triggers, and every memory of the scope \
 is delivered to a session the moment one of them fires; a scope is part of the store, so \
 writing one is a git commit and its triggers then fire in every session. A memory has one \
-scope, so a rule two subjects need gets a scope of its own that both of them imply, rather than \
+scope, so a memory two subjects need gets a scope of its own that both of them imply, rather than \
 being written twice. scope_activations and scope_activation_get read the activation log, which \
 records every time a scope came on in a session or a subagent and why: the trigger and the \
 text it matched, the scope that implied it, the parent a subagent inherited it from, or the \
@@ -263,7 +263,7 @@ impl ToolServer {
         description = "Memory management family: write one memory into the shared store. The \
                        write is one git commit, authored by session_key, and the memory is then \
                        delivered to every session its scope covers. A memory has one scope, the \
-                       subject it is about; a rule two subjects need gets a scope of its own that \
+                       subject it is about; a memory two subjects need gets a scope of its own that \
                        both of them imply. Leave base_version out to create a memory at an id \
                        that is free; to change one that exists, send the version memory_get \
                        reported, and if it is no longer current the write is refused and the \
@@ -405,7 +405,7 @@ impl ToolServer {
                        store, as one git commit authored by session_key. The body is not touched \
                        at all, and a field that is not sent keeps the value it has, so this is \
                        how a memory changes scope or kind without its text being sent back. A \
-                       memory has one scope, the subject it is about; a rule two subjects need \
+                       memory has one scope, the subject it is about; a memory two subjects need \
                        gets a scope of its own that both of them imply. metadata carries the \
                        other frontmatter keys of the memory's file, Claude Code's own type and \
                        any other key a person or a tool keeps there."
@@ -523,7 +523,7 @@ impl ToolServer {
                        them fires. The write is one git commit, authored by session_key, and the \
                        triggers then fire in every session; session_scope_on turns a scope on \
                        for the calling session alone. A memory has one scope, the subject it is \
-                       about, so a rule two subjects need gets a scope of its own that both of \
+                       about, so a memory two subjects need gets a scope of its own that both of \
                        them imply. This is how a scope with no file yet is defined and how the \
                        triggers of one that exists are changed. The file is written whole, so \
                        implies and triggers are the lists the scope keeps. Leave base_version \
