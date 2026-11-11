@@ -12,7 +12,7 @@
 mod common;
 mod scenario;
 
-use scenario::{Store, World, read};
+use scenario::{Field, Store, World, read};
 use serde_json::json;
 
 /// The machine these scenarios run on, which is the machine the example store's
@@ -185,12 +185,21 @@ fn a_subagent_of_a_subagent_starts_with_the_scopes_of_the_agent_that_spawned_it(
 ///
 /// The parent is in no project scope: it started in a neutral directory and has
 /// said nothing about widgets. The task names one, and a task is matched against
-/// the user-message triggers at the child's start, so `widget-naming` is due in
-/// the child. The parent's next prompt names no widget, and the parent's scopes
+/// the agent-message triggers at the child's start, which this world's `widgets`
+/// has, so `widget-naming` is due in the child. The parent's next prompt names no widget, and the parent's scopes
 /// never moved, so it is delivered nothing.
 #[test]
 fn a_subagents_task_activates_scopes_at_its_start() {
-    let world = World::new().store(Store::example()).build();
+    // The example's `widgets`, with the singular also matched in another agent's
+    // words, which a task is.
+    let store = Store::example().scope("widgets", |scope| {
+        scope
+            .implies(["rocketry"])
+            .trigger(Field::ToolInput, r"\bwidgets?\b")
+            .trigger(Field::UserMessage, r"\bwidget\b")
+            .trigger(Field::AgentMessage, r"\bwidget\b");
+    });
+    let world = World::new().store(store).build();
     let session = world.claude(ALPHA).session();
 
     session.start_in(NEUTRAL);

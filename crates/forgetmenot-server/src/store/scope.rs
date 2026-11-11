@@ -13,8 +13,12 @@ use super::frontmatter::FrontmatterError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerField {
+    /// What the user typed.
     UserMessage,
     AssistantMessage,
+    /// What another agent wrote to this context: a subagent's report handed
+    /// back to its session, and the task a subagent was given.
+    AgentMessage,
     ToolName,
     ToolInput,
     ToolResult,
@@ -31,9 +35,10 @@ impl TriggerField {
     /// Every text a trigger is matched against, in declaration order. `Any` is
     /// not among them, because it is every one of them rather than a text of
     /// its own.
-    pub const ALL: [TriggerField; 7] = [
+    pub const ALL: [TriggerField; 8] = [
         TriggerField::UserMessage,
         TriggerField::AssistantMessage,
+        TriggerField::AgentMessage,
         TriggerField::ToolName,
         TriggerField::ToolInput,
         TriggerField::ToolResult,
@@ -56,6 +61,7 @@ impl TriggerField {
         match self {
             TriggerField::UserMessage => "user_message",
             TriggerField::AssistantMessage => "assistant_message",
+            TriggerField::AgentMessage => "agent_message",
             TriggerField::ToolName => "tool_name",
             TriggerField::ToolInput => "tool_input",
             TriggerField::ToolResult => "tool_result",
@@ -180,6 +186,7 @@ mod tests {
         for (name, expected) in [
             ("user_message", TriggerField::UserMessage),
             ("assistant_message", TriggerField::AssistantMessage),
+            ("agent_message", TriggerField::AgentMessage),
             ("tool_name", TriggerField::ToolName),
             ("tool_input", TriggerField::ToolInput),
             ("tool_result", TriggerField::ToolResult),

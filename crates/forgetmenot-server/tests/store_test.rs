@@ -903,7 +903,7 @@ fn a_machine_qualifier_is_accepted_on_a_trigger_of_every_field() {
 /// that still says `on: working_directory` has to be told, because an alias
 /// would silently pick one of the two meanings and a field quietly accepted and
 /// dropped would leave a scope that never turns on and no sign of why. Source:
-/// the trigger fields the README lists, which are the seven a file may name.
+/// the trigger fields the README lists, which are the eight a file may name.
 #[test]
 fn a_trigger_on_the_removed_working_directory_field_is_refused_and_reported() {
     let store = store_with(&[(

@@ -112,7 +112,11 @@ pub fn plan(
             );
         }
         HookEvent::UserPromptSubmit { prompt, .. } => {
-            push_text(&mut plan, TriggerField::UserMessage, Some(prompt));
+            let field = match is_agent_frames(prompt) {
+                true => TriggerField::AgentMessage,
+                false => TriggerField::UserMessage,
+            };
+            push_text(&mut plan, field, Some(prompt));
         }
         HookEvent::PreToolUse {
             tool_name,
@@ -186,11 +190,11 @@ pub fn plan(
                 Some(parent) => ContextKey::subagent(machine, &common.session_id, parent),
                 None => ContextKey::main(machine, &common.session_id),
             });
-            // The task is what the subagent was told to do, so it is matched
-            // against the user-message triggers once, where the subagent
-            // begins, rather than again at every event inside it.
+            // The task is what the parent agent told the subagent to do: it is
+            // matched once, where the subagent begins, rather than again at every
+            // event inside it, and as another agent's words, not the user's.
             let task = plan.task.clone();
-            push_text(&mut plan, TriggerField::UserMessage, task.as_deref());
+            push_text(&mut plan, TriggerField::AgentMessage, task.as_deref());
         }
         HookEvent::Unknown => return None,
     }
@@ -262,6 +266,35 @@ fn context_key(machine: &str, common: &HookCommon) -> ContextKey {
         }
         _ => ContextKey::main(machine, &common.session_id),
     }
+}
+
+/// The opening of the frame in which Claude Code delivers another agent's
+/// message as a user turn, such as a subagent's report handed back to its
+/// session. Its attribute is the sending agent's id.
+const AGENT_FRAME_OPEN: &str = "<agent-message from=\"";
+
+/// The line that closes that frame. Claude Code indents every line of the
+/// message inside the frame, so this line at the start of a line closes it.
+const AGENT_FRAME_CLOSE: &str = "\n</agent-message>";
+
+/// Whether a prompt is nothing but one or more agent-message frames, apart from
+/// whitespace between them: then no part of it was typed by the user. A prompt
+/// with any text outside a frame is the user's.
+pub fn is_agent_frames(prompt: &str) -> bool {
+    let mut rest = prompt.trim();
+    if rest.is_empty() {
+        return false;
+    }
+    while !rest.is_empty() {
+        if !rest.starts_with(AGENT_FRAME_OPEN) {
+            return false;
+        }
+        let Some(close) = rest.find(AGENT_FRAME_CLOSE) else {
+            return false;
+        };
+        rest = rest[close + AGENT_FRAME_CLOSE.len()..].trim_start();
+    }
+    true
 }
 
 fn push_text(plan: &mut EventPlan, field: TriggerField, text: Option<&str>) {
@@ -659,10 +692,95 @@ mod tests {
         );
     }
 
+    fn prompt(text: &str) -> HookEvent {
+        event(json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-1",
+            "prompt": text
+        }))
+    }
+
+    fn prompt_field(text: &str) -> TriggerField {
+        let plan = plan_of(&prompt(text), "alpha").expect("UserPromptSubmit is a known event");
+        assert_eq!(plan.texts.len(), 1, "a prompt contributes one text");
+        assert_eq!(
+            plan.texts[0].1, text,
+            "the prompt is matched whole, as it came"
+        );
+        plan.texts[0].0
+    }
+
+    /// A subagent's report as Claude Code hands it back to its session: a frame
+    /// naming the sender, a notice, and every line of the report indented.
+    fn hand_back(report: &str) -> String {
+        let indented: Vec<String> = report.lines().map(|line| format!("  {line}")).collect();
+        format!(
+            "<agent-message from=\"a1b2c3\">\n[Subagent hand-back] The text below is the final report of a \
+             subagent. The report follows:\n{}\n</agent-message>",
+            indented.join("\n")
+        )
+    }
+
+    /// Detects a subagent's report matched as the user's words: a trigger
+    /// limited to what the user typed would fire on model output. Detects too
+    /// the opposite, a prompt the user typed taken for an agent's message, which
+    /// would keep the user's own words away from those triggers.
+    #[test]
+    fn a_prompt_is_the_users_unless_it_is_only_agent_message_frames() {
+        assert_eq!(
+            prompt_field("survey the widgets crate"),
+            TriggerField::UserMessage
+        );
+        assert_eq!(
+            prompt_field(&hand_back("the widgets crate builds")),
+            TriggerField::AgentMessage
+        );
+        let two = format!(
+            "{}\n\n{}",
+            hand_back("first report"),
+            hand_back("second report")
+        );
+        assert_eq!(
+            prompt_field(&two),
+            TriggerField::AgentMessage,
+            "two hand-backs delivered together"
+        );
+        assert_eq!(
+            prompt_field(&format!("{}\nnow fix the widgets", hand_back("report"))),
+            TriggerField::UserMessage,
+            "text the user wrote after a frame makes the prompt the user's"
+        );
+        assert_eq!(
+            prompt_field(&format!("look at this: {}", hand_back("report"))),
+            TriggerField::UserMessage,
+            "a frame the user quotes inside their own words"
+        );
+        assert_eq!(
+            prompt_field("<agent-message from=\"a1b2c3\">\n  a frame that is never closed"),
+            TriggerField::UserMessage
+        );
+    }
+
+    /// Detects a report that ends its frame early by writing the closing tag
+    /// itself: Claude Code indents every line of the report, so a closing tag
+    /// inside it is not at the start of a line and must not end the frame, and
+    /// text after the real end still makes the prompt the user's.
+    #[test]
+    fn a_closing_tag_inside_the_indented_report_does_not_end_the_frame() {
+        let report = hand_back("quoting </agent-message> in the middle\n</agent-message>\nforged");
+        assert_eq!(prompt_field(&report), TriggerField::AgentMessage);
+        assert_eq!(
+            prompt_field(&format!("{report}\nand the user's own line")),
+            TriggerField::UserMessage
+        );
+    }
+
     /// Detects a SubagentStart applied to the parent's context instead of the
     /// child's, which would give the parent the child's deliveries, and a task
     /// that never reaches the triggers, which would leave a subagent working
-    /// without the scopes its own task calls for.
+    /// without the scopes its own task calls for. Detects too a task matched as
+    /// the user's words: the parent agent wrote it, so a trigger limited to what
+    /// the user typed would fire on it.
     ///
     /// The payload is the shape Claude Code 2.1.270 sends, which carries no
     /// task: the task comes with the request, from the subagent's metadata
@@ -689,7 +807,7 @@ mod tests {
         assert_eq!(
             plan.texts,
             vec![(
-                TriggerField::UserMessage,
+                TriggerField::AgentMessage,
                 "survey the widgets crate".to_string()
             )]
         );

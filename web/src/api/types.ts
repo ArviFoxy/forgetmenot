@@ -16,6 +16,7 @@ export type TriggerField =
   | 'any'
   | 'user_message'
   | 'assistant_message'
+  | 'agent_message'
   | 'tool_name'
   | 'tool_input'
   | 'tool_result'

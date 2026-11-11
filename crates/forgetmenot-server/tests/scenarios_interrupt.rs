@@ -11,7 +11,7 @@
 mod common;
 mod scenario;
 
-use scenario::{Store, World, bash, read};
+use scenario::{Field, Store, World, bash, read};
 use serde_json::{Value, json};
 
 /// The machine these scenarios run on.
@@ -186,16 +186,25 @@ fn an_edit_between_the_hold_and_the_reissue_holds_the_call_again_with_the_new_te
 /// must still be stopped. One record shared between them would silence one side
 /// or the other.
 ///
-/// The subagent's task names a widget in the singular, which `widgets`'s
-/// user-message pattern matches, and the task is matched once where the subagent
-/// begins. A `SubagentStart` cannot stop anything, so the child simply holds the
+/// The subagent's task names a widget in the singular, which the pattern this
+/// world's `widgets` adds for another agent's words matches, and the task is
+/// matched once where the subagent begins. A `SubagentStart` cannot stop anything, so the child simply holds the
 /// rule from its first event, and its own tool call goes ahead. The parent's
 /// context never saw the task: its own call naming widgets turns `widgets` on
 /// there for the first time, so the rule is new and the call is stopped. The
 /// child's record is untouched by that, so its next call goes ahead too.
 #[test]
 fn a_subagents_hold_leaves_the_parents_next_call_alone() {
-    let world = World::new().store(Store::example()).build();
+    // The example's `widgets`, with the singular also matched in a task: a task is
+    // another agent's words, which the example's user-message pattern does not see.
+    let store = Store::example().scope("widgets", |scope| {
+        scope
+            .implies(["rocketry"])
+            .trigger(Field::ToolInput, r"\bwidgets?\b")
+            .trigger(Field::UserMessage, r"\bwidget\b")
+            .trigger(Field::AgentMessage, r"\bwidget\b");
+    });
+    let world = World::new().store(store).build();
     let parent = world.claude(ALPHA).session();
 
     parent.start_in(QUIET);

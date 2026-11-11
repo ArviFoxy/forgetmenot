@@ -277,6 +277,9 @@ pub enum RequestedTriggerField {
     UserMessage,
     /// What the agent wrote.
     AssistantMessage,
+    /// What another agent wrote to this context: a subagent's report handed
+    /// back to its session, and the task a subagent was given.
+    AgentMessage,
     /// The name of a tool the agent called.
     ToolName,
     /// The parameters a tool was called with.
@@ -297,6 +300,7 @@ impl From<RequestedTriggerField> for TriggerField {
         match field {
             RequestedTriggerField::UserMessage => TriggerField::UserMessage,
             RequestedTriggerField::AssistantMessage => TriggerField::AssistantMessage,
+            RequestedTriggerField::AgentMessage => TriggerField::AgentMessage,
             RequestedTriggerField::ToolName => TriggerField::ToolName,
             RequestedTriggerField::ToolInput => TriggerField::ToolInput,
             RequestedTriggerField::ToolResult => TriggerField::ToolResult,
@@ -311,7 +315,7 @@ impl From<RequestedTriggerField> for TriggerField {
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 pub struct RequestedTrigger {
     /// The text this trigger is matched against: `user_message`,
-    /// `assistant_message`, `tool_name`, `tool_input`, `tool_result`,
+    /// `assistant_message`, `agent_message`, `tool_name`, `tool_input`, `tool_result`,
     /// `shell_directory`, `session_directory` or `any`. Leave it out to match
     /// every one of them, which is what `any` means.
     #[serde(default)]
