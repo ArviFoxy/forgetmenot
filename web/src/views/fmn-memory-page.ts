@@ -1,6 +1,6 @@
 import { html, nothing, type TemplateResult, type PropertyDeclarations } from 'lit';
 import { RequestFailed, api } from '../api/client';
-import type { Commit, HistoryEntry, MemoryDoc, MemoryKind, ScopeRow } from '../api/types';
+import type { Commit, HistoryEntry, MemoryDoc, ScopeRow } from '../api/types';
 import { suggestScopes } from '../model/tagField';
 import { PageElement, gate } from '../lib/element';
 import { Resource } from '../lib/resource';
@@ -12,14 +12,14 @@ import {
   memoryText,
   type MemoryDraft,
 } from '../model/memoryDraft';
-import { memoryKinds, memorySources } from '../model/triggers';
+import { memorySources } from '../model/triggers';
 import { announceStoreChange, navigate, onStoreChange } from '../navigation';
 import { takeDeleteIntent } from '../intent';
 import { paths, scopeFromSearch } from '../routes';
 import '../components/fmn-commit-bar';
 import '../components/fmn-diff';
 import '../components/fmn-history-list';
-import '../components/fmn-kind-icon';
+import '../components/fmn-memory-icon';
 import '../components/fmn-markdown-editor';
 import '../components/fmn-side-by-side';
 import '../components/fmn-tag-field';
@@ -37,7 +37,7 @@ export function blankMemory(scope: string): MemoryDoc {
     name: '',
     title: '',
     description: '',
-    kind: 'knowledge',
+    pinned: false,
     scope,
     source: 'user',
     metadata: {},
@@ -185,7 +185,7 @@ export class FmnMemoryPage extends PageElement {
     this.change({ saving: true, errors: [], conflict: null, failure: null });
     const fields = {
       description: draft.description,
-      kind: draft.kind,
+      pinned: draft.pinned,
       scope: draft.scope,
       source: draft.source,
       // Straight from the editor when it has been typed in, because its own report
@@ -335,19 +335,17 @@ export class FmnMemoryPage extends PageElement {
         : html`${this.renderStatic('Name', html`<span class="value-text">${doc.name}</span>`)}
             ${this.renderStatic('Id', html`<code>${doc.id}</code>`)}`}
       ${this.renderField(
-        'kind',
-        'Kind',
-        html`<fmn-kind-icon kind=${draft.kind}></fmn-kind-icon
-        ><span class="value-text">${draft.kind}</span>`,
-        () => html`<sl-select
+        'pinned',
+        'Pinned',
+        html`<fmn-memory-icon ?pinned=${draft.pinned}></fmn-memory-icon
+        ><span class="value-text">${draft.pinned ? 'yes' : 'no'}</span>`,
+        () => html`<sl-switch
           size="small"
-          value=${draft.kind}
-          hoist
+          ?checked=${draft.pinned}
           @sl-change=${(event: Event) =>
-            this.change({ kind: (event.target as HTMLInputElement).value as MemoryKind })}
-        >
-          ${memoryKinds.map((kind) => html`<sl-option value=${kind}>${kind}</sl-option>`)}
-        </sl-select>`,
+            this.change({ pinned: (event.target as HTMLInputElement).checked })}
+          >Shown in full while its scope is active</sl-switch
+        >`,
       )}
       ${this.renderField(
         'scope',
@@ -506,14 +504,14 @@ export class FmnMemoryPage extends PageElement {
   private renderConflict(draft: MemoryDraft, current: MemoryDoc): TemplateResult {
     const mine = memoryText({
       description: draft.description,
-      kind: draft.kind,
+      pinned: draft.pinned,
       scope: draft.scope,
       source: draft.source,
       body: bodyToSave(draft),
     });
     const theirs = memoryText({
       description: current.description,
-      kind: current.kind,
+      pinned: current.pinned,
       scope: current.scope,
       source: current.source,
       body: current.body,
@@ -594,7 +592,7 @@ export class FmnMemoryPage extends PageElement {
         return html`
           <header class="page-header">
             <div class="page-name">
-              <fmn-kind-icon kind=${draft.kind}></fmn-kind-icon>
+              <fmn-memory-icon ?pinned=${draft.pinned}></fmn-memory-icon>
               <span>${this.creating ? (this.newId === '' ? 'new memory' : this.newId) : doc.id}</span>
             </div>
             ${this.editing === 'description'

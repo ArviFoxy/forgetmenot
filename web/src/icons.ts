@@ -4,7 +4,6 @@
 
 import { registerIconLibrary } from '@shoelace-style/shoelace/dist/utilities/icon-library.js';
 import activity from '@tabler/icons/outline/activity.svg?url';
-import book from '@tabler/icons/outline/book.svg?url';
 import chartBar from '@tabler/icons/outline/chart-bar.svg?url';
 import chevronDown from '@tabler/icons/outline/chevron-down.svg?url';
 import chevronRight from '@tabler/icons/outline/chevron-right.svg?url';
@@ -19,6 +18,7 @@ import helpCircle from '@tabler/icons/outline/help-circle.svg?url';
 import menu from '@tabler/icons/outline/menu-2.svg?url';
 import moon from '@tabler/icons/outline/moon.svg?url';
 import pencil from '@tabler/icons/outline/pencil.svg?url';
+import pin from '@tabler/icons/outline/pin.svg?url';
 import plus from '@tabler/icons/outline/plus.svg?url';
 import refresh from '@tabler/icons/outline/refresh.svg?url';
 import rotate from '@tabler/icons/outline/rotate.svg?url';
@@ -33,7 +33,6 @@ import x from '@tabler/icons/outline/x.svg?url';
 
 const files: Record<string, string> = {
   activity,
-  book,
   'chart-bar': chartBar,
   'chevron-down': chevronDown,
   'chevron-right': chevronRight,
@@ -48,6 +47,7 @@ const files: Record<string, string> = {
   menu,
   moon,
   pencil,
+  pin,
   plus,
   refresh,
   rotate,

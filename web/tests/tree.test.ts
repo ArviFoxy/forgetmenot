@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import type { MemorySummary, ScopeRow } from '../src/api/types';
-import { buildTree, filterTree, keysToReveal, type TreeNode } from '../src/model/tree';
+import { buildTree, filterTree, keysToReveal, pinnedFirst, type TreeNode } from '../src/model/tree';
 
 // The source of these expectations is the data model in the README together with the
 // shape the navigation promises: the server lists every scope that exists, one row
@@ -14,7 +14,7 @@ function memory(id: string, scope: string, over: Partial<MemorySummary> = {}): M
     name: id.split('/').at(-1) ?? id,
     title: id,
     description: `description of ${id}`,
-    kind: 'knowledge',
+    pinned: false,
     scope,
     source: 'user',
     modified: null,
@@ -220,4 +220,26 @@ test('a session memory is left buried, with Sessions and its machine collapsed',
   expect(keys).toContain('category:sessions');
   expect(keys).toContain('sessions:alpha');
   expect(keys).toContain('scope:session:alpha/session-1');
+});
+
+// Source: the pinned memories of a scope are the ones a session is shown in full, so
+// a list of a scope's memories puts them first; within each group the order is by name.
+test('a scope lists its pinned memories first, then the rest, each by name', () => {
+  const memories = [
+    memory('delta', 'global'),
+    memory('charlie', 'global', { pinned: true }),
+    memory('bravo', 'global'),
+    memory('alpha', 'global', { pinned: true }),
+  ];
+
+  expect([...memories].sort(pinnedFirst).map((entry) => entry.id)).toEqual([
+    'alpha',
+    'charlie',
+    'bravo',
+    'delta',
+  ]);
+
+  const tree = buildTree([globalRow], memories);
+  const scope = tree.find((node) => node.scopeId === 'global');
+  expect(scope?.children.map((node) => node.label)).toEqual(['alpha', 'charlie', 'bravo', 'delta']);
 });

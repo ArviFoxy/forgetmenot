@@ -2,14 +2,14 @@
 // an untouched body is written back byte for byte, and `[[name]]` links survive the
 // editor's serializer.
 
-import type { MemoryDoc, MemoryKind, MemorySource, ValidationError } from '../api/types';
+import type { MemoryDoc, MemorySource, ValidationError } from '../api/types';
 
 export interface MemoryDraft {
   /** The version the edit started from, and the body as it was loaded. */
   baseVersion: string;
   originalBody: string;
   description: string;
-  kind: MemoryKind;
+  pinned: boolean;
   /** The one scope the memory belongs to, empty while a new memory has none. */
   scope: string;
   source: MemorySource;
@@ -29,7 +29,7 @@ export function draftOf(doc: MemoryDoc): MemoryDraft {
     baseVersion: doc.version,
     originalBody: doc.body,
     description: doc.description,
-    kind: doc.kind,
+    pinned: doc.pinned,
     scope: doc.scope,
     source: doc.source,
     editedBody: null,
@@ -77,7 +77,7 @@ export function bodyToSave(draft: MemoryDraft): string {
 export function isDirty(draft: MemoryDraft, doc: MemoryDoc): boolean {
   if (draft.editedBody !== null && draft.editedBody !== draft.originalBody) return true;
   if (draft.description !== doc.description) return true;
-  if (draft.kind !== doc.kind) return true;
+  if (draft.pinned !== doc.pinned) return true;
   if (draft.source !== doc.source) return true;
   return draft.scope !== doc.scope;
 }
@@ -85,14 +85,14 @@ export function isDirty(draft: MemoryDraft, doc: MemoryDoc): boolean {
 /** The fields and the body as one text, so the two sides of a conflict compare. */
 export function memoryText(fields: {
   description: string;
-  kind: string;
+  pinned: boolean;
   scope: string;
   source: string;
   body: string;
 }): string {
   return [
     `description: ${fields.description}`,
-    `kind: ${fields.kind}`,
+    `pinned: ${fields.pinned}`,
     `scope: ${fields.scope}`,
     `source: ${fields.source}`,
     '',

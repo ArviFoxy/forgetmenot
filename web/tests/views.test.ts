@@ -25,7 +25,7 @@ const serverDoc: MemoryDoc = {
   name: 'widget-naming',
   title: 'Widget part numbers are immutable',
   description: 'a widget part number is never reused',
-  kind: 'critical',
+  pinned: true,
   scope: 'widgets',
   source: 'user',
   metadata: {},
@@ -212,7 +212,7 @@ vi.mock('../src/api/client', () => ({
     machineIndex: () => Promise.resolve(['alpha', 'beta']),
     contexts: () => Promise.resolve(answers.contexts),
     contextPrompt: () => Promise.resolve(answers.contextPrompt),
-    review: () => Promise.resolve({ errors: [], global_only_critical: [] }),
+    review: () => Promise.resolve({ errors: [], global_pinned: [] }),
     memoryStats: () => Promise.resolve(answers.statsRows ? [memoryRow] : []),
     triggerStats: () => Promise.resolve([]),
     scopeStats: () =>

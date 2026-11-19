@@ -108,7 +108,7 @@ test('a write the server has already moved past is accepted, losing the other ve
   const sideWrite = await page.request.put('/api/memories/bench-power', {
     data: {
       description: doc.description,
-      kind: doc.kind,
+      pinned: doc.pinned,
       scope: doc.scope,
       source: doc.source,
       body: `${String(doc.body)}\nthe other writer version of the line\n`,
@@ -226,7 +226,7 @@ test('a memory deleted from the tree menu stays in the store', async ({ page }) 
     data: {
       id,
       description: 'a memory made to be deleted',
-      kind: 'knowledge',
+      pinned: false,
       scope: 'global',
       source: 'user',
       body: `# ${id}\n\nMade to be deleted.\n`,

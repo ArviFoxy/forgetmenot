@@ -87,7 +87,7 @@ function indexQuery(filter: MemoryIndexFilter | undefined): string {
   if (!filter) return '';
   const query = new URLSearchParams();
   if (filter.scope) query.set('scope', filter.scope);
-  if (filter.kind) query.set('kind', filter.kind);
+  if (filter.pinned !== undefined) query.set('pinned', String(filter.pinned));
   const text = query.toString();
   return text === '' ? '' : `?${text}`;
 }

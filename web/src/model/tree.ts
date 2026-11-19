@@ -32,6 +32,15 @@ function byLabel(left: TreeNode, right: TreeNode): number {
   return left.label.localeCompare(right.label);
 }
 
+/** The order of a scope's memories wherever they are listed: the pinned ones, then the rest, each by name. */
+export function pinnedFirst(left: MemorySummary, right: MemorySummary): number {
+  return (
+    Number(right.pinned) - Number(left.pinned) ||
+    left.name.localeCompare(right.name) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
 function memoryNode(memory: MemorySummary): TreeNode {
   return {
     kind: 'memory',
@@ -44,9 +53,7 @@ function memoryNode(memory: MemorySummary): TreeNode {
 }
 
 function scopeNode(row: ScopeRow, memories: MemorySummary[], label: string): TreeNode {
-  const children = [...memories]
-    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    .map(memoryNode);
+  const children = [...memories].sort(pinnedFirst).map(memoryNode);
   return {
     kind: 'scope',
     key: `scope:${row.id}`,

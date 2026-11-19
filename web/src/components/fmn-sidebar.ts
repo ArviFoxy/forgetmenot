@@ -6,7 +6,7 @@ import { buildTree, filterTree, keysToReveal, type TreeNode } from '../model/tre
 import { currentPath, navigate, onLocationChange, onStoreChange } from '../navigation';
 import { requestDelete } from '../intent';
 import { paths, resolve } from '../routes';
-import './fmn-kind-icon';
+import './fmn-memory-icon';
 
 const openKeysStorage = 'fmn-tree-open';
 
@@ -176,7 +176,7 @@ export class FmnSidebar extends PageElement {
       <span class="tree-row ${node.kind}" @contextmenu=${(event: MouseEvent) => this.openMenu(event, node)}>
         ${node.memory === undefined
           ? html`<sl-icon name=${nodeIcon(node)}></sl-icon>`
-          : html`<fmn-kind-icon kind=${node.memory.kind}></fmn-kind-icon>`}
+          : html`<fmn-memory-icon ?pinned=${node.memory.pinned}></fmn-memory-icon>`}
         <span class="tree-label" title=${node.memory?.description ?? node.label}>${node.label}</span>
         ${node.kind === 'memory' ? nothing : html`<span class="tree-count">${node.count}</span>`}
       </span>

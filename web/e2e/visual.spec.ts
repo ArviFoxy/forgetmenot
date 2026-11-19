@@ -189,7 +189,7 @@ for (const size of sizes) {
         }
         const colours = await page.evaluate(iconColours, [
           '.tree-row sl-icon',
-          'fmn-kind-icon sl-icon',
+          'fmn-memory-icon sl-icon',
           '.page-name sl-icon',
         ]);
         expect(colours, 'the icons use more than one colour').toHaveLength(1);

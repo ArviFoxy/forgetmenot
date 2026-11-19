@@ -24,10 +24,10 @@ const doc: SettingsDoc = {
       description: 'Deliver everything that applies again after this many context tokens',
     },
     {
-      key: 'interrupt_on_critical',
+      key: 'pinned_interrupt_execution',
       type: 'bool',
       default: true,
-      description: 'Hold a tool call when a critical memory is due',
+      description: 'Hold a tool call when a pinned memory is due',
     },
     {
       key: 'interrupt_exempt_tools',
@@ -63,7 +63,7 @@ test('a key the file does not set is shown as unset instead of as its default', 
   const rows = settingRows(doc);
   expect(rows.map((row) => row.key)).toEqual([
     'reminder_tokens',
-    'interrupt_on_critical',
+    'pinned_interrupt_execution',
     'interrupt_exempt_tools',
     'tool_result_match_limit',
     'characters_per_token',
@@ -144,7 +144,7 @@ test('the page is built from a list of keys of its own rather than from the sche
   );
   expect(keys).toEqual([
     'reminder_tokens',
-    'interrupt_on_critical',
+    'pinned_interrupt_execution',
     'interrupt_exempt_tools',
     'tool_result_match_limit',
     'characters_per_token',

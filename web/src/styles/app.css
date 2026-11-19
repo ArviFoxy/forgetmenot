@@ -108,7 +108,7 @@ fmn-unknown-view {
   min-width: 0;
 }
 
-fmn-kind-icon {
+fmn-memory-icon {
   display: inline-flex;
   align-items: center;
 }
@@ -348,7 +348,7 @@ fmn-sidebar {
 }
 
 .tree-row sl-icon,
-.tree-row fmn-kind-icon {
+.tree-row fmn-memory-icon {
   flex: none;
   font-size: 1rem;
 }

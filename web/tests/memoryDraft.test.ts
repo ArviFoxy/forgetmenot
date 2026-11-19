@@ -17,7 +17,7 @@ const doc: MemoryDoc = {
   name: 'reading-list',
   title: 'Where the workshop references live',
   description: 'the workshop references are on paper',
-  kind: 'knowledge',
+  pinned: false,
   scope: 'global',
   source: 'user',
   metadata: {},
@@ -55,7 +55,7 @@ test('a body the editor re-serialized without a change counts as an edit', () =>
 
 test('a changed field leaves the page reporting no change', () => {
   expect(isDirty({ ...draftOf(doc), description: 'something else' }, doc)).toBe(true);
-  expect(isDirty({ ...draftOf(doc), kind: 'critical' }, doc)).toBe(true);
+  expect(isDirty({ ...draftOf(doc), pinned: true }, doc)).toBe(true);
   expect(isDirty({ ...draftOf(doc), source: 'assistant' }, doc)).toBe(true);
   expect(isDirty({ ...draftOf(doc), scope: 'widgets' }, doc)).toBe(true);
 });

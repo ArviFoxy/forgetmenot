@@ -35,9 +35,9 @@ async function serveOnce(
   };
 }
 
-const memoryFields: Pick<MemoryDoc, 'description' | 'kind' | 'scope' | 'source'> = {
+const memoryFields: Pick<MemoryDoc, 'description' | 'pinned' | 'scope' | 'source'> = {
   description: 'how widgets are wired',
-  kind: 'critical',
+  pinned: true,
   scope: 'widgets',
   source: 'user',
 };

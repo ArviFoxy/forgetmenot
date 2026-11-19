@@ -1,7 +1,6 @@
 // Resource types of the server's JSON API, mirrored from the project's wire types.
 // Field names are the JSON field names and stay in snake_case.
 
-export type MemoryKind = 'critical' | 'knowledge';
 /**
  * Who wrote the memory. `user` and `assistant` are the conventional values; any
  * other string a person or another tool keeps in the file is stored and read back
@@ -29,7 +28,8 @@ export interface MemorySummary {
   name: string;
   title: string;
   description: string;
-  kind: MemoryKind;
+  /** Whether the memory is shown in full while its scope is active. */
+  pinned: boolean;
   /**
    * The one scope this memory belongs to. A scope's cost is then exactly the text of
    * its own memories; a rule two subjects need lives in a scope of its own that the
@@ -65,7 +65,8 @@ export interface MemoryDoc {
   name: string;
   title: string;
   description: string;
-  kind: MemoryKind;
+  /** Whether the memory is shown in full while its scope is active. */
+  pinned: boolean;
   scope: string;
   source: MemorySource;
   /** The `metadata` keys forgetmenot does not interpret, Claude Code's own `type` among them. */
@@ -238,7 +239,7 @@ export interface ValidationError {
 
 export interface ReviewReport {
   errors: ValidationError[];
-  global_only_critical: string[];
+  global_pinned: string[];
 }
 
 /**
@@ -348,7 +349,7 @@ export interface SummaryWindow {
   chars: number;
   tokens: number;
   events: number;
-  /** Tool calls the server stopped so a critical memory could be read first. */
+  /** Tool calls the server stopped so a pinned memory could be delivered first. */
   held: number;
   forgettings: number;
 }
@@ -384,12 +385,13 @@ export interface SessionEventPoint {
 
 export interface MemoryIndexFilter {
   scope?: string;
-  kind?: MemoryKind;
+  pinned?: boolean;
 }
 
 export interface WriteRequest extends CommitMessage {
   description: string;
-  kind: MemoryKind;
+  /** Whether the memory is shown in full while its scope is active. */
+  pinned: boolean;
   scope: string;
   source: MemorySource;
   /**

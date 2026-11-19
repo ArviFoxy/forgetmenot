@@ -9,7 +9,8 @@ import { announceStoreChange, navigate, onStoreChange } from '../navigation';
 import { takeDeleteIntent } from '../intent';
 import { paths } from '../routes';
 import '../components/fmn-commit-bar';
-import '../components/fmn-kind-icon';
+import { pinnedFirst } from '../model/tree';
+import '../components/fmn-memory-icon';
 import '../components/fmn-side-by-side';
 import '../components/fmn-tag-field';
 import '../components/fmn-trigger-table';
@@ -350,9 +351,9 @@ export class FmnScopePage extends PageElement {
       memories.length === 0
         ? html`<p class="empty">No memories in this scope</p>`
         : html`<ul class="memory-index">
-            ${memories.map(
+            ${[...memories].sort(pinnedFirst).map(
               (memory) => html`<li>
-                <fmn-kind-icon kind=${memory.kind}></fmn-kind-icon>
+                <fmn-memory-icon ?pinned=${memory.pinned}></fmn-memory-icon>
                 <a href=${paths.memory(memory.id)}>${memory.name}</a>
                 <span class="muted">${memory.description}</span>
               </li>`,

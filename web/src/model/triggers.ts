@@ -1,4 +1,4 @@
-import type { MemoryKind, MemorySource, Trigger, TriggerField } from '../api/types';
+import type { MemorySource, Trigger, TriggerField } from '../api/types';
 
 /** The eight strings a trigger can name, in the order the documentation lists them. */
 export const triggerFields: TriggerField[] = [
@@ -42,7 +42,6 @@ export function withMachine(trigger: Trigger, machine: string): Trigger {
   return { ...(on === undefined ? {} : { on }), pattern, ...(named === '' ? {} : { machine: named }) };
 }
 
-export const memoryKinds: MemoryKind[] = ['critical', 'knowledge'];
 /**
  * The sources a memory is usually written by, offered as suggestions. A source is
  * free text, so a memory may carry a word that is not on this list.
