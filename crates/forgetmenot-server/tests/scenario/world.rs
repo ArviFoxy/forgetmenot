@@ -327,9 +327,9 @@ impl SettingsBuilder {
         self.set("reminder_tokens", json!(tokens))
     }
 
-    /// Hold a tool call when a critical memory is due and unseen.
-    pub fn interrupt_on_critical(&mut self, hold: bool) -> &mut Self {
-        self.set("interrupt_on_critical", json!(hold))
+    /// Hold a tool call when a pinned memory is due and unseen.
+    pub fn pinned_interrupt_execution(&mut self, hold: bool) -> &mut Self {
+        self.set("pinned_interrupt_execution", json!(hold))
     }
 
     /// Tool names that are never held.
@@ -353,9 +353,9 @@ impl SettingsBuilder {
         self.set("subagents_inherit_scopes", json!(inherit))
     }
 
-    /// Whether the descriptions of knowledge memories are delivered.
-    pub fn deliver_knowledge_index(&mut self, deliver: bool) -> &mut Self {
-        self.set("deliver_knowledge_index", json!(deliver))
+    /// Whether the descriptions of unpinned memories are delivered.
+    pub fn deliver_descriptions(&mut self, deliver: bool) -> &mut Self {
+        self.set("deliver_descriptions", json!(deliver))
     }
 
     /// Bytes of a tool result matched against triggers.

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use forgetmenot_server::store::memory::{
-    MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource,
+    MemoryDocument, MemoryFrontmatter, MemoryMetadata, MemorySource,
 };
 use forgetmenot_server::store::scope::{Forget, ScopeDocument, Trigger};
 use forgetmenot_server::store::{MemoryId, ScopeId};
@@ -92,13 +92,13 @@ impl StoreBuilder {
 
 /// One memory of the store.
 ///
-/// The defaults are the ones a file that says nothing gets: a knowledge memory
+/// The defaults are the ones a file that says nothing gets: an unpinned memory
 /// in `global`, written by the assistant.
 #[derive(Clone, Debug)]
 pub struct MemoryBuilder {
     id: MemoryId,
     description: String,
-    kind: MemoryKind,
+    pinned: bool,
     scope: ScopeId,
     source: String,
     body: String,
@@ -109,7 +109,7 @@ impl MemoryBuilder {
         Self {
             id,
             description: String::new(),
-            kind: MemoryKind::Knowledge,
+            pinned: false,
             scope: ScopeId::global(),
             source: "assistant".to_string(),
             body: String::new(),
@@ -117,14 +117,14 @@ impl MemoryBuilder {
     }
 
     /// Delivered in full, and able to stop a tool call.
-    pub fn critical(&mut self) -> &mut Self {
-        self.kind = MemoryKind::Critical;
+    pub fn pinned(&mut self) -> &mut Self {
+        self.pinned = true;
         self
     }
 
     /// Delivered as an index line the model can fetch the body by.
-    pub fn knowledge(&mut self) -> &mut Self {
-        self.kind = MemoryKind::Knowledge;
+    pub fn unpinned(&mut self) -> &mut Self {
+        self.pinned = false;
         self
     }
 
@@ -157,8 +157,8 @@ impl MemoryBuilder {
         &self.description
     }
 
-    pub(crate) fn kind(&self) -> MemoryKind {
-        self.kind
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.pinned
     }
 
     pub(crate) fn scope_id(&self) -> &ScopeId {
@@ -183,7 +183,7 @@ impl MemoryBuilder {
                 modified: None,
                 extra: yaml_serde::Mapping::new(),
                 metadata: MemoryMetadata {
-                    kind: Some(self.kind),
+                    pinned: self.pinned,
                     scope: Some(self.scope.clone()),
                     source: Some(MemorySource::new(self.source.clone())),
                     ..MemoryMetadata::default()

@@ -22,14 +22,14 @@ use common::{
 /// The reason a stopped tool call is given. Source: the plan's hook contract,
 /// where this text is fixed so that the model can tell an automatic keyword
 /// match apart from a human refusing the call.
-const DENY_REASON: &str = "This tool call was not executed. Its input matched a memory trigger and a critical memory is new or changed for this context. This is an automatic keyword match, not a review, approval or denial of the call. Read the memory in the additional context. Issue the call again if it is still what you intend.";
+const DENY_REASON: &str = "This tool call was not executed. Its input matched a memory trigger and a pinned memory is new or changed for this context. This is an automatic keyword match, not a review, approval or denial of the call. Read the memory in the additional context. Issue the call again if it is still what you intend.";
 
 /// A line in the body of the example store's `widget-naming` and nowhere else,
 /// so that "the memory is in the answer" can be told from anything else the
 /// store delivers.
 const WIDGET_NAMING_BODY: &str = "Downstream drawings cite part numbers by value";
 
-/// A line in the body of the example store's global critical memory.
+/// A line in the body of the example store's global pinned memory.
 const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 
 /// The context size reported with an event, which no test here depends on.
@@ -70,7 +70,7 @@ fn has_line(text: &str, wanted: &str) -> bool {
 /// scopes the session is not in: what is not active is not delivered and not
 /// listed, and the tools are where a session asks what else exists.
 ///
-/// The global critical memory stands for what the answer carries: which
+/// The global pinned memory stands for what the answer carries: which
 /// memories are owed and how each is written are decided by the state machine
 /// and the renderer and are tested there.
 #[test]
@@ -125,7 +125,7 @@ fn a_held_tool_call_is_answered_with_the_deny_shape_its_fixed_reason_and_the_mem
     assert_eq!(
         payload(&answer)["permissionDecision"],
         json!("deny"),
-        "a new critical memory must stop the call, got {answer}"
+        "a new pinned memory must stop the call, got {answer}"
     );
     assert_eq!(
         payload(&answer)["permissionDecisionReason"],
@@ -228,7 +228,7 @@ fn a_body_that_is_not_a_hook_request_is_rejected() {
 #[test]
 fn a_setting_the_stores_config_file_carries_is_what_the_endpoint_answers_by() {
     let server = TestServer::start(
-        example_store_with_settings("interrupt_on_critical: false\n"),
+        example_store_with_settings("pinned_interrupt_execution: false\n"),
         |_| {},
     );
 
@@ -242,7 +242,7 @@ fn a_setting_the_stores_config_file_carries_is_what_the_endpoint_answers_by() {
     );
     assert!(
         additional_context(&answer).is_some_and(|text| text.contains(WIDGET_NAMING_BODY)),
-        "the critical memory must still be delivered in full, got {answer}"
+        "the pinned memory must still be delivered in full, got {answer}"
     );
 }
 

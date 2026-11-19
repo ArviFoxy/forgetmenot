@@ -238,7 +238,7 @@ fn a_memory_written_through_mcp_is_authored_by_the_calling_session_and_answers_w
             "session_key": session_key,
             "id": "bracket-torque",
             "description": "Bracket bolts are torqued to 9 Nm, in two passes",
-            "kind": "critical",
+            "pinned": true,
             "scope": "global",
             "source": "assistant",
             "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
@@ -278,14 +278,90 @@ fn a_memory_written_through_mcp_is_authored_by_the_calling_session_and_answers_w
     let document = tool_json(&session.call("memory_get", json!({ "id": "bracket-torque" })));
     assert_eq!(
         (
-            document["kind"].clone(),
+            document["pinned"].clone(),
             document["body"]
                 .as_str()
                 .map(|body| body.contains("9 Nm in two passes"))
         ),
-        (json!("critical"), Some(true)),
-        "the document must read back with the kind and the body that were written, got {document}"
+        (json!(true), Some(true)),
+        "the document must read back with the flag and the body that were written, got {document}"
     );
+}
+
+/// Detects a session from before the change, which still holds the earlier tool
+/// schema and sends `kind`, being refused or writing the wrong flag; and the
+/// earlier field offered to a new session, which would keep the two words in
+/// front of every model. `pinned` is in the schema of each tool that sets it and
+/// `kind` is in none.
+#[test]
+fn the_earlier_kind_field_is_still_taken_and_is_in_no_schema() {
+    let server = TestServer::start(example_store_files(), |_| {});
+    let session = server.mcp();
+    let session_key = "alpha/session-1";
+
+    for (id, kind, pinned) in [
+        ("shown-in-full", "critical", true),
+        ("shown-as-a-line", "knowledge", false),
+    ] {
+        let written = session.call(
+            "memory_put",
+            json!({
+                "session_key": session_key,
+                "id": id,
+                "description": format!("about {id}"),
+                "kind": kind,
+                "scope": "global",
+                "source": "assistant",
+                "body": "text\n",
+                "commit_title": format!("write {id}")
+            }),
+        );
+        assert_ne!(
+            written.is_error,
+            Some(true),
+            "a write that carries the earlier field must be taken, got {}",
+            tool_text(&written)
+        );
+        let document = tool_json(&session.call("memory_get", json!({ "id": id })));
+        assert_eq!(
+            document["pinned"],
+            json!(pinned),
+            "kind {kind} must be read as pinned {pinned}, got {document}"
+        );
+        assert!(
+            document.get("kind").is_none(),
+            "an answer carries the flag alone, got {document}"
+        );
+    }
+
+    let unpinned = session.call(
+        "memory_set_fields",
+        json!({
+            "session_key": session_key,
+            "id": "shown-in-full",
+            "kind": "knowledge",
+            "commit_title": "unpin with the earlier field"
+        }),
+    );
+    assert_ne!(unpinned.is_error, Some(true), "{}", tool_text(&unpinned));
+    let document = tool_json(&session.call("memory_get", json!({ "id": "shown-in-full" })));
+    assert_eq!(document["pinned"], json!(false), "got {document}");
+
+    for tool in session.tools() {
+        let schema = serde_json::to_string(&tool.input_schema).expect("a schema serialises");
+        assert!(
+            !schema.contains("\"kind\"") && !schema.contains("critical"),
+            "{} must not offer the earlier field, got {schema}",
+            tool.name
+        );
+        if ["memory_put", "memory_set_fields", "memory_index"].contains(&tool.name.as_ref()) {
+            assert!(
+                schema.contains("\"pinned\""),
+                "{} must offer the pinned flag, got {schema}",
+                tool.name
+            );
+        }
+    }
 }
 
 /// Detects a `commit_body` that does not reach the commit, that is cut at its
@@ -309,7 +385,7 @@ fn a_commit_body_written_through_mcp_reads_back_word_for_word_in_the_memory_hist
             "session_key": session_key,
             "id": "bracket-torque",
             "description": "Bracket bolts are torqued to 9 Nm, in two passes",
-            "kind": "critical",
+            "pinned": true,
             "scope": "global",
             "source": "assistant",
             "body": "# Bracket torque\n\nTorque the bracket bolts to 9 Nm in two passes.\n",
@@ -449,7 +525,7 @@ fn a_scope_created_through_mcp_fires_at_the_next_matching_prompt_and_delivers_it
             "session_key": session_key,
             "id": "lathe-chuck-key",
             "description": "How the chuck key is handled at the lathe",
-            "kind": "critical",
+            "pinned": true,
             "scope": NEW_SCOPE,
             "source": "assistant",
             "body": format!("# Chuck key\n\n{LATHE_RULE}.\n"),

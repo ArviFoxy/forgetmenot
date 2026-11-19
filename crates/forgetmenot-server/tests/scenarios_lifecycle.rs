@@ -1,7 +1,7 @@
 //! What a whole session is given, from its start to its last prompt.
 //!
 //! Each test here is about the sequence and not about any one event: that every
-//! memory arrives once in the form its kind gets and never again; that what the
+//! memory arrives once in the form it is delivered in and never again; that what the
 //! server records as delivered is not always what the model could read; that a
 //! session picked up again is given everything afresh; that the assistant's own
 //! words are matched against triggers like anything else. The rules a single
@@ -24,11 +24,11 @@ const ALPHA: &str = "alpha";
 /// so a session started here works in the implicit scopes alone.
 const QUIET: &str = "/home/dev/parts";
 
-/// The example store's critical memories, whose bodies arrive whole.
-const CRITICAL: [&str; 2] = ["bench-power", "widget-naming"];
+/// The example store's pinned memories, whose bodies arrive whole.
+const PINNED: [&str; 2] = ["bench-power", "widget-naming"];
 
-/// The example store's knowledge memories, which arrive as index lines.
-const KNOWLEDGE: [&str; 3] = [
+/// The example store's unpinned memories, which arrive as index lines.
+const UNPINNED: [&str; 3] = [
     "reading-list",
     "rocket-stages",
     "sessions/alpha/session-1/notes",
@@ -45,12 +45,12 @@ impl Arrivals {
     /// Count what this answer carried. Called for every answer of the session,
     /// so the totals are over the whole session and not over a chosen few.
     fn record(&mut self, answer: &Answer<'_>) {
-        for id in CRITICAL {
+        for id in PINNED {
             if answer.delivers_full(id) {
                 *self.full.entry(id).or_default() += 1;
             }
         }
-        for id in KNOWLEDGE {
+        for id in UNPINNED {
             if answer.delivers_index(id) {
                 *self.index.entry(id).or_default() += 1;
             }
@@ -72,7 +72,7 @@ impl Arrivals {
 /// `\bwidget\b`, which the plural does not match, so the prompt turns nothing on
 /// and is owed nothing. The `Bash` call's input says `widgets` too, and the
 /// tool-input pattern is `\bwidgets?\b`, which does match: `widgets` comes on
-/// there, `widget-naming` is a critical memory new to this context, and a
+/// there, `widget-naming` is a pinned memory new to this context, and a
 /// `PreToolUse` is the one event that may stop a call, so exactly one hold
 /// happens in the whole session. The call issued again is owed nothing and goes
 /// ahead; the result names a rocket and the assistant's last words name rocket
@@ -96,7 +96,7 @@ fn every_memory_arrives_once_in_its_form_across_a_whole_session() {
         .assert(|answer| {
             assert!(
                 answer.held(),
-                "the tool input turns widgets on and its critical memory is new here"
+                "the tool input turns widgets on and its pinned memory is new here"
             );
         });
     arrivals.record(held.answer());
@@ -119,14 +119,14 @@ fn every_memory_arrives_once_in_its_form_across_a_whole_session() {
     );
     arrivals.record(&last);
 
-    for id in CRITICAL {
+    for id in PINNED {
         assert_eq!(
             arrivals.full.get(id).copied().unwrap_or(0),
             1,
             "{id} must arrive whole in exactly one answer of the session"
         );
     }
-    for id in KNOWLEDGE {
+    for id in UNPINNED {
         assert_eq!(
             arrivals.index.get(id).copied().unwrap_or(0),
             1,
@@ -143,7 +143,7 @@ fn every_memory_arrives_once_in_its_form_across_a_whole_session() {
     );
 }
 
-/// How many long critical memories the store carries beyond the example store's
+/// How many long pinned memories the store carries beyond the example store's
 /// own, and how long each one is. Five of this size put the session start well
 /// past the 10 000 characters Claude Code shows in full.
 const LONG_MEMORIES: usize = 5;
@@ -170,14 +170,14 @@ fn long_body(id: &str) -> String {
         .join("\n")
 }
 
-/// The example store with five long critical memories in `global`.
+/// The example store with five long pinned memories in `global`.
 fn store_with_long_rules() -> scenario::StoreBuilder {
     let mut store = Store::example();
     for id in long_ids() {
         let body = long_body(&id);
         store = store.memory(&id, |memory| {
             memory
-                .critical()
+                .pinned()
                 .scope("global")
                 .description("A long bench rule")
                 .body(&body);
@@ -295,7 +295,7 @@ fn a_session_resumed_is_given_everything_again_and_keeps_its_scopes() {
             answer.delivers_index("reading-list")
                 && answer.delivers_index("rocket-stages")
                 && answer.delivers_index("sessions/alpha/session-1/notes"),
-            "every knowledge memory due arrives again as its index line"
+            "every unpinned memory due arrives again as its index line"
         );
     });
 
@@ -322,7 +322,7 @@ fn a_session_resumed_is_given_everything_again_and_keeps_its_scopes() {
 /// `rocket-stages` is not owed at the start. The assistant then says that the
 /// rocket stages are wrong; `rocketry`'s trigger names no field, which stands
 /// for every text the hook sees, so it fires on the assistant's message. Its
-/// only memory is knowledge, so it arrives as an index line.
+/// only memory is not pinned, so it arrives as an index line.
 #[test]
 fn a_stop_answers_with_what_the_assistants_words_triggered() {
     let world = World::new().store(Store::example()).build();
@@ -340,7 +340,7 @@ fn a_stop_answers_with_what_the_assistants_words_triggered() {
         .assert(|answer| {
             assert!(
                 answer.delivers_index("rocket-stages"),
-                "the assistant's own words turn rocketry on and its knowledge memory arrives"
+                "the assistant's own words turn rocketry on and its unpinned memory arrives"
             );
         });
 

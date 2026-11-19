@@ -58,7 +58,7 @@ fn scope(server: &TestServer, id: &str) -> Value {
 fn write_of(document: &Value, body: &str, message: &str) -> Value {
     json!({
         "description": document["description"],
-        "kind": document["kind"],
+        "pinned": document["pinned"],
         "scope": document["scope"],
         "source": document["source"],
         "body": body,
@@ -154,7 +154,7 @@ fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_it
         Some(&json!({
             "id": "bracket-tolerances",
             "description": "Bracket holes are reamed after welding, not before",
-            "kind": "knowledge",
+            "pinned": false,
             "scope": "widgets",
             "source": "user",
             "body": "# Bracket tolerances\n\nReam the holes after welding.\n",
@@ -171,9 +171,9 @@ fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_it
     );
     let created = document(&server, "bracket-tolerances");
     assert_eq!(
-        (created["kind"].as_str(), created["scope"].clone()),
-        (Some("knowledge"), json!("widgets")),
-        "the memory must read back with the kind and the scope the body gave, got {created}"
+        (created["pinned"].clone(), created["scope"].clone()),
+        (json!(false), json!("widgets")),
+        "the memory must read back with the flag and the scope the body gave, got {created}"
     );
 }
 
@@ -182,7 +182,7 @@ fn creating_a_memory_answers_200_with_the_commit_and_the_memory_reads_back_at_it
 /// would be given the whole store, and a mistyped filter would look like a scope
 /// with nothing in it.
 #[test]
-fn the_memory_index_route_applies_its_filters_and_refuses_a_kind_it_has_no_notion_of() {
+fn the_memory_index_route_applies_its_filters_and_refuses_a_flag_value_it_cannot_read() {
     let server = TestServer::start(example_store_files(), |_| {});
     let listed = |query: &str| {
         let (status, answer) = server.api("GET", &format!("/api/memories{query}"), None);
@@ -191,32 +191,32 @@ fn the_memory_index_route_applies_its_filters_and_refuses_a_kind_it_has_no_notio
     };
 
     // `widget-naming` is the example store's only memory in `widgets`, and it
-    // is critical.
+    // is pinned.
     assert_eq!(
         listed("?scope=widgets"),
         vec!["widget-naming"],
         "only the memories carrying the scope asked for may be listed"
     );
     assert_eq!(
-        listed("?scope=widgets&kind=knowledge"),
+        listed("?scope=widgets&pinned=false"),
         Vec::<String>::new(),
-        "both filters must apply, so a critical memory must not answer a knowledge filter"
+        "both filters must apply, so a pinned memory must not answer a filter for the others"
     );
     assert!(
         listed("").len() > 1,
         "without a filter every memory must be listed"
     );
 
-    let (status, answer) = server.api("GET", "/api/memories?kind=rules", None);
+    let (status, answer) = server.api("GET", "/api/memories?pinned=rules", None);
     assert_eq!(
         status, 400,
-        "a kind this route has no notion of must be refused, got {answer}"
+        "a flag value this route cannot read must be refused, got {answer}"
     );
     assert!(
         answer["error"]
             .as_str()
-            .is_some_and(|message| message.contains("critical")),
-        "the refusal must say which kinds the route takes, got {answer}"
+            .is_some_and(|message| message.contains("pinned")),
+        "the refusal must name the filter it could not read, got {answer}"
     );
 }
 
@@ -581,11 +581,11 @@ fn the_settings_of_a_store_without_a_file_are_the_defaults_and_the_schema_descri
         answer["settings"],
         json!({
             "reminder_tokens": null,
-            "interrupt_on_critical": true,
+            "pinned_interrupt_execution": true,
             "interrupt_exempt_tools": [],
             "trigger_exempt_tools": [],
             "subagents_inherit_scopes": true,
-            "deliver_knowledge_index": true,
+            "deliver_descriptions": true,
             "tool_result_match_limit": 262_144,
             "answer_file_threshold": 10_000,
             "announce_empty_scopes": false,
@@ -864,10 +864,10 @@ fn the_prompt_route_answers_the_text_with_its_size_and_refuses_a_mode_it_has_no_
 }
 
 /// Detects a review route that answers only one of the two things the page
-/// shows: what is wrong with the store, and the critical memories that reach
+/// shows: what is wrong with the store, and the pinned memories that reach
 /// every session on every machine.
 #[test]
-fn the_review_route_answers_the_stores_problems_and_its_global_only_critical_memories() {
+fn the_review_route_answers_the_stores_problems_and_its_global_pinned_memories() {
     let server = TestServer::start(example_store_files(), |_| {});
     let (status, clean) = server.api("GET", "/api/review", None);
     assert_eq!(status, 200, "the review must be readable, got {clean}");
@@ -876,16 +876,16 @@ fn the_review_route_answers_the_stores_problems_and_its_global_only_critical_mem
         json!([]),
         "the example store must start clean, got {clean}"
     );
-    let global_only: Vec<&str> = clean["global_only_critical"]
+    let global_only: Vec<&str> = clean["global_pinned"]
         .as_array()
-        .expect("the report lists the global-only critical memories")
+        .expect("the report lists the pinned memories of the global scope")
         .iter()
         .map(|id| id.as_str().expect("an id is text"))
         .collect();
     assert_eq!(
         global_only,
         vec!["bench-power"],
-        "a critical memory scoped only to global must be listed and one with a scope of its \
+        "a pinned memory scoped only to global must be listed and one with a scope of its \
          own must not, got {clean}"
     );
 
@@ -894,7 +894,7 @@ fn the_review_route_answers_the_stores_problems_and_its_global_only_critical_mem
         vec![(
             "memories/bench-checks.md".to_string(),
             Some(
-                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  kind: knowledge\n  scope: global\n---\n# Bench checks\n\nSee [[meter-calibration]] for the meter.\n"
+                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  scope: global\n---\n# Bench checks\n\nSee [[meter-calibration]] for the meter.\n"
                     .to_vec(),
             ),
         )],
@@ -926,7 +926,7 @@ fn the_review_route_answers_a_warning_about_a_file_naming_several_scopes() {
         vec![(
             "memories/bench-checks.md".to_string(),
             Some(
-                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  kind: knowledge\n  scopes:\n  - widgets\n  - rocketry\n---\n# Bench checks\n\nRead the meter first.\n"
+                b"---\nname: bench-checks\ndescription: The checks to run before powering the bench\nmetadata:\n  scopes:\n  - widgets\n  - rocketry\n---\n# Bench checks\n\nRead the meter first.\n"
                     .to_vec(),
             ),
         )],
@@ -1230,7 +1230,7 @@ fn sixteen_concurrent_writes_to_different_memories_all_land_in_one_line_of_histo
                         &format!("/api/memories/note-{index:02}"),
                         Some(&json!({
                             "description": format!("Generated note {index}, rewritten by writer {index}"),
-                            "kind": "knowledge",
+                            "pinned": false,
                             "scope": "global",
                             "source": "user",
                             "body": format!("# note-{index:02}\n\ntext from writer {index}\n"),
@@ -1300,7 +1300,7 @@ fn concurrent_writes_to_one_memory_from_one_version_admit_exactly_one() {
                         "/api/memories/reading-list",
                         Some(&json!({
                             "description": "The workshop references are all on paper in the binder, nothing online",
-                            "kind": "knowledge",
+                            "pinned": false,
                             "scope": "global",
                             "source": "assistant",
                             "body": format!("# Where the workshop references live\n\ntext from writer {index}\n"),
@@ -1838,7 +1838,7 @@ fn the_scopes_route_drops_an_id_only_a_context_names_and_keeps_a_deleted_scope_t
         Some(&json!({
             "id": "sandbox-rule",
             "description": "Nothing made in the sandbox outlives the session that made it",
-            "kind": "critical",
+            "pinned": true,
             "scope": "sandbox",
             "source": "user",
             "body": "# The sandbox is temporary\n\nNothing in it outlives the session.\n",

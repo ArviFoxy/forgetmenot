@@ -20,7 +20,7 @@ const ALPHA: &str = "alpha";
 /// one.
 const NEUTRAL_DIRECTORY: &str = "/home/dev/notes";
 
-/// The memory created on a branch: global and critical, so that every other
+/// The memory created on a branch: global and pinned, so that every other
 /// context is owed it in full at its next event.
 const BRANCH_MEMORY: &str = "bench-lighting";
 const BRANCH_MEMORY_BODY: &str = "# Light the bench before wiring\n\n\
@@ -51,7 +51,7 @@ const OUTSIDE_BENCH_POWER: &str = "# Cut bench power before rewiring\n\n\
 /// written, because they are delivered by different paths: one is a version that
 /// moved, the other is a memory that is newly due. Before the land the other
 /// session's prompt is owed neither; after it, both, in full, because they are
-/// critical. The subagent is started after the land and holds nothing, so it is
+/// pinned. The subagent is started after the land and holds nothing, so it is
 /// given the landed text at its start; a context created from a catalog built
 /// before the land would be given the old body instead.
 #[test]
@@ -74,7 +74,7 @@ fn a_branch_is_invisible_until_it_lands_and_then_reaches_every_other_context() {
     branch
         .memory_put(BRANCH_MEMORY, |memory| {
             memory
-                .critical()
+                .pinned()
                 .description("The wall switch in the corner lights the bench")
                 .body(BRANCH_MEMORY_BODY);
         })
@@ -123,7 +123,7 @@ fn a_branch_is_invisible_until_it_lands_and_then_reaches_every_other_context() {
 /// model can write the version it wants on the branch and land again.
 ///
 /// The sequence is the one a session really meets, and it takes two calls: the
-/// same change on main that makes the land conflict is a changed critical
+/// same change on main that makes the land conflict is a changed pinned
 /// memory the writer has not been given, so the land's own `PreToolUse` holds
 /// it and delivers the rule, and only the land the model issues after reading
 /// it reaches the tool and is refused.
@@ -153,7 +153,7 @@ fn a_conflicting_land_is_refused_and_delivers_nothing() {
     world.rewrite_memory("bench-power", OUTSIDE_BENCH_POWER);
 
     // The change on main is what makes the land conflict, and it is also a
-    // changed critical memory the writer has not seen, so the land's own
+    // changed pinned memory the writer has not seen, so the land's own
     // `PreToolUse` is the event that carries it and the call is held. The model
     // reads it and issues the land again, which is the call that reaches the
     // tool.

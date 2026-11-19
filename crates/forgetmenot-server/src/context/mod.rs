@@ -16,7 +16,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::store::catalog::{Catalog, MemoryEntry};
-use crate::store::memory::MemoryKind;
 use crate::store::{MemoryId, ScopeId};
 
 /// The agent part of the key of a session's main context, as opposed to a
@@ -120,11 +119,12 @@ pub enum Form {
 }
 
 impl Form {
-    /// The form a memory of this kind is delivered in when it becomes due.
-    pub fn for_kind(kind: MemoryKind) -> Self {
-        match kind {
-            MemoryKind::Critical => Form::Full,
-            MemoryKind::Knowledge => Form::Index,
+    /// The form a memory is delivered in when it becomes due: in full when it
+    /// is pinned, as its index line when it is not.
+    pub fn for_pinned(pinned: bool) -> Self {
+        match pinned {
+            true => Form::Full,
+            false => Form::Index,
         }
     }
 
@@ -286,7 +286,7 @@ impl ContextState {
     }
 
     /// Record that this context holds `memory` at its current version, in the
-    /// form its kind is delivered in.
+    /// form it is delivered in.
     ///
     /// This is the one place a [`Shown`] is made, so that a fetch, a delivery
     /// and a write by the context itself all record the same thing: the version
@@ -299,7 +299,7 @@ impl ContextState {
             memory.id.clone(),
             Shown {
                 version: memory.version.to_string(),
-                form: Form::for_kind(memory.kind()),
+                form: Form::for_pinned(memory.pinned()),
                 tokens,
             },
         );
@@ -348,9 +348,9 @@ pub struct Needs {
     /// Delivered, but the store holds a different version now.
     pub changed: Vec<MemoryId>,
     /// Delivered at another version whose delivered text the new one only
-    /// removed lines from, so the context has already been told everything the
-    /// new text says. Nothing is rendered for these; the new version is recorded
-    /// as seen.
+    /// removed lines from, or, for a pinned memory, repeats, so the context has
+    /// already been told everything the new text says. Nothing is rendered for these; the new version is
+    /// recorded as seen.
     pub shrunk: Vec<MemoryId>,
     /// Delivered so long ago in context that it is out of the model's reach,
     /// whatever form it was delivered in.
@@ -380,20 +380,25 @@ impl Needs {
             .chain(self.stale.iter())
     }
 
-    /// Whether a critical memory is new or changed here, which is the condition
+    /// Whether a pinned memory is new or changed here, which is the condition
     /// that interrupts a tool call.
-    pub fn has_critical_arrival(&self, catalog: &Catalog) -> bool {
+    pub fn has_pinned_arrival(&self, catalog: &Catalog) -> bool {
         self.new
             .iter()
             .chain(self.changed.iter())
             .filter_map(|id| catalog.memory(id))
-            .any(|memory| memory.kind() == MemoryKind::Critical)
+            .any(|memory| memory.pinned())
     }
 }
 
 /// The text a context was given for a memory, at the version it holds, for the
 /// memories the store now holds another version of.
 pub type PreviousTexts = BTreeMap<MemoryId, String>;
+
+/// Whether two delivered texts are the same lines, a trailing newline aside.
+fn same_lines(old: &str, new: &str) -> bool {
+    old.lines().eq(new.lines())
+}
 
 /// Whether `new` is `old` with lines taken out and nothing put in: every line of
 /// `new` appears in `old` in order, and the two texts differ.
@@ -421,8 +426,8 @@ pub fn shrinks(old: &str, new: &str) -> bool {
 ///
 /// The store's own settings decide two of the answers: `reminder_tokens` is the
 /// growth in context after which anything already delivered is delivered again,
-/// and without it nothing is ever stale; `deliver_knowledge_index` decides
-/// whether a knowledge memory is delivered at all or only fetched on demand.
+/// and without it nothing is ever stale; `deliver_descriptions` decides
+/// whether an unpinned memory is delivered at all or only fetched on demand.
 /// Staleness is judged only when both the delivery and the event carry a context
 /// size.
 ///
@@ -439,12 +444,12 @@ pub fn compute_needs(
     let mut needs = Needs::default();
     let due = catalog.due(&state.active);
     // Every due memory, whether or not it is delivered, so that a memory the
-    // context holds is not withdrawn merely because its kind is not delivered.
+    // context holds is not withdrawn merely because descriptions are not delivered.
     let due_ids: BTreeSet<&MemoryId> = due.iter().map(|memory| &memory.id).collect();
 
     for memory in &due {
         let version = memory.version.to_string();
-        let delivers = memory.kind() == MemoryKind::Critical || settings.deliver_knowledge_index;
+        let delivers = memory.pinned() || settings.deliver_descriptions;
         match state.delivered.get(&memory.id) {
             None if delivers => needs.new.push(memory.id.clone()),
             None => {}
@@ -452,9 +457,18 @@ pub fn compute_needs(
                 if delivers {
                     // A version whose delivered text only lost lines says nothing
                     // this context has not been given, so it is recorded as seen
-                    // and not sent again.
+                    // and not sent again. So is a pinned memory whose text is
+                    // the same, which is a write that changed the file around
+                    // the body: its description, the shape of its frontmatter.
+                    // An index line is sent again even when it reads the same,
+                    // because that is how a context learns that the body behind
+                    // it changed.
                     match previous.get(&memory.id) {
-                        Some(old) if shrinks(old, memory.document.delivered_text()) => {
+                        Some(old)
+                            if shrinks(old, memory.document.delivered_text())
+                                || (memory.pinned()
+                                    && same_lines(old, memory.document.delivered_text())) =>
+                        {
                             needs.shrunk.push(memory.id.clone())
                         }
                         _ => needs.changed.push(memory.id.clone()),
@@ -462,10 +476,10 @@ pub fn compute_needs(
                 }
             }
             Some(shown) => {
-                // Every kind goes stale: what was shown that long ago is out of
-                // the model's reach whatever form it took, so it is delivered
-                // again in the form its kind gets, the rule in full and the
-                // knowledge memory as its index line.
+                // Every memory goes stale: what was shown that long ago is out
+                // of the model's reach whatever form it took, so it is delivered
+                // again in the same form, a pinned memory in full and any other
+                // as its index line.
                 if delivers
                     && let Some(reminder_tokens) = settings.reminder_tokens
                     && let (Some(delivered_at), Some(now)) = (shown.tokens, tokens_now)
@@ -534,7 +548,7 @@ mod tests {
     /// every later size is this plus a stated amount.
     const START: u64 = 10_000;
 
-    /// The critical memory's body, written out here rather than read back from
+    /// The pinned memory's body, written out here rather than read back from
     /// the store, so the lines an edit takes out are visible in the test.
     const THREE_RULES: &str = "# Cut bench power before rewiring\n\n\
                                Switch the bench supply off at the wall.\n\
@@ -553,12 +567,12 @@ mod tests {
                                         Confirm on the meter that the rail reads zero.\n\
                                         Leave the supply labelled for the next person.\n";
 
-    /// The description of the knowledge memory, which is the whole of what a
+    /// The description of the unpinned memory, which is the whole of what a
     /// context is ever given for it.
     const BINDER: &str = "The workshop references are all on paper in the binder";
 
-    /// A store with one critical memory and one knowledge memory in `global`,
-    /// one critical memory in `widgets`, and reminders at [`REMINDER`].
+    /// A store with one pinned memory and one unpinned memory in `global`,
+    /// one pinned memory in `widgets`, and reminders at [`REMINDER`].
     fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
         store_files_with_settings(&format!("reminder_tokens: {REMINDER}\n"))
     }
@@ -569,21 +583,21 @@ mod tests {
         let mut files = vec![
             memory_file(
                 "bench-power",
-                "critical",
+                true,
                 "global",
                 "Cut bench power at the wall before rewiring",
                 THREE_RULES,
             ),
             memory_file(
                 "reading-list",
-                "knowledge",
+                false,
                 "global",
                 BINDER,
                 "# The binder\n\nThe bench notes and the parts catalogue are in it.\n",
             ),
             memory_file(
                 "widget-naming",
-                "critical",
+                true,
                 "widgets",
                 "A widget part number is never reused",
                 "# Widget part numbers are immutable\n\nDownstream drawings cite them.\n",
@@ -596,7 +610,7 @@ mod tests {
     }
 
     /// A context in `active` that was given each of `delivered` at the store's
-    /// current version, in the form its kind gets, at `tokens` context tokens.
+    /// current version, in the form it is delivered in, at `tokens` context tokens.
     fn state_holding(
         catalog: &Catalog,
         active: BTreeSet<ScopeId>,
@@ -671,7 +685,7 @@ mod tests {
     /// Detects an index line that is never sent again after the memory's text
     /// changes: the description the model holds would stay the old one.
     #[test]
-    fn a_knowledge_memory_is_sent_again_when_its_version_changes() {
+    fn a_unpinned_memory_is_sent_again_when_its_version_changes() {
         let (_store, catalog) = catalog_of(store_files());
         let id = MemoryId::new("reading-list");
         let mut state = state_holding(
@@ -716,7 +730,7 @@ mod tests {
     }
 
     /// Detects a reminder threshold that fires early, one that fires late, and
-    /// one that covers the critical memories alone: what was delivered
+    /// one that covers the pinned memories alone: what was delivered
     /// [`REMINDER`] tokens of context ago is out of the model's reach whatever
     /// form it took, and until then delivering any of it again spends the
     /// context the reminder exists to protect.
@@ -781,14 +795,13 @@ mod tests {
         );
     }
 
-    /// Detects an index line owed although the store asked for knowledge to be
-    /// fetched on demand: those lines are what the setting exists to keep out
-    /// of the context, while the critical memories must be unaffected.
+    /// Detects an index line owed although the store asked for descriptions not
+    /// to be delivered: those lines are what the setting exists to keep out
+    /// of the context, while the pinned memories must be unaffected.
     #[test]
-    fn no_knowledge_memory_is_owed_when_the_store_turns_the_index_off() {
-        let (_store, catalog) = catalog_of(store_files_with_settings(
-            "deliver_knowledge_index: false\n",
-        ));
+    fn no_unpinned_memory_is_owed_when_the_store_turns_the_index_off() {
+        let (_store, catalog) =
+            catalog_of(store_files_with_settings("deliver_descriptions: false\n"));
         let state = ContextState::fresh(implicit(), None, chrono::Utc::now());
 
         let needs = compute_needs(&catalog, &state, Some(START), &PreviousTexts::new());
@@ -814,7 +827,7 @@ mod tests {
 
         store.commit(vec![memory_file(
             "bench-power",
-            "critical",
+            true,
             "global",
             "Cut bench power at the wall before rewiring",
             TWO_RULES,
@@ -833,7 +846,7 @@ mod tests {
 
         store.commit(vec![memory_file(
             "bench-power",
-            "critical",
+            true,
             "global",
             "Cut bench power at the wall before rewiring",
             THREE_RULES_REWORDED,
@@ -843,6 +856,39 @@ mod tests {
             reworded.changed,
             vec![id],
             "a reworded line is text the context has not been given"
+        );
+    }
+
+    /// Detects a version delivered again although its text is what the context
+    /// already holds: a write that changes only what is around the text, here
+    /// the description of a pinned memory, would interrupt every session that
+    /// holds it, and a rewrite of the whole store's frontmatter would interrupt
+    /// all of them at once.
+    #[test]
+    fn a_version_with_the_same_delivered_text_is_not_owed_again() {
+        let store = TestStore::with(store_files());
+        let catalog = store.catalog();
+        let id = MemoryId::new("bench-power");
+        let state = state_holding(&catalog, implicit(), &["bench-power"], Some(START));
+        let previous = PreviousTexts::from([(id.clone(), THREE_RULES.trim_end().to_string())]);
+
+        store.commit(vec![memory_file(
+            "bench-power",
+            true,
+            "global",
+            "A description that was reworded while the body stayed",
+            THREE_RULES,
+        )]);
+        let needs = compute_needs(&store.catalog(), &state, Some(START), &previous);
+
+        assert!(
+            needs.changed.is_empty(),
+            "the context holds every line of the new version, got {needs:?}"
+        );
+        assert_eq!(
+            needs.shrunk,
+            vec![id],
+            "the new version is recorded as seen without being sent"
         );
     }
 
@@ -859,7 +905,7 @@ mod tests {
 
         store.commit(vec![memory_file(
             "bench-power",
-            "critical",
+            true,
             "global",
             "Cut bench power at the wall before rewiring",
             TWO_RULES,
@@ -875,7 +921,7 @@ mod tests {
 
         store.commit(vec![memory_file(
             "bench-power",
-            "critical",
+            true,
             "global",
             "Cut bench power at the wall before rewiring",
             &format!("{TWO_RULES}Keep the meter on the bench.\n"),
@@ -888,12 +934,12 @@ mod tests {
         );
     }
 
-    /// Detects a knowledge memory judged on its body: a context is given only
+    /// Detects an unpinned memory judged on its body: a context is given only
     /// the description, so a body with lines removed shrinks nothing that was
     /// ever delivered and the new version is still owed as an index line.
     /// Source: issue 14.
     #[test]
-    fn a_knowledge_memory_whose_body_lost_lines_is_still_owed_because_only_its_description_was_given()
+    fn a_unpinned_memory_whose_body_lost_lines_is_still_owed_because_only_its_description_was_given()
      {
         let store = TestStore::with(store_files());
         let id = MemoryId::new("reading-list");
@@ -902,7 +948,7 @@ mod tests {
 
         store.commit(vec![memory_file(
             "reading-list",
-            "knowledge",
+            false,
             "global",
             BINDER,
             "# The binder\n",
@@ -926,7 +972,7 @@ mod tests {
     /// for a rule the context has not been given at this version, because the
     /// model would otherwise act under a rule it has never read.
     #[test]
-    fn only_a_new_or_changed_critical_memory_counts_as_a_critical_arrival() {
+    fn only_a_new_or_changed_pinned_memory_counts_as_a_pinned_arrival() {
         let (_store, catalog) = catalog_of(store_files());
         let rule = MemoryId::new("bench-power");
         let reference = MemoryId::new("reading-list");
@@ -942,8 +988,8 @@ mod tests {
             },
         ] {
             assert!(
-                needs.has_critical_arrival(&catalog),
-                "a critical memory the context has not been given must stop the call, got {needs:?}"
+                needs.has_pinned_arrival(&catalog),
+                "a pinned memory the context has not been given must stop the call, got {needs:?}"
             );
         }
 
@@ -958,7 +1004,7 @@ mod tests {
             },
         ] {
             assert!(
-                !needs.has_critical_arrival(&catalog),
+                !needs.has_pinned_arrival(&catalog),
                 "nothing the model has not read arrives here, so the call runs, got {needs:?}"
             );
         }

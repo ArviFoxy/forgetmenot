@@ -10,7 +10,7 @@
 //! `metadata.archived`, which a memory used to be retired with before retiring
 //! one meant deleting its file.
 //!
-//! `kind`, `scope` and `source` are optional because a file Claude Code wrote
+//! `pinned`, `scope` and `source` are optional because a file Claude Code wrote
 //! has none of them. Each is read through an accessor that applies its
 //! documented default, and an absent key is never written back, so reading a
 //! file and writing it again changes nothing. The one exception is the legacy
@@ -27,11 +27,6 @@ use serde::{Deserialize, Serialize};
 use super::frontmatter::{self, FrontmatterError};
 use super::{MemoryId, ScopeId};
 
-/// The kind of a memory with no `metadata.kind`: an index line, not a rule
-/// pushed in full, because a file that never declared itself critical must not
-/// start interrupting tool calls.
-pub const DEFAULT_KIND: MemoryKind = MemoryKind::Knowledge;
-
 /// The source of a memory with no `metadata.source`.
 pub const DEFAULT_SOURCE: &str = "assistant";
 
@@ -40,8 +35,15 @@ pub const DEFAULT_SOURCE: &str = "assistant";
 /// setting it twice from two places. `scopes` is here because the reader still
 /// takes a memory's scope from it: a write that put it back inside `metadata`
 /// would leave a file carrying two spellings of the same field.
-pub const OWNED_METADATA_KEYS: [&str; 6] =
-    ["kind", "scope", "scopes", "source", "created", "author"];
+pub const OWNED_METADATA_KEYS: [&str; 7] = [
+    "pinned",
+    LEGACY_KIND_KEY,
+    "scope",
+    "scopes",
+    "source",
+    "created",
+    "author",
+];
 
 /// The scope of a memory whose file names none.
 static DEFAULT_SCOPE: LazyLock<ScopeId> = LazyLock::new(ScopeId::global);
@@ -51,14 +53,19 @@ static DEFAULT_SCOPE: LazyLock<ScopeId> = LazyLock::new(ScopeId::global);
 /// it is dropped when a file is read, and never written.
 const LEGACY_ARCHIVED_KEY: &str = "archived";
 
-/// How a memory is delivered to a context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryKind {
-    /// Delivered in full whenever it becomes due.
-    Critical,
-    /// Delivered as one index line; the model fetches the body if it wants it.
-    Knowledge,
+/// The `metadata` key earlier versions of this server wrote in place of
+/// `pinned`, with one of two words as its value. Read for one release so that a
+/// file in that shape is still delivered the way it was, and never written:
+/// [`MemoryDocument::parse`] turns it into `pinned`, and the migration at
+/// start-up ([`crate::store::migrate`]) rewrites every file that carries it.
+pub const LEGACY_KIND_KEY: &str = "kind";
+
+/// The value of [`LEGACY_KIND_KEY`] that meant what `pinned: true` means.
+pub const LEGACY_KIND_PINNED: &str = "critical";
+
+/// Whether a `pinned` flag is off, which is the value a file does not carry.
+fn is_not_pinned(pinned: &bool) -> bool {
+    !*pinned
 }
 
 /// Who wrote the memory: `user` or `assistant` by convention, and whatever
@@ -93,8 +100,16 @@ impl std::fmt::Display for MemorySource {
 /// file Claude Code wrote does not grow keys it never carried.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MemoryMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<MemoryKind>,
+    /// Whether the memory is shown in full while its scope is active. A memory
+    /// that is not pinned is shown as its description. The key is written only
+    /// when the flag is on, so a file that never carried it does not gain it.
+    #[serde(default, skip_serializing_if = "is_not_pinned")]
+    pub pinned: bool,
+    /// The value earlier versions of this server wrote under
+    /// [`LEGACY_KIND_KEY`]. Read so that a file in that shape keeps its
+    /// delivery, and never written.
+    #[serde(default, skip_serializing, rename = "kind")]
+    pub legacy_kind: Option<String>,
     /// The one scope this memory is delivered in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<ScopeId>,
@@ -203,7 +218,7 @@ impl MemoryMetadata {
     /// The legacy list is not counted: nothing writes it, so a block that holds
     /// only that holds nothing a write would put in the file.
     pub fn is_empty(&self) -> bool {
-        self.kind.is_none()
+        !self.pinned
             && self.scope.is_none()
             && self.source.is_none()
             && self.created.is_none()
@@ -292,6 +307,9 @@ impl MemoryDocument {
         {
             frontmatter.metadata.scope = Some(first.clone());
         }
+        if frontmatter.metadata.legacy_kind.as_deref() == Some(LEGACY_KIND_PINNED) {
+            frontmatter.metadata.pinned = true;
+        }
         Ok(Self {
             id,
             frontmatter,
@@ -328,21 +346,27 @@ impl MemoryDocument {
             .is_some_and(|description| !description.trim().is_empty())
     }
 
-    pub fn kind(&self) -> MemoryKind {
-        self.frontmatter.metadata.kind.unwrap_or(DEFAULT_KIND)
+    /// Whether the memory is shown in full while its scope is active.
+    pub fn pinned(&self) -> bool {
+        self.frontmatter.metadata.pinned
+    }
+
+    /// Whether the file carries the key earlier versions wrote in place of
+    /// `pinned`, which the migration at start-up rewrites.
+    pub fn has_legacy_kind(&self) -> bool {
+        self.frontmatter.metadata.legacy_kind.is_some()
     }
 
     /// The text this memory puts in an agent's context: the whole body for a
-    /// critical memory, without the trailing blank space the rendered text drops,
-    /// and the description for a knowledge memory, which is all its index line
-    /// carries of it.
+    /// pinned memory, without the trailing blank space the rendered text drops,
+    /// and the description for any other, which is all its line carries of it.
     ///
     /// Two versions of a memory are compared through this, so it has to be the
     /// text that is actually delivered rather than the file's.
     pub fn delivered_text(&self) -> &str {
-        match self.kind() {
-            MemoryKind::Critical => self.body.trim_end(),
-            MemoryKind::Knowledge => self.description(),
+        match self.pinned() {
+            true => self.body.trim_end(),
+            false => self.description(),
         }
     }
 
@@ -602,16 +626,12 @@ mod tests {
     );
 
     /// Detects defaults that differ from the documented ones. A file Claude
-    /// Code wrote declares none of these, and reading it as critical would
-    /// start interrupting tool calls over a memory nobody marked critical.
+    /// Code wrote declares none of these, and reading it as pinned would
+    /// start interrupting tool calls over a memory nobody marked pinned.
     #[test]
     fn a_file_in_claudes_plain_format_gets_the_documented_defaults() {
         let document = parse(CLAUDE_PLAIN);
-        assert_eq!(
-            document.kind(),
-            MemoryKind::Knowledge,
-            "the default kind is wrong"
-        );
+        assert!(!document.pinned(), "a file that says nothing is not pinned");
         assert_eq!(
             document.scope(),
             &ScopeId::global(),
@@ -637,8 +657,35 @@ mod tests {
         );
     }
 
+    /// Detects a file from an earlier version read as not pinned, or written
+    /// back with the earlier key: until the store is migrated its memories must
+    /// be delivered as they were, and a write must leave the new key alone.
+    #[test]
+    fn the_earlier_kind_key_is_read_as_the_pinned_flag_and_never_written() {
+        let earlier = |kind: &str| {
+            parse(&format!(
+                "---\nname: widget-release\ndescription: d\nmetadata:\n  kind: {kind}\n---\nBody.\n"
+            ))
+        };
+        let shown_in_full = earlier(LEGACY_KIND_PINNED);
+        assert!(shown_in_full.pinned() && shown_in_full.has_legacy_kind());
+        let rendered = shown_in_full.render().expect("the memory renders");
+        assert!(
+            rendered.contains("  pinned: true\n") && !rendered.contains("kind:"),
+            "the file is written with the new key alone:\n{rendered}"
+        );
+
+        let shown_as_a_line = earlier("knowledge");
+        assert!(!shown_as_a_line.pinned() && shown_as_a_line.has_legacy_kind());
+        let rendered = shown_as_a_line.render().expect("the memory renders");
+        assert!(
+            !rendered.contains("pinned") && !rendered.contains("kind:"),
+            "a memory that is not pinned carries neither key:\n{rendered}"
+        );
+    }
+
     /// Detects metadata that is parsed but ignored, which would deliver every
-    /// memory as a global knowledge line whatever its file said.
+    /// memory as a global index line whatever its file said.
     #[test]
     fn metadata_keys_override_the_defaults() {
         let text = concat!(
@@ -646,14 +693,14 @@ mod tests {
             "name: widget-release\n",
             "description: Releases are cut from main only\n",
             "metadata:\n",
-            "  kind: critical\n",
+            "  pinned: true\n",
             "  scope: widgets\n",
             "  source: user\n",
             "---\n",
             "Body.\n",
         );
         let document = parse(text);
-        assert_eq!(document.kind(), MemoryKind::Critical);
+        assert!(document.pinned());
         assert_eq!(document.scope(), &ScopeId::new("widgets"));
         assert_eq!(document.source(), MemorySource::new("user"));
         assert_eq!(
@@ -677,7 +724,7 @@ mod tests {
             "name: widget-release\n",
             "description: Releases are cut from main only\n",
             "metadata:\n",
-            "  kind: critical\n",
+            "  pinned: true\n",
             "  scopes:\n",
             "  - widgets\n",
             "---\n",
@@ -705,7 +752,7 @@ mod tests {
             "name: widget-release\n",
             "description: Releases are cut from main only\n",
             "metadata:\n",
-            "  kind: critical\n",
+            "  pinned: true\n",
             "  scopes:\n",
             "  - widgets\n",
             "  - rocketry\n",
@@ -778,7 +825,7 @@ mod tests {
             "name: widget-release\n",
             "description: d\n",
             "metadata:\n",
-            "  kind: critical\n",
+            "  pinned: true\n",
             "  legacy: keep me out\n",
             "---\n",
             "Body.\n",
@@ -795,9 +842,8 @@ mod tests {
             !rendered.contains("legacy"),
             "a key the write did not name was kept:\n{rendered}"
         );
-        assert_eq!(
-            document.frontmatter.metadata.kind,
-            Some(MemoryKind::Critical),
+        assert!(
+            document.frontmatter.metadata.pinned,
             "replacing the extra keys must not touch forgetmenot's own"
         );
         let type_at = rendered
@@ -811,7 +857,7 @@ mod tests {
             "the keys must be written in the order they were given:\n{rendered}"
         );
         assert!(
-            rendered.find("kind:").expect("kind is in the file") < type_at,
+            rendered.find("pinned:").expect("pinned is in the file") < type_at,
             "forgetmenot's own keys come first:\n{rendered}"
         );
     }
@@ -915,7 +961,7 @@ mod tests {
             "modified: 2026-09-12T10:00:00Z\n",
             "review-by: 2026-12-01\n",
             "metadata:\n",
-            "  kind: critical\n",
+            "  pinned: true\n",
             "  type: feedback\n",
             "  strength: hard\n",
             "---\n",
@@ -988,7 +1034,7 @@ mod tests {
             "name: widget-release\n",
             "description: Releases are cut from main only\n",
             "metadata:\n",
-            "  kind: critical\n",
+            "  pinned: true\n",
             "  archived: true\n",
             "  type: feedback\n",
             "---\n",
@@ -1001,11 +1047,7 @@ mod tests {
             !rendered.contains("archived"),
             "the legacy key was written back:\n{rendered}"
         );
-        assert_eq!(
-            document.kind(),
-            MemoryKind::Critical,
-            "the key next to the legacy one was lost"
-        );
+        assert!(document.pinned(), "the key next to the legacy one was lost");
         assert!(
             document.frontmatter.metadata.extra.contains_key("type"),
             "an unknown key next to the legacy one was dropped:\n{rendered}"

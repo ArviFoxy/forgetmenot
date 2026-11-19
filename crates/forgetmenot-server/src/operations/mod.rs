@@ -38,7 +38,7 @@ use crate::store::catalog::{Catalog, MemoryEntry, ScopeEntry};
 use crate::store::frontmatter::FrontmatterError;
 use crate::store::git::{self, CommitSummary, FileConflict, GitError, GitRepo};
 use crate::store::memory::{
-    MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata, MemorySource, rewrite_links,
+    MemoryDocument, MemoryFrontmatter, MemoryMetadata, MemorySource, rewrite_links,
 };
 use crate::store::scope::{Forget, ScopeDocument, Trigger, TriggerField};
 use crate::store::validate::{
@@ -232,7 +232,8 @@ pub struct MemorySummary {
     pub name: String,
     pub title: String,
     pub description: String,
-    pub kind: MemoryKind,
+    /// Whether the memory is shown in full while its scope is active.
+    pub pinned: bool,
     pub scope: ScopeId,
     pub source: MemorySource,
     /// ISO 8601, or absent when the file carries no `modified` stamp.
@@ -276,7 +277,8 @@ pub struct MemoryDoc {
     /// The body's first level-1 heading, else the name; derived, not writable.
     pub title: String,
     pub description: String,
-    pub kind: MemoryKind,
+    /// Whether the memory is shown in full while its scope is active.
+    pub pinned: bool,
     pub scope: ScopeId,
     pub source: MemorySource,
     /// The `metadata` keys this server does not interpret, Claude Code's own
@@ -486,9 +488,9 @@ pub struct ReviewReport {
     /// not a memory, a memory with no index entry, a memory whose file names
     /// several scopes.
     pub warnings: Vec<ValidationMessage>,
-    /// Critical memories whose scope is `global`: they are delivered in full
+    /// Pinned memories whose scope is `global`: they are delivered in full
     /// to every session on every machine, which is worth a second look.
-    pub global_only_critical: Vec<MemoryId>,
+    pub global_pinned: Vec<MemoryId>,
 }
 
 /// What a successful write produced.
@@ -569,13 +571,14 @@ pub struct SessionScopes {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct MemoryFilter {
     pub scope: Option<ScopeId>,
-    pub kind: Option<MemoryKind>,
+    /// Only pinned memories, or only the others; both when absent.
+    pub pinned: Option<bool>,
 }
 
 impl MemoryFilter {
     fn matches(&self, entry: &MemoryEntry) -> bool {
-        if let Some(kind) = self.kind
-            && entry.kind() != kind
+        if let Some(pinned) = self.pinned
+            && entry.pinned() != pinned
         {
             return false;
         }
@@ -592,7 +595,10 @@ impl MemoryFilter {
 #[derive(Clone, Debug, Deserialize)]
 pub struct MemoryWriteRequest {
     pub description: String,
-    pub kind: MemoryKind,
+    /// Whether the memory is shown in full while its scope is active; absent
+    /// writes a memory that is not pinned.
+    #[serde(default)]
+    pub pinned: bool,
     pub scope: ScopeId,
     pub source: MemorySource,
     /// The `metadata` keys this server does not interpret, which replace the
@@ -650,7 +656,7 @@ pub struct SetFieldsRequest {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub kind: Option<MemoryKind>,
+    pub pinned: Option<bool>,
     #[serde(default)]
     pub scope: Option<ScopeId>,
     #[serde(default)]
@@ -674,7 +680,7 @@ impl SetFieldsRequest {
     /// refusing rather than a commit that says nothing.
     fn sets_nothing(&self) -> bool {
         self.description.is_none()
-            && self.kind.is_none()
+            && self.pinned.is_none()
             && self.scope.is_none()
             && self.source.is_none()
             && self.metadata.as_ref().is_none_or(serde_json::Map::is_empty)
@@ -917,7 +923,7 @@ pub async fn memory_put(
     };
     document.frontmatter.description = Some(request.description.clone());
     document.frontmatter.modified = Some(now);
-    document.frontmatter.metadata.kind = Some(request.kind);
+    document.frontmatter.metadata.pinned = request.pinned;
     document.frontmatter.metadata.scope = Some(request.scope.clone());
     document.frontmatter.metadata.source = Some(request.source.clone());
     document.frontmatter.metadata.author = Some(request.author.clone());
@@ -1100,8 +1106,8 @@ pub async fn memory_set_fields(
     if let Some(description) = &request.description {
         document.frontmatter.description = Some(description.clone());
     }
-    if let Some(kind) = request.kind {
-        document.frontmatter.metadata.kind = Some(kind);
+    if let Some(pinned) = request.pinned {
+        document.frontmatter.metadata.pinned = pinned;
     }
     if let Some(scope) = &request.scope {
         document.frontmatter.metadata.scope = Some(scope.clone());
@@ -1382,7 +1388,7 @@ fn memory_summary(entry: &MemoryEntry) -> MemorySummary {
         name: entry.document.name().to_string(),
         title: entry.document.title().to_string(),
         description: entry.document.description().to_string(),
-        kind: entry.kind(),
+        pinned: entry.pinned(),
         scope: entry.scope().clone(),
         source: entry.document.source(),
         modified: entry.document.modified().map(iso8601),
@@ -1401,7 +1407,7 @@ async fn memory_doc(
         name: entry.document.name().to_string(),
         title: entry.document.title().to_string(),
         description: entry.document.description().to_string(),
-        kind: entry.kind(),
+        pinned: entry.pinned(),
         scope: entry.scope().clone(),
         source: entry.document.source(),
         metadata: entry.document.frontmatter.metadata.extra_as_json(),
@@ -2030,7 +2036,7 @@ pub async fn contexts(registry: &ContextRegistry, now: DateTime<Utc>) -> Vec<Con
 /// [`PromptMode::Due`] computes what the context is owed against its own
 /// delivered record, which is what the next event would carry, and
 /// [`PromptMode::All`] computes it against an empty record, which is every
-/// critical memory of its scopes in full and every knowledge memory as its
+/// pinned memory of its scopes in full and every unpinned memory as its
 /// description. Both count staleness from the context size the last event
 /// reported. The text is exactly what the hook would answer: `Due` is rendered
 /// as the next ordinary event and `All` as a session start, with the store's
@@ -2201,9 +2207,9 @@ pub fn trigger_test(catalog: &Catalog, request: &TriggerTestRequest) -> TriggerT
 /// Everything wrong with the store, and the memories worth a second look.
 pub fn review(catalog: &Catalog) -> ReviewReport {
     let report = validate::validate(catalog);
-    let global_only_critical = catalog
+    let global_pinned = catalog
         .memories()
-        .filter(|entry| entry.kind() == MemoryKind::Critical)
+        .filter(|entry| entry.pinned())
         .filter(|entry| entry.scope() == &ScopeId::global())
         .map(|entry| entry.id.clone())
         .collect();
@@ -2214,7 +2220,7 @@ pub fn review(catalog: &Catalog) -> ReviewReport {
             .iter()
             .map(ValidationMessage::of_warning)
             .collect(),
-        global_only_critical,
+        global_pinned,
     }
 }
 

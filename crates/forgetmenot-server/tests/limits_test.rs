@@ -130,7 +130,7 @@ fn the_hook_endpoint_answers_200_events_within_the_p99_limit() {
 }
 
 /// Detects a client that reads the whole transcript instead of its tail, and any
-/// other cost that grows with the session: the hook is on Claude Code's critical
+/// other cost that grows with the session: the hook is on Claude Code's pinned
 /// path, so a client that takes a second on a long session stalls every tool
 /// call.
 ///

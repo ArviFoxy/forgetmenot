@@ -43,6 +43,11 @@ impl TestStore {
             .expect("the store's files are committed");
     }
 
+    /// The repository itself, for a test of what is committed to it.
+    pub(crate) fn repository(&self) -> &GitRepo {
+        &self.repository
+    }
+
     /// The catalog of the store as it stands now.
     pub(crate) fn catalog(&self) -> Catalog {
         Catalog::load(&self.repository).expect("the catalog is built")
@@ -59,18 +64,22 @@ pub(crate) fn catalog_of(files: Vec<(String, Option<Vec<u8>>)>) -> (TestStore, C
     (store, catalog)
 }
 
-/// One memory file: `kind` is `critical` or `knowledge`, and `scope` is the
-/// scope id it belongs to.
+/// One memory file: `pinned` says whether it is shown in full, and `scope` is
+/// the scope id it belongs to.
 pub(crate) fn memory_file(
     name: &str,
-    kind: &str,
+    pinned: bool,
     scope: &str,
     description: &str,
     body: &str,
 ) -> (String, Option<Vec<u8>>) {
+    let flag = match pinned {
+        true => "  pinned: true\n",
+        false => "",
+    };
     let text = format!(
         "---\nname: {name}\ndescription: {description}\n\
-         metadata:\n  kind: {kind}\n  scope: {scope}\n---\n{body}"
+         metadata:\n{flag}  scope: {scope}\n---\n{body}"
     );
     (format!("memories/{name}.md"), Some(text.into_bytes()))
 }

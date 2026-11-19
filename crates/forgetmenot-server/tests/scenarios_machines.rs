@@ -23,7 +23,7 @@ const BETA: &str = "beta";
 /// scenario is about is the only one its sessions turn on.
 const NEUTRAL_DIRECTORY: &str = "/home/dev/notes";
 
-/// The scope whose trigger is qualified for one machine, and the critical memory
+/// The scope whose trigger is qualified for one machine, and the pinned memory
 /// in it. The word is in no memory of the example store, so nothing else can
 /// turn the scope on.
 const LAB: &str = "lab";
@@ -60,7 +60,7 @@ fn a_machine_qualified_trigger_activates_its_scope_on_that_machine_only() {
                 })
                 .memory(LAB_RULE, |memory| {
                     memory
-                        .critical()
+                        .pinned()
                         .scope(LAB)
                         .description("The lab bench supply is switched at the wall")
                         .body(LAB_RULE_BODY);
@@ -107,7 +107,7 @@ fn a_machine_memory_reaches_only_that_machines_sessions() {
     let world = World::new()
         .store(Store::example().memory(BETA_ONLY, |memory| {
             memory
-                .critical()
+                .pinned()
                 .scope(format!("machine:{BETA}"))
                 .description("Captures live on the second disk, which is not backed up")
                 .body(BETA_ONLY_BODY);

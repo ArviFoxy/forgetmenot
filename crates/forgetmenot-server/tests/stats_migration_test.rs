@@ -75,10 +75,25 @@ fn has_table(path: &Path, table: &str) -> bool {
 
 /// Every row of `table` in the database at `path`, in the order they were
 /// written, each as the debug text of its values.
-fn rows_of(path: &Path, table: &str) -> Vec<String> {
+/// The names of a table's columns, in the order the table has them.
+fn columns_of(path: &Path, table: &str) -> Vec<String> {
     let connection = rusqlite::Connection::open(path).expect("the database opens");
     let mut statement = connection
-        .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .expect("the table's shape is readable");
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("the answer is a list of columns");
+    columns.map(|name| name.expect("a column name")).collect()
+}
+
+fn rows_of(path: &Path, table: &str, columns: &[String]) -> Vec<String> {
+    let connection = rusqlite::Connection::open(path).expect("the database opens");
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT {} FROM {table} ORDER BY rowid",
+            columns.join(", ")
+        ))
         .expect("the table is readable");
     let width = statement.column_count();
     let rows = statement
@@ -122,11 +137,6 @@ fn a_version_1_database_gains_the_activation_log_and_keeps_every_row() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("stats.sqlite");
     std::fs::copy(fixture_path(), &path).expect("the fixture is copied where a server reads");
-    let before: Vec<Vec<String>> = VERSION_1_TABLES
-        .iter()
-        .map(|table| rows_of(&path, table))
-        .collect();
-
     let server = TestServer::start(example_store_files(), {
         let path = path.clone();
         move |config| config.stats_path = path
@@ -137,11 +147,20 @@ fn a_version_1_database_gains_the_activation_log_and_keeps_every_row() {
         SCHEMA_VERSION as i64,
         "the database is brought to the current version"
     );
-    let after: Vec<Vec<String>> = VERSION_1_TABLES
-        .iter()
-        .map(|table| rows_of(&path, table))
-        .collect();
-    assert_eq!(after, before, "every row of version 1 is there unchanged");
+    // Compared over the columns the current schema keeps: a later version
+    // dropped `deliveries.kind`, which repeated what `form` says.
+    assert!(
+        !columns_of(&path, "deliveries").contains(&"kind".to_string()),
+        "the column a later version drops is gone"
+    );
+    for table in VERSION_1_TABLES {
+        let columns = columns_of(&path, table);
+        assert_eq!(
+            rows_of(&path, table, &columns),
+            rows_of(&fixture_path(), table, &columns),
+            "every row of {table} from version 1 is there unchanged"
+        );
+    }
     let (status, answer) = server.hook(
         ALPHA,
         Some(10_000),

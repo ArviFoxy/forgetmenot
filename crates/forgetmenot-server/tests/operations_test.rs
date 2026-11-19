@@ -27,7 +27,7 @@ use forgetmenot_server::operations::{
     MemoryWriteRequest, OperationError, PromptMode, ScopeRow, StoreHistory,
 };
 use forgetmenot_server::stats::{Bucket, Filter, StatsReader, Table, Window};
-use forgetmenot_server::store::memory::{MemoryKind, MemorySource};
+use forgetmenot_server::store::memory::MemorySource;
 use forgetmenot_server::store::validate::WriteMode;
 use forgetmenot_server::store::{MemoryId, ScopeId, ScopeKind};
 use serde_json::{Value, json};
@@ -132,7 +132,7 @@ fn a_scope_turned_on_for_a_session_delivers_that_scopes_memories_at_the_next_eve
     assert_eq!(status, 200, "the next event must be answered");
     assert!(
         context_of(&answer).contains(WIDGET_NAMING_BODY),
-        "the scope's critical memory must be delivered in full, got {answer}"
+        "the scope's pinned memory must be delivered in full, got {answer}"
     );
 }
 
@@ -515,7 +515,7 @@ fn a_memory_fetched_for_a_context_comes_back_only_when_it_changes() {
         vec![(
             "memories/bench-power.md".to_string(),
             Some(
-                b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scope: global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
+                b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  pinned: true\n  scope: global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
                     .to_vec(),
             ),
         )],
@@ -595,7 +595,7 @@ fn memory(server: &TestServer, id: &str) -> MemoryDoc {
 fn write_of(document: &MemoryDoc, body: &str, message: &str) -> MemoryWriteRequest {
     MemoryWriteRequest {
         description: document.description.clone(),
-        kind: document.kind,
+        pinned: document.pinned,
         scope: document.scope.clone(),
         source: document.source.clone(),
         metadata: None,
@@ -697,7 +697,7 @@ fn creating_a_memory_at_an_id_that_is_taken_is_refused_with_the_document_that_is
             &MemoryId::new("reading-list"),
             &MemoryWriteRequest {
                 description: "A second memory claiming an id that is taken".to_string(),
-                kind: MemoryKind::Knowledge,
+                pinned: false,
                 scope: ScopeId::global(),
                 source: MemorySource::new("user"),
                 metadata: None,
@@ -739,7 +739,7 @@ fn a_created_memory_is_stamped_and_the_index_filter_lists_it_only_under_its_own_
             &MemoryId::new("bracket-tolerances"),
             &MemoryWriteRequest {
                 description: "Bracket holes are reamed after welding, not before".to_string(),
-                kind: MemoryKind::Knowledge,
+                pinned: false,
                 scope: ScopeId::new("widgets"),
                 source: MemorySource::new("user"),
                 metadata: None,
@@ -769,7 +769,7 @@ fn a_created_memory_is_stamped_and_the_index_filter_lists_it_only_under_its_own_
     assert!(
         listed(MemoryFilter {
             scope: Some(ScopeId::new("widgets")),
-            kind: None,
+            pinned: None,
         })
         .contains(&created),
         "a memory must be listed under the scope it names"
@@ -777,7 +777,7 @@ fn a_created_memory_is_stamped_and_the_index_filter_lists_it_only_under_its_own_
     assert!(
         !listed(MemoryFilter {
             scope: Some(ScopeId::new("rocketry")),
-            kind: None,
+            pinned: None,
         })
         .contains(&created),
         "a memory must not be listed under a scope it does not name"
@@ -785,10 +785,10 @@ fn a_created_memory_is_stamped_and_the_index_filter_lists_it_only_under_its_own_
     assert!(
         !listed(MemoryFilter {
             scope: None,
-            kind: Some(MemoryKind::Critical),
+            pinned: Some(true),
         })
         .contains(&created),
-        "a knowledge memory must not be listed under the critical kind"
+        "an unpinned memory must not be listed among the pinned ones"
     );
 }
 
@@ -873,7 +873,7 @@ fn note_own_writes_records_the_memories_it_names_and_forgets_one_that_is_gone() 
             (
                 "memories/bench-power.md".to_string(),
                 Some(
-                    b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  kind: critical\n  scope: global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
+                    b"---\nname: bench-power\ndescription: Cut bench power at the wall before rewiring and confirm with the meter\nmetadata:\n  pinned: true\n  scope: global\n  source: user\n---\n# Cut bench power before rewiring\n\nThe rule now also covers the charger bench.\n"
                         .to_vec(),
                 ),
             ),
@@ -1032,7 +1032,7 @@ fn the_scope_index_lists_a_machine_and_a_session_that_only_a_store_file_names() 
                 "name: lathe-coolant\n",
                 "description: The lathe on gamma runs on neat cutting oil, never emulsion\n",
                 "metadata:\n",
-                "  kind: knowledge\n",
+                "",
                 "  scope: machine:gamma\n",
                 "  source: user\n",
                 "---\n",
@@ -1277,7 +1277,7 @@ fn the_due_prompt_is_empty_until_the_store_changes_and_then_carries_what_changed
 /// and never show what a set of scopes costs in full. Detects a byte count or a
 /// token estimate that does not describe the text beside it as well.
 #[test]
-fn the_whole_prompt_carries_every_critical_memory_of_the_contexts_scopes_with_its_size() {
+fn the_whole_prompt_carries_every_pinned_memory_of_the_contexts_scopes_with_its_size() {
     let server = TestServer::start(example_store_files(), |_| {});
     let key = ContextKey::main(MACHINE, "session-1");
     server.hook(MACHINE, SOME_TOKENS, &hook_fixture("session_start"));
@@ -1286,7 +1286,7 @@ fn the_whole_prompt_carries_every_critical_memory_of_the_contexts_scopes_with_it
 
     assert!(
         all.text.contains(BENCH_POWER_BODY),
-        "the whole prompt must carry the global critical memory in full although the context \
+        "the whole prompt must carry the global pinned memory in full although the context \
          already holds it, got {:?}",
         all.text
     );
@@ -1757,18 +1757,18 @@ fn a_settings_change_on_a_branch_is_not_in_force_until_the_branch_lands() {
     server
         .run(operations::settings::settings_set(
             &state,
-            "deliver_knowledge_index",
+            "deliver_descriptions",
             &settings_write(
                 json!(false),
                 None,
-                "fetch knowledge on demand instead of indexing it",
+                "fetch descriptions on demand instead of delivering them",
             ),
             Some(&branch),
         ))
         .expect("the key and the value are ones this server has");
 
     assert_eq!(
-        settings(&server).settings["deliver_knowledge_index"],
+        settings(&server).settings["deliver_descriptions"],
         json!(true),
         "main must still carry the setting it had"
     );
@@ -1787,7 +1787,7 @@ fn a_settings_change_on_a_branch_is_not_in_force_until_the_branch_lands() {
             &state,
             &branch,
             &LandRequest {
-                commit_title: "fetch knowledge on demand instead of indexing it".to_string(),
+                commit_title: "fetch descriptions on demand instead of delivering them".to_string(),
                 commit_body: None,
                 author: owner.to_string(),
             },
@@ -1795,7 +1795,7 @@ fn a_settings_change_on_a_branch_is_not_in_force_until_the_branch_lands() {
         .expect("nothing on main touched the settings file");
 
     assert_eq!(
-        settings(&server).settings["deliver_knowledge_index"],
+        settings(&server).settings["deliver_descriptions"],
         json!(false),
         "the landed setting must be the one in force"
     );

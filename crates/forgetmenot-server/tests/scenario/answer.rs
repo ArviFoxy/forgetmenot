@@ -2,7 +2,7 @@
 //!
 //! What counts as a delivery is read out of the rendered text without depending
 //! on any section label: the labels are wording, and the contract is that a
-//! critical memory's body arrives whole, a knowledge memory arrives as its id
+//! pinned memory's body arrives whole, an unpinned memory arrives as its id
 //! and description, and a withdrawal names the id and why. Each is read against
 //! the store as it stands at the moment of the check, so a scenario that edits a
 //! memory and asks about it afterwards asks about the text it wrote.

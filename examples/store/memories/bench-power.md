@@ -2,7 +2,7 @@
 name: bench-power
 description: Cut bench power at the wall before rewiring and confirm with the meter
 metadata:
-  kind: critical
+  pinned: true
   scope: global
   source: user
   created: 2026-01-04T09:00:00Z

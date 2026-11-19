@@ -41,9 +41,13 @@ const NEW_LINE: &str = "The binder lives on the shelf by the door.";
 // ---------------------------------------------------------------------------
 
 /// A memory file, built the way the store holds one.
-fn memory_file(name: &str, kind: &str, scope: &str, body: &str) -> (String, Option<Vec<u8>>) {
+fn memory_file(name: &str, pinned: bool, scope: &str, body: &str) -> (String, Option<Vec<u8>>) {
+    let flag = match pinned {
+        true => "  pinned: true\n",
+        false => "",
+    };
     let text = format!(
-        "---\nname: {name}\ndescription: the index entry of {name}\nmetadata:\n  kind: {kind}\n  \
+        "---\nname: {name}\ndescription: the index entry of {name}\nmetadata:\n{flag}  \
          scope: {scope}\n  source: user\n---\n{body}"
     );
     (format!("memories/{name}.md"), Some(text.into_bytes()))
@@ -65,13 +69,13 @@ fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
     let mut files = example_store_files();
     files.push(memory_file(
         "bracket-order",
-        "knowledge",
+        false,
         "global",
         &bracket_order_body(FIRST_PARAGRAPH, SECOND_PARAGRAPH, THIRD_PARAGRAPH),
     ));
     files.push(memory_file(
         "stage-report",
-        "knowledge",
+        false,
         "rocketry",
         "# Stage reports\n\nA stage report files its numbers under [[rocket-stages]].\n",
     ));
@@ -138,7 +142,7 @@ fn put_body(
         &with_branch(&format!("/api/memories/{id}"), branch),
         Some(&json!({
             "description": current["description"],
-            "kind": current["kind"],
+            "pinned": current["pinned"],
             "scope": current["scope"],
             "source": current["source"],
             "body": new_body,
@@ -336,7 +340,7 @@ fn landing_three_writes_on_a_branch_makes_one_commit_on_main_with_all_three_chan
         Some(&json!({
             "id": "bracket-jig",
             "description": "The bracket jig lives in the second drawer",
-            "kind": "knowledge",
+            "pinned": false,
             "scope": "global",
             "source": "user",
             "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
@@ -436,7 +440,7 @@ fn a_land_keeps_the_body_of_each_squashed_commit_beneath_its_title() {
         &with_branch("/api/memories/bench-power", Some(&branch)),
         Some(&json!({
             "description": current["description"],
-            "kind": current["kind"],
+            "pinned": current["pinned"],
             "scope": current["scope"],
             "source": current["source"],
             "body": format!("# Cut bench power before rewiring\n\n{NEW_LINE}\n"),
@@ -498,10 +502,10 @@ fn a_land_keeps_the_body_of_each_squashed_commit_beneath_its_title() {
 }
 
 /// Detects a land that delivers its writes one by one: three writes to one
-/// critical memory on a branch must interrupt the session once, not three times,
+/// pinned memory on a branch must interrupt the session once, not three times,
 /// and must not interrupt it again afterwards.
 #[test]
-fn a_hook_event_after_a_land_delivers_the_changed_critical_memory_once() {
+fn a_hook_event_after_a_land_delivers_the_changed_pinned_memory_once() {
     let server = TestServer::start(store_files(), |_| {});
     server.hook("alpha", SOME_TOKENS, &hook_fixture("session_start"));
     let branch = open_branch(&server, SESSION);
@@ -533,7 +537,7 @@ fn a_hook_event_after_a_land_delivers_the_changed_critical_memory_once() {
     assert_eq!(
         permission_decision(&first),
         Some("deny"),
-        "a changed critical memory must stop the call once, got {first}"
+        "a changed pinned memory must stop the call once, got {first}"
     );
     assert!(
         !context_of(&second).contains(NEW_LINE),
@@ -931,7 +935,7 @@ fn landing_a_branch_whose_merged_tree_fails_validation_is_refused_and_nothing_la
         Some(&json!({
             "id": "stage-audit",
             "description": "The stage audit checks the numbering of every stage",
-            "kind": "knowledge",
+            "pinned": false,
             "scope": "rocketry",
             "source": "user",
             "body": "# Stage audit\n\nThe audit reads [[rocket-stages]] first.\n",
@@ -1155,7 +1159,7 @@ fn renaming_a_memory_rewrites_every_linker_and_the_landed_tree_has_no_link_to_th
     );
 }
 
-/// Detects a field write that rewrites the body: setting a memory's kind or
+/// Detects a field write that rewrites the body: pinning a memory or setting its
 /// description must leave every byte after the frontmatter alone, or an edit of
 /// one field would reformat text a person wrote.
 #[test]
@@ -1168,15 +1172,15 @@ fn set_fields_changes_the_field_and_leaves_the_body_byte_identical() {
         "POST",
         &with_branch("/api/memories/reading-list/fields", Some(&branch)),
         Some(&json!({
-            "kind": "critical",
+            "pinned": true,
             "description": "The workshop references are on paper in the binder only",
             "author": AUTHOR,
-            "commit_title": "make the reading list a critical memory",
+            "commit_title": "make the reading list a pinned memory",
         })),
     );
     assert_eq!(status, 200, "the field write must be made, got {answer}");
 
-    land_ok(&server, &branch, "make the reading list a critical memory");
+    land_ok(&server, &branch, "make the reading list a pinned memory");
 
     let landed = document(&server, "reading-list");
     assert_eq!(
@@ -1185,8 +1189,8 @@ fn set_fields_changes_the_field_and_leaves_the_body_byte_identical() {
         "the body must be byte for byte what it was"
     );
     assert_eq!(
-        landed["kind"],
-        json!("critical"),
+        landed["pinned"],
+        json!(true),
         "the field that was set must have changed, got {landed}"
     );
     assert_eq!(
@@ -1450,7 +1454,7 @@ fn the_branch_diff_names_each_file_with_its_status_and_its_diff() {
         Some(&json!({
             "id": "bracket-jig",
             "description": "The bracket jig lives in the second drawer",
-            "kind": "knowledge",
+            "pinned": false,
             "scope": "global",
             "source": "user",
             "body": "# The bracket jig\n\nThe jig lives in the second drawer.\n",
@@ -1558,7 +1562,7 @@ fn eight_concurrent_lands_of_branches_touching_distinct_files_all_succeed() {
     files.extend((0..landers).map(|index| {
         memory_file(
             &format!("note-{index:02}"),
-            "knowledge",
+            false,
             "global",
             &format!("# note-{index:02}\n\nthe first text of note {index}\n"),
         )
@@ -1713,7 +1717,7 @@ fn create_memory(
         Some(&json!({
             "id": id,
             "description": format!("the index entry of {id}"),
-            "kind": "knowledge",
+            "pinned": false,
             "scope": scope,
             "source": "user",
             "body": body,

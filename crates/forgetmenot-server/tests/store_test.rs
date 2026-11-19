@@ -36,21 +36,20 @@ fn memory_with_metadata(name: &str, metadata_lines: &[&str], body: &str) -> Vec<
     memory_file(&frontmatter, body)
 }
 
-/// A valid critical memory in the global scope.
+/// A valid pinned memory in the global scope.
 fn global_memory(name: &str, body: &str) -> Vec<u8> {
     memory_with_metadata(
         name,
-        &["kind: critical", "scope: global", "source: user"],
+        &["pinned: true", "scope: global", "source: user"],
         body,
     )
 }
 
-/// A valid knowledge memory in one session's silo.
+/// A valid unpinned memory in one session's silo.
 fn session_memory(name: &str, session_key: &str, body: &str) -> Vec<u8> {
     memory_with_metadata(
         name,
         &[
-            "kind: knowledge",
             &format!("scope: 'session:{session_key}'"),
             "source: assistant",
         ],
@@ -92,7 +91,7 @@ const MEMORY_WITH_UNKNOWN_KEYS: &str = concat!(
     "description: Cut bench power at the wall before rewiring\n",
     "review-by: 2026-12-01\n",
     "metadata:\n",
-    "  kind: critical\n",
+    "  pinned: true\n",
     "  scope: global\n",
     "  source: user\n",
     "  type: feedback\n",
@@ -552,32 +551,28 @@ fn an_implies_cycle_terminates_and_keeps_both_scopes() {
     );
 }
 
-/// A store with one critical and one knowledge memory in the global scope, plus
+/// A store with one pinned and one unpinned memory in the global scope, plus
 /// one memory in a scope of its own.
 fn store_for_due() -> TempStore {
     store_with(&[
         ("scopes/widgets.yaml", b"id: widgets\n"),
         (
-            "memories/b-critical.md",
+            "memories/b-pinned.md",
             &memory_with_metadata(
-                "b-critical",
-                &["kind: critical", "scope: global"],
+                "b-pinned",
+                &["pinned: true", "scope: global"],
                 "# B\n\nB.\n",
             ),
         ),
         (
-            "memories/a-knowledge.md",
-            &memory_with_metadata(
-                "a-knowledge",
-                &["kind: knowledge", "scope: global"],
-                "# A\n\nA.\n",
-            ),
+            "memories/a-unpinned.md",
+            &memory_with_metadata("a-unpinned", &["scope: global"], "# A\n\nA.\n"),
         ),
         (
             "memories/d-widgets.md",
             &memory_with_metadata(
                 "d-widgets",
-                &["kind: critical", "scope: widgets"],
+                &["pinned: true", "scope: widgets"],
                 "# D\n\nD.\n",
             ),
         ),
@@ -594,14 +589,14 @@ fn due_ids(store: &TempStore, active: &[ScopeId]) -> Vec<String> {
 }
 
 /// Detects an order that puts index lines before the memories delivered in
-/// full, which would bury the critical text the reader has to see.
+/// full, which would bury the pinned text the reader has to see.
 #[test]
-fn due_lists_critical_memories_before_knowledge_memories() {
+fn due_lists_pinned_memories_before_unpinned_memories() {
     let store = store_for_due();
     assert_eq!(
         due_ids(&store, &[ScopeId::global()]),
-        vec!["b-critical".to_string(), "a-knowledge".to_string()],
-        "critical memories do not come first"
+        vec!["b-pinned".to_string(), "a-unpinned".to_string()],
+        "pinned memories do not come first"
     );
 }
 
@@ -651,7 +646,7 @@ fn a_memory_naming_several_scopes_is_due_in_the_first_and_the_file_is_reported()
             "memories/d-widgets.md",
             &memory_with_metadata(
                 "d-widgets",
-                &["kind: critical", "scopes: [widgets, rocketry]"],
+                &["pinned: true", "scopes: [widgets, rocketry]"],
                 "# D\n\nD.\n",
             ),
         ),
@@ -733,7 +728,7 @@ fn an_implicit_scope_is_not_reported_as_unknown() {
             "memories/bench-power.md",
             &memory_with_metadata(
                 "bench-power",
-                &["kind: critical", "scope: 'machine:alpha'"],
+                &["pinned: true", "scope: 'machine:alpha'"],
                 "# One\n\nOne.\n",
             ),
         ),
@@ -792,7 +787,7 @@ fn a_trigger_pattern_that_does_not_compile_is_reported_with_its_error() {
 }
 
 /// Detects a blank `message` being accepted: a scope that carries one activates
-/// with a critical memory whose text is nothing, which is neither a message nor
+/// with a pinned memory whose text is nothing, which is neither a message nor
 /// the silence of a scope that has none.
 ///
 /// Source: issue #7, where a message is a short text delivered to the agent.
@@ -1268,8 +1263,8 @@ fn check_exits_one_and_names_the_setting_a_store_gets_wrong() {
     for (settings, expected) in [
         ("remind_tokens: 1000\n", "remind_tokens"),
         (
-            "interrupt_on_critical: sometimes\n",
-            "interrupt_on_critical",
+            "pinned_interrupt_execution: sometimes\n",
+            "pinned_interrupt_execution",
         ),
     ] {
         let store = store_with(&[("config.yml", settings.as_bytes())]);

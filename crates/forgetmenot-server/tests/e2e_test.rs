@@ -25,7 +25,7 @@ use common::{
 use serde_json::json;
 use tempfile::TempDir;
 
-/// A line of the example store's global critical memory and of nothing else, so
+/// A line of the example store's global pinned memory and of nothing else, so
 /// that "delivered in full" can be told from "named in an index line".
 const BENCH_POWER_BODY: &str = "Switch the bench supply off at the wall";
 
@@ -111,7 +111,7 @@ fn every_recorded_payload_through_the_client_exits_zero_with_one_json_object_on_
 /// `hookEventName` is not the one it asked about, so the memory would never
 /// arrive even though every part looked healthy.
 #[test]
-fn a_session_start_through_the_client_injects_the_global_critical_memory() {
+fn a_session_start_through_the_client_injects_the_global_pinned_memory() {
     let server = TestServer::start(example_store_files(), |_| {});
     let directory = TempDir::new().expect("a temporary directory");
     let path = transcript(&directory, "session-1.jsonl", BASE_TOKENS);
@@ -129,7 +129,7 @@ fn a_session_start_through_the_client_injects_the_global_critical_memory() {
     let injected = additional_context(&answer).unwrap_or_default();
     assert!(
         injected.contains(BENCH_POWER_BODY),
-        "the global critical memory must arrive in full through the client, got {injected:?}"
+        "the global pinned memory must arrive in full through the client, got {injected:?}"
     );
 }
 
@@ -161,7 +161,7 @@ fn an_event_name_nothing_knows_yet_puts_the_empty_object_on_stdout() {
 ///
 /// The chain is observed through the one rule that depends on the number: two
 /// identical tool calls whose transcripts differ by exactly the stale threshold
-/// must make the second one deliver the critical memories again. With no
+/// must make the second one deliver the pinned memories again. With no
 /// context size at either end, nothing is owed at the second call and the
 /// answer carries nothing.
 #[test]
@@ -183,7 +183,7 @@ fn the_context_size_read_from_the_transcript_reaches_the_stale_rule() {
         additional_context(&first_answer)
             .unwrap_or_default()
             .contains(BENCH_POWER_BODY),
-        "the first call must be given the critical memory, got {first_answer}"
+        "the first call must be given the pinned memory, got {first_answer}"
     );
 
     let second = run_fixture(&server, "pre_tool_use_bash", &after, "alpha");

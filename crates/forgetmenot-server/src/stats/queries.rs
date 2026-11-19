@@ -212,7 +212,7 @@ pub struct SummaryRow {
     /// Characters of delivered text, which [`tokens_of`] turns into tokens.
     pub chars: u64,
     pub events: u64,
-    /// Tool calls the server stopped so a critical memory could be read first.
+    /// Tool calls the server stopped so a pinned memory could be read first.
     pub held: u64,
     /// Scopes that turned themselves off because their `forget` rule was
     /// reached.

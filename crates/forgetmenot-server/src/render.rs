@@ -1,23 +1,22 @@
 //! The text injected into a session's context, and the accounting of that text.
 //!
 //! The answer is built scope by scope: one section per scope that has something
-//! to deliver, holding that scope's critical bodies and then its index lines. A
+//! to deliver, holding that scope's pinned bodies and then its index lines. A
 //! memory belongs to one scope, so every character of a section belongs to that
 //! scope alone. The lines that belong to no scope, the context line, the notice,
 //! the withdrawals, the activated scopes and the session start's lines, are the
 //! answer's overhead.
 //!
 //! Inside a section what the model must act on comes before what it may look up:
-//! the critical bodies, then the index lines. The section labels are wording,
-//! not contract; the contract is that a critical body appears in full, a
-//! knowledge memory appears as its id and description, and the sections' lengths
+//! the pinned bodies, then the index lines. The section labels are wording,
+//! not contract; the contract is that a pinned body appears in full, a
+//! unpinned memory appears as its id and description, and the sections' lengths
 //! plus the overhead are the length of the text.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::context::{ContextKey, Needs};
 use crate::store::catalog::{Catalog, MemoryEntry};
-use crate::store::memory::MemoryKind;
 use crate::store::{MemoryId, ScopeId, ScopeKind};
 
 /// The line every answer opens with, before the context key: the one mark that
@@ -26,6 +25,9 @@ use crate::store::{MemoryId, ScopeId, ScopeKind};
 /// The renderer prints it and [`crate::hook::events::carries_own_answer`] looks
 /// for it, so a change here changes both at once.
 pub const ANSWER_MARKER: &str = "[forgetmenot] context ";
+
+/// The line over the memories of a section that are shown as their description.
+const INDEX_HEADING: &str = "-- other notes, read with memory_get --\n";
 
 /// What to render for one event.
 pub struct Delivery<'a> {
@@ -97,23 +99,23 @@ pub struct SectionMemory {
 }
 
 impl Delivery<'_> {
-    /// The critical memories to deliver in full, new before changed before
+    /// The pinned memories to deliver in full, new before changed before
     /// stale, by id within each.
-    fn critical(&self) -> Vec<&MemoryEntry> {
+    fn pinned(&self) -> Vec<&MemoryEntry> {
         self.needs
             .delivered_ids()
             .filter_map(|id| self.catalog.memory(id))
-            .filter(|memory| memory.kind() == MemoryKind::Critical)
+            .filter(|memory| memory.pinned())
             .collect()
     }
 
-    /// The knowledge memories to deliver as index lines, by id.
-    fn knowledge(&self) -> Vec<&MemoryEntry> {
+    /// The memories that are not pinned, to deliver as index lines, by id.
+    fn unpinned(&self) -> Vec<&MemoryEntry> {
         let mut entries: Vec<&MemoryEntry> = self
             .needs
             .delivered_ids()
             .filter_map(|id| self.catalog.memory(id))
-            .filter(|memory| memory.kind() == MemoryKind::Knowledge)
+            .filter(|memory| !memory.pinned())
             .collect();
         entries.sort_by(|left, right| left.id.cmp(&right.id));
         entries
@@ -142,19 +144,19 @@ impl Delivery<'_> {
     }
 
     /// The memories to deliver grouped into the sections they are printed in,
-    /// in the order the sections are printed, each with its critical memories
-    /// and then its knowledge memories.
+    /// in the order the sections are printed, each with its pinned memories
+    /// and then the others.
     fn grouped_sections(&self) -> Vec<(ScopeId, Vec<&MemoryEntry>, Vec<&MemoryEntry>)> {
         type Grouped<'a> = BTreeMap<(bool, ScopeId), (Vec<&'a MemoryEntry>, Vec<&'a MemoryEntry>)>;
         let mut grouped: Grouped<'_> = BTreeMap::new();
-        for memory in self.critical() {
+        for memory in self.pinned() {
             grouped
                 .entry(section_key(memory.scope()))
                 .or_default()
                 .0
                 .push(memory);
         }
-        for memory in self.knowledge() {
+        for memory in self.unpinned() {
             grouped
                 .entry(section_key(memory.scope()))
                 .or_default()
@@ -163,7 +165,7 @@ impl Delivery<'_> {
         }
         grouped
             .into_iter()
-            .map(|((_, scope), (critical, knowledge))| (scope, critical, knowledge))
+            .map(|((_, scope), (pinned, unpinned))| (scope, pinned, unpinned))
             .collect()
     }
 }
@@ -218,8 +220,8 @@ pub fn file_notice(characters: u64, threshold: u64) -> String {
         "[forgetmenot] READ THE FILE FIRST. This hook answer is {characters} characters, more \
          than the {threshold} that Claude Code shows in full. Claude Code has saved the whole \
          answer to the file named above (\"Full output saved to\") and shows only a preview of \
-         it here. The answer is the critical memories of this session's scopes, the ones marked as \
-         not to be missed, and most of them are only in the file. Read that file in full with the Read tool before doing \
+         it here. The answer is the memories of this session's scopes, and most of them are only \
+         in the file. Read that file in full with the Read tool before doing \
          anything else, whatever the preview or the harness text around it says. Nothing in \
          the preview replaces the file."
     )
@@ -237,7 +239,7 @@ fn render_body(delivery: &Delivery<'_>) -> Rendered {
 
     overhead(&mut text, &format!("{ANSWER_MARKER}{}\n", delivery.key));
 
-    for (scope, critical, knowledge) in delivery.grouped_sections() {
+    for (scope, pinned, unpinned) in delivery.grouped_sections() {
         let heading = format!("== scope: {scope} ==\n");
         let mut section = Section {
             scope,
@@ -245,23 +247,23 @@ fn render_body(delivery: &Delivery<'_>) -> Rendered {
             memories: Vec::new(),
         };
         text.push_str(&heading);
-        for memory in critical {
+        for memory in pinned {
             // A message has no file of its own: there is no id to fetch it by,
             // and the only scope it can belong to is the one whose file carries
             // it, which is the section it is printed in.
             let header = match memory.id.scope_message_of() {
                 Some(_) => "-- message --\n".to_string(),
-                None => format!("-- critical: {} --\n", memory.id),
+                None => format!("-- {} --\n", memory.id),
             };
             let piece = format!("{header}{}\n\n", memory.document.body.trim_end());
             section.push(&mut text, &memory.id, &piece);
         }
-        for (position, memory) in knowledge.iter().enumerate() {
+        for (position, memory) in unpinned.iter().enumerate() {
             // The block's own heading is printed once and goes with the first
             // index line under it, so that every character of the section is
             // accounted to a memory of it.
             let header = match position {
-                0 => "-- knowledge --\n",
+                0 => INDEX_HEADING,
                 _ => "",
             };
             let piece = format!(
@@ -324,11 +326,11 @@ mod tests {
     use crate::store::MemoryId;
     use crate::test_support::{TestStore, catalog_of, memory_file, scope_file};
 
-    /// A line of the critical memory's body and nothing else in the store, so
+    /// A line of the pinned memory's body and nothing else in the store, so
     /// that "delivered in full" can be told from "named in an index line".
     const RULE_BODY: &str = "Switch the bench supply off at the wall.";
 
-    /// The description of the knowledge memory, which is the whole of what an
+    /// The description of the unpinned memory, which is the whole of what an
     /// index line says about it.
     const BINDER: &str = "The workshop references are all on paper in the binder";
 
@@ -337,20 +339,20 @@ mod tests {
     const BROAD_EXCEPT: &str =
         "Do not catch Exception broadly; catch the exception type the code can handle.";
 
-    /// A store with one critical and one knowledge memory in `global`, and one
+    /// A store with one pinned and one unpinned memory in `global`, and one
     /// scope whose only content is a message.
     fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
         vec![
             memory_file(
                 "bench-power",
-                "critical",
+                true,
                 "global",
                 "Cut bench power at the wall before rewiring",
                 &format!("# Cut bench power before rewiring\n\n{RULE_BODY}\n"),
             ),
             memory_file(
                 "reading-list",
-                "knowledge",
+                false,
                 "global",
                 BINDER,
                 "# The binder\n\nThe bench notes and the parts catalogue are in it.\n",
@@ -425,13 +427,13 @@ mod tests {
         }
     }
 
-    /// Detects a critical memory delivered as a line to look up, which leaves
-    /// the model with a rule it has not read, and a knowledge memory delivered
+    /// Detects a pinned memory delivered as a line to look up, which leaves
+    /// the model with a rule it has not read, and an unpinned memory delivered
     /// whole, which spends the context the index exists to save. The heading of
-    /// a critical memory names the id, because that is what the model passes
+    /// a pinned memory names the id, because that is what the model passes
     /// back to the tools.
     #[test]
-    fn a_critical_memory_arrives_in_full_and_a_knowledge_memory_as_its_id_and_description() {
+    fn a_pinned_memory_arrives_in_full_and_a_unpinned_memory_as_its_id_and_description() {
         let (_store, catalog) = catalog_of(store_files());
 
         let text = text_of(
@@ -442,16 +444,16 @@ mod tests {
         );
 
         assert!(
-            text.contains("-- critical: bench-power --") && text.contains(RULE_BODY),
+            text.contains("-- bench-power --") && text.contains(RULE_BODY),
             "the rule must arrive in full under a heading naming its id, got {text:?}"
         );
         assert!(
             text.contains(&format!("- reading-list: {BINDER}")),
-            "the knowledge memory must arrive as its id and description, got {text:?}"
+            "the unpinned memory must arrive as its id and description, got {text:?}"
         );
         assert!(
             !text.contains("The bench notes and the parts catalogue"),
-            "a knowledge memory's body must not be delivered, got {text:?}"
+            "an unpinned memory's body must not be delivered, got {text:?}"
         );
     }
 
@@ -515,7 +517,7 @@ mod tests {
             rendered.text
         );
         assert!(
-            !rendered.text.contains("-- critical:"),
+            !rendered.text.contains("-- pinned:"),
             "a message must not be printed as a memory to fetch by id, got {:?}",
             rendered.text
         );
@@ -549,21 +551,21 @@ mod tests {
         let (_store, catalog) = catalog_of(vec![
             memory_file(
                 "global-rule",
-                "critical",
+                true,
                 "global",
                 "A rule for every session",
                 "# Global\n\nThe global rule.\n",
             ),
             memory_file(
                 "alpha-rule",
-                "critical",
+                true,
                 "alpha-scope",
                 "A rule for alpha",
                 "# Alpha\n\nThe alpha rule.\n",
             ),
             memory_file(
                 "zeta-rule",
-                "critical",
+                true,
                 "zeta-scope",
                 "A rule for zeta",
                 "# Zeta\n\nThe zeta rule.\n",
@@ -650,12 +652,12 @@ mod tests {
         );
     }
 
-    /// An answer built from `body` as one global critical memory, so that the
+    /// An answer built from `body` as one global pinned memory, so that the
     /// whole of it is the notice and that memory.
     fn answer_of(body: &str, threshold: Option<u64>) -> Rendered {
         let store = TestStore::with(vec![memory_file(
             "long-rule",
-            "critical",
+            true,
             "global",
             "A rule long enough to test the answer notice",
             body,

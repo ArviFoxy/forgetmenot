@@ -66,7 +66,7 @@ fn delivery_row(world: &World, memory: &str) -> Value {
 /// either be denied again or leave the second delivery unrecorded.
 ///
 /// The `Bash` input names widgets, so `widgets` comes on at the `PreToolUse`,
-/// `widget-naming` is new and critical there, and the call is stopped. The
+/// `widget-naming` is new and pinned there, and the call is stopped. The
 /// memory is recorded against the context at that moment, which is why the
 /// context holds one more memory than before and why the call issued again goes
 /// ahead.
@@ -86,7 +86,7 @@ fn a_held_call_is_followed_by_no_result_and_its_reissue_is_a_new_call() {
     let held = session.tool("Bash", bash(WIDGET_COMMAND)).assert(|answer| {
         assert!(
             answer.held(),
-            "a critical memory new at a PreToolUse stops the call"
+            "a pinned memory new at a PreToolUse stops the call"
         );
     });
     assert!(
@@ -146,7 +146,7 @@ const REWRITTEN: &str = "# Part numbers are allocated by the parts office\n\n\
 /// The first call is held with the rule as the store held it then. The rewrite
 /// is a commit the server is not told about, so the context meets it at its next
 /// event: at the reissue the version differs from the one recorded, the memory
-/// is critical and changed, and a `PreToolUse` with a critical arrival is
+/// is pinned and changed, and a `PreToolUse` with a pinned arrival is
 /// stopped. The text it carries is the new body. The second reissue is owed
 /// nothing and goes ahead.
 #[test]
@@ -248,7 +248,7 @@ fn a_subagents_hold_leaves_the_parents_next_call_alone() {
 /// stopped the call is never given and the next call is stopped instead.
 ///
 /// The `Read` input names a widget file, so `widgets` comes on and
-/// `widget-naming` is new and critical at the `PreToolUse`. The store exempts
+/// `widget-naming` is new and pinned at the `PreToolUse`. The store exempts
 /// `Read`, so the call goes ahead, and the answer still carries the body into
 /// the session, which is what the model can read afterwards.
 #[test]
@@ -282,16 +282,16 @@ fn an_exempt_tool_is_never_held_but_still_gets_the_text() {
     );
 }
 
-/// Detects a hold triggered by any arrival rather than by a critical one: a
-/// knowledge memory is a line the model may look up, and stopping the work for
+/// Detects a hold triggered by any arrival rather than by a pinned one: a
+/// unpinned memory is a line the model may look up, and stopping the work for
 /// one would hold a call at every scope a tool input happens to name.
 ///
 /// The session starts in a directory that turns nothing on. The `Bash` input
 /// names a rocket, so `rocketry` comes on at the `PreToolUse`; its only memory
-/// is knowledge, so an index line is all that is owed, and the call goes ahead
+/// is not pinned, so an index line is all that is owed, and the call goes ahead
 /// carrying it.
 #[test]
-fn a_knowledge_arrival_holds_nothing() {
+fn a_unpinned_arrival_holds_nothing() {
     let world = World::new().store(Store::example()).build();
     let session = world.claude(ALPHA).session();
 
@@ -301,11 +301,11 @@ fn a_knowledge_arrival_holds_nothing() {
         .assert(|answer| {
             assert!(
                 answer.allowed(),
-                "nothing critical arrived, so there is nothing to stop the call for"
+                "nothing pinned arrived, so there is nothing to stop the call for"
             );
             assert!(
                 answer.delivers_index("rocket-stages"),
-                "the scope the input turned on still delivers its knowledge memory"
+                "the scope the input turned on still delivers its unpinned memory"
             );
         })
         .run();

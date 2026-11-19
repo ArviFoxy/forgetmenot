@@ -20,7 +20,6 @@ use crate::operations::{
     OperationError, RenameRequest, ReplaceTextRequest, SetFieldsRequest,
 };
 use crate::store::MemoryId;
-use crate::store::memory::MemoryKind;
 use crate::store::validate::WriteMode;
 
 use super::{BranchQuery, Rejection, answer, history, parse_body, resource};
@@ -41,18 +40,18 @@ pub fn router() -> Router<Arc<AppState>> {
 #[derive(Debug, Deserialize)]
 struct IndexQuery {
     scope: Option<String>,
-    kind: Option<String>,
+    pinned: Option<String>,
 }
 
 impl IndexQuery {
     fn filter(self) -> Result<MemoryFilter, Rejection> {
-        let kind = match self.kind.as_deref() {
+        let pinned = match self.pinned.as_deref() {
             None | Some("") => None,
-            Some("critical") => Some(MemoryKind::Critical),
-            Some("knowledge") => Some(MemoryKind::Knowledge),
+            Some("true") => Some(true),
+            Some("false") => Some(false),
             Some(other) => {
                 return Err(Rejection::bad_request(format!(
-                    "kind must be `critical` or `knowledge`, not `{other}`"
+                    "pinned must be `true` or `false`, not `{other}`"
                 )));
             }
         };
@@ -61,7 +60,7 @@ impl IndexQuery {
                 .scope
                 .filter(|scope| !scope.is_empty())
                 .map(crate::store::ScopeId::new),
-            kind,
+            pinned,
         })
     }
 }

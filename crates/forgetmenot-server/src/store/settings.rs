@@ -77,25 +77,37 @@ impl std::fmt::Display for SettingType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingKey {
     ReminderTokens,
-    InterruptOnCritical,
+    PinnedInterruptExecution,
     InterruptExemptTools,
     TriggerExemptTools,
     SubagentsInheritScopes,
-    DeliverKnowledgeIndex,
+    DeliverDescriptions,
     ToolResultMatchLimit,
     AnswerFileThreshold,
     AnnounceEmptyScopes,
     CharactersPerToken,
 }
 
+/// The names two keys had in earlier versions of this server, each with the key
+/// it is now. Read for one release, in a file and in a write alike, so that a
+/// store and a client from before the rename keep working; the migration at
+/// start-up ([`crate::store::migrate`]) rewrites a file that carries one.
+pub const LEGACY_NAMES: [(&str, SettingKey); 2] = [
+    (
+        "interrupt_on_critical",
+        SettingKey::PinnedInterruptExecution,
+    ),
+    ("deliver_knowledge_index", SettingKey::DeliverDescriptions),
+];
+
 /// Every key the settings file may carry, in the order the schema lists them.
 pub const KEYS: [SettingKey; 10] = [
     SettingKey::ReminderTokens,
-    SettingKey::InterruptOnCritical,
+    SettingKey::PinnedInterruptExecution,
     SettingKey::InterruptExemptTools,
     SettingKey::TriggerExemptTools,
     SettingKey::SubagentsInheritScopes,
-    SettingKey::DeliverKnowledgeIndex,
+    SettingKey::DeliverDescriptions,
     SettingKey::ToolResultMatchLimit,
     SettingKey::AnswerFileThreshold,
     SettingKey::AnnounceEmptyScopes,
@@ -107,11 +119,11 @@ impl SettingKey {
     pub fn as_str(self) -> &'static str {
         match self {
             SettingKey::ReminderTokens => "reminder_tokens",
-            SettingKey::InterruptOnCritical => "interrupt_on_critical",
+            SettingKey::PinnedInterruptExecution => "pinned_interrupt_execution",
             SettingKey::InterruptExemptTools => "interrupt_exempt_tools",
             SettingKey::TriggerExemptTools => "trigger_exempt_tools",
             SettingKey::SubagentsInheritScopes => "subagents_inherit_scopes",
-            SettingKey::DeliverKnowledgeIndex => "deliver_knowledge_index",
+            SettingKey::DeliverDescriptions => "deliver_descriptions",
             SettingKey::ToolResultMatchLimit => "tool_result_match_limit",
             SettingKey::AnswerFileThreshold => "answer_file_threshold",
             SettingKey::AnnounceEmptyScopes => "announce_empty_scopes",
@@ -120,8 +132,20 @@ impl SettingKey {
     }
 
     /// The key of this name, or `None` when the schema defines no such key.
+    ///
+    /// A name of [`LEGACY_NAMES`] is read as the key it was renamed to.
     pub fn parse(name: &str) -> Option<Self> {
-        KEYS.into_iter().find(|key| key.as_str() == name)
+        KEYS.into_iter()
+            .find(|key| key.as_str() == name)
+            .or_else(|| Self::renamed_from(name))
+    }
+
+    /// The key an earlier name of it now goes by, `None` for any other name.
+    pub fn renamed_from(name: &str) -> Option<Self> {
+        LEGACY_NAMES
+            .into_iter()
+            .find(|(legacy, _)| *legacy == name)
+            .map(|(_, key)| key)
     }
 
     pub fn value_type(self) -> SettingType {
@@ -129,9 +153,9 @@ impl SettingKey {
             SettingKey::ReminderTokens | SettingKey::AnswerFileThreshold => {
                 SettingType::IntegerOrNull
             }
-            SettingKey::InterruptOnCritical
+            SettingKey::PinnedInterruptExecution
             | SettingKey::SubagentsInheritScopes
-            | SettingKey::DeliverKnowledgeIndex
+            | SettingKey::DeliverDescriptions
             | SettingKey::AnnounceEmptyScopes => SettingType::Boolean,
             SettingKey::InterruptExemptTools | SettingKey::TriggerExemptTools => {
                 SettingType::StringList
@@ -146,12 +170,13 @@ impl SettingKey {
     pub fn description(self) -> &'static str {
         match self {
             SettingKey::ReminderTokens => {
-                "Deliver everything that applies again after this many context tokens, critical \
-                 memories in full and knowledge memories as their description; null turns \
-                 reminders off"
+                "Deliver everything that applies again after this many context tokens, pinned \
+                 memories in full and the others as their description; null turns reminders \
+                 off"
             }
-            SettingKey::InterruptOnCritical => {
-                "Hold a tool call when a critical memory is due and this context has not seen it"
+            SettingKey::PinnedInterruptExecution => {
+                "Hold a tool call when a pinned memory is due and this context has not seen it, \
+                 so that the memory is delivered before the call runs"
             }
             SettingKey::InterruptExemptTools => {
                 "Tool names that are never held, matched against the tool name exactly"
@@ -165,9 +190,9 @@ impl SettingKey {
                 "A subagent starts with its parent's active scopes rather than the implicit ones \
                  alone"
             }
-            SettingKey::DeliverKnowledgeIndex => {
-                "Deliver the description of each knowledge memory that applies, so the agent \
-                 can ask for the full text; off, nothing is delivered about knowledge memories"
+            SettingKey::DeliverDescriptions => {
+                "Deliver the description of each memory that applies and is not pinned, so the \
+                 agent can ask for the full text; off, nothing is delivered about those memories"
             }
             SettingKey::ToolResultMatchLimit => {
                 "Bytes of a tool result matched against triggers; the rest is not matched"
@@ -203,10 +228,10 @@ impl std::fmt::Display for SettingKey {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Context growth after which anything already delivered is delivered
-    /// again, each in the form its kind gets; `None` turns reminders off.
+    /// again, each in the form it was delivered in; `None` turns reminders off.
     pub reminder_tokens: Option<u64>,
-    /// Whether a tool call is held when a critical memory is due and unseen.
-    pub interrupt_on_critical: bool,
+    /// Whether a tool call is held when a pinned memory is due and unseen.
+    pub pinned_interrupt_execution: bool,
     /// Tool names that are never held, by exact match on the tool name.
     pub interrupt_exempt_tools: Vec<String>,
     /// Tool names whose inputs and results are kept away from the triggers, by
@@ -214,8 +239,8 @@ pub struct Settings {
     pub trigger_exempt_tools: Vec<String>,
     /// Whether a subagent starts with its parent's active scopes.
     pub subagents_inherit_scopes: bool,
-    /// Whether the descriptions of knowledge memories are delivered.
-    pub deliver_knowledge_index: bool,
+    /// Whether the descriptions of memories that are not pinned are delivered.
+    pub deliver_descriptions: bool,
     /// Bytes of a tool result matched against triggers.
     pub tool_result_match_limit: u64,
     /// Characters of a hook answer above which Claude Code shows the model a
@@ -234,11 +259,11 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             reminder_tokens: None,
-            interrupt_on_critical: true,
+            pinned_interrupt_execution: true,
             interrupt_exempt_tools: Vec::new(),
             trigger_exempt_tools: Vec::new(),
             subagents_inherit_scopes: true,
-            deliver_knowledge_index: true,
+            deliver_descriptions: true,
             tool_result_match_limit: DEFAULT_TOOL_RESULT_MATCH_LIMIT,
             answer_file_threshold: Some(DEFAULT_ANSWER_FILE_THRESHOLD),
             announce_empty_scopes: false,
@@ -255,11 +280,11 @@ impl Settings {
                 Some(tokens) => Json::from(tokens),
                 None => Json::Null,
             },
-            SettingKey::InterruptOnCritical => Json::from(self.interrupt_on_critical),
+            SettingKey::PinnedInterruptExecution => Json::from(self.pinned_interrupt_execution),
             SettingKey::InterruptExemptTools => Json::from(self.interrupt_exempt_tools.clone()),
             SettingKey::TriggerExemptTools => Json::from(self.trigger_exempt_tools.clone()),
             SettingKey::SubagentsInheritScopes => Json::from(self.subagents_inherit_scopes),
-            SettingKey::DeliverKnowledgeIndex => Json::from(self.deliver_knowledge_index),
+            SettingKey::DeliverDescriptions => Json::from(self.deliver_descriptions),
             SettingKey::ToolResultMatchLimit => Json::from(self.tool_result_match_limit),
             SettingKey::AnswerFileThreshold => match self.answer_file_threshold {
                 Some(characters) => Json::from(characters),
@@ -293,8 +318,8 @@ impl Settings {
                     _ => Some(value.as_u64().ok_or_else(mismatch)?),
                 };
             }
-            SettingKey::InterruptOnCritical => {
-                self.interrupt_on_critical = value.as_bool().ok_or_else(mismatch)?;
+            SettingKey::PinnedInterruptExecution => {
+                self.pinned_interrupt_execution = value.as_bool().ok_or_else(mismatch)?;
             }
             SettingKey::InterruptExemptTools => {
                 self.interrupt_exempt_tools = strings(value).ok_or_else(mismatch)?;
@@ -305,8 +330,8 @@ impl Settings {
             SettingKey::SubagentsInheritScopes => {
                 self.subagents_inherit_scopes = value.as_bool().ok_or_else(mismatch)?;
             }
-            SettingKey::DeliverKnowledgeIndex => {
-                self.deliver_knowledge_index = value.as_bool().ok_or_else(mismatch)?;
+            SettingKey::DeliverDescriptions => {
+                self.deliver_descriptions = value.as_bool().ok_or_else(mismatch)?;
             }
             SettingKey::ToolResultMatchLimit => {
                 self.tool_result_match_limit = value.as_u64().ok_or_else(mismatch)?;
@@ -331,14 +356,14 @@ impl Settings {
         Ok(())
     }
 
-    /// Whether a tool call may be held for a critical memory: the interrupt has
+    /// Whether a tool call may be held for a pinned memory: the interrupt has
     /// to be on and the tool must not be one the store exempts. A call that
     /// names no tool is not a tool call and is never held.
     pub fn interrupts(&self, tool_name: Option<&str>) -> bool {
         let Some(tool_name) = tool_name else {
             return false;
         };
-        self.interrupt_on_critical
+        self.pinned_interrupt_execution
             && !self
                 .interrupt_exempt_tools
                 .iter()
@@ -549,8 +574,8 @@ mod tests {
             vec!["Read".to_string(), "Glob".to_string()]
         );
         assert_eq!(
-            file.settings.interrupt_on_critical,
-            Settings::default().interrupt_on_critical,
+            file.settings.pinned_interrupt_execution,
+            Settings::default().pinned_interrupt_execution,
             "a key the file does not carry must keep its default"
         );
     }
@@ -566,6 +591,24 @@ mod tests {
             Settings::default().reminder_tokens,
             None,
             "reminders are off unless the store asks for them"
+        );
+    }
+
+    /// Detects a store from before two keys were renamed losing those settings:
+    /// a value under an earlier name must be in force under the new one, and
+    /// must not be reported as an unknown key.
+    #[test]
+    fn a_key_under_its_earlier_name_sets_the_key_it_was_renamed_to() {
+        let (file, problems) =
+            parse(b"interrupt_on_critical: false\ndeliver_knowledge_index: false\n")
+                .expect("the file parses");
+        assert_eq!(problems, Vec::new(), "an earlier name is not a mistake");
+        assert!(!file.settings.pinned_interrupt_execution);
+        assert!(!file.settings.deliver_descriptions);
+        assert_eq!(
+            SettingKey::parse("interrupt_on_critical"),
+            Some(SettingKey::PinnedInterruptExecution),
+            "a write that names the key by its earlier name sets the renamed key"
         );
     }
 
@@ -594,8 +637,8 @@ mod tests {
                 SettingType::IntegerOrNull,
             ),
             (
-                "interrupt_on_critical: 'no'\n",
-                "interrupt_on_critical",
+                "pinned_interrupt_execution: 'no'\n",
+                "pinned_interrupt_execution",
                 SettingType::Boolean,
             ),
             (
@@ -651,10 +694,10 @@ mod tests {
     #[test]
     fn setting_one_key_keeps_the_other_entries_of_the_file() {
         let (file, _) =
-            parse(b"reminder_tokens: 1000\ndeliver_knowledge_index: false\n").expect("it parses");
+            parse(b"reminder_tokens: 1000\ndeliver_descriptions: false\n").expect("it parses");
         let mut entries = file.entries.clone();
         entries.insert(
-            Yaml::String("interrupt_on_critical".to_string()),
+            Yaml::String("pinned_interrupt_execution".to_string()),
             yaml_of_json(&Json::from(false)),
         );
 
@@ -663,8 +706,8 @@ mod tests {
 
         assert_eq!(problems, Vec::new(), "the rendered file must be valid");
         assert_eq!(written.settings.reminder_tokens, Some(1_000));
-        assert!(!written.settings.deliver_knowledge_index);
-        assert!(!written.settings.interrupt_on_critical);
+        assert!(!written.settings.deliver_descriptions);
+        assert!(!written.settings.pinned_interrupt_execution);
     }
 
     /// Detects a fractional divisor truncated to a whole number, or refused for

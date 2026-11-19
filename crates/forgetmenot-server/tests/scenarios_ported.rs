@@ -31,7 +31,7 @@ const ALPHA: &str = "alpha";
 /// The edit is a commit to the store, which changes nothing in any context
 /// until each one's next event. At alpha's next tool call the blob of
 /// `bench-power` differs from the version it was delivered at, so it is changed;
-/// it is critical and this is a `PreToolUse`, so the call is held and carries
+/// it is pinned and this is a `PreToolUse`, so the call is held and carries
 /// the new body, and nothing that did not change is sent again.
 #[test]
 fn an_edit_committed_behind_the_server_reaches_another_machines_session_at_its_next_event() {
@@ -71,7 +71,7 @@ fn an_edit_committed_behind_the_server_reaches_another_machines_session_at_its_n
         .assert(|answer| {
             assert!(
                 answer.held(),
-                "a changed critical memory at a PreToolUse holds the call"
+                "a changed pinned memory at a PreToolUse holds the call"
             );
             assert!(
                 answer.delivers_full("bench-power"),
@@ -121,7 +121,7 @@ fn a_compaction_delivers_everything_again_at_the_rebuilt_start_and_keeps_the_sco
             answer.delivers_index("reading-list")
                 && answer.delivers_index("rocket-stages")
                 && answer.delivers_index("sessions/alpha/session-1/notes"),
-            "every knowledge memory due arrives again as its index line"
+            "every unpinned memory due arrives again as its index line"
         );
         assert!(
             !answer.retracts("widget-naming"),
@@ -155,7 +155,7 @@ fn a_compaction_delivers_everything_again_at_the_rebuilt_start_and_keeps_the_sco
 ///
 /// The `tool_input` trigger of `widgets` fires on the call's command and
 /// `widgets` implies `rocketry`, so `widget-naming` and `rocket-stages` are new
-/// at the call. A new critical memory at a `PreToolUse` stops it, and the
+/// at the call. A new pinned memory at a `PreToolUse` stops it, and the
 /// stopped call carries what is new. Issuing the call again is a new
 /// `PreToolUse`, and the interrupt rule marks what the held answer carried as
 /// delivered, so nothing is new, changed or stale and the call goes ahead with
@@ -186,7 +186,7 @@ fn a_held_tool_call_carries_what_is_new_and_the_call_issued_again_goes_ahead() {
     let call = session
         .tool("Bash", bash("cargo test -p widgets"))
         .assert(|answer| {
-            assert!(answer.held(), "a new critical memory stops the call");
+            assert!(answer.held(), "a new pinned memory stops the call");
             assert!(
                 answer.delivers_full("widget-naming"),
                 "the stopped call carries the rule it was stopped for"
@@ -357,7 +357,7 @@ fn a_scope_turned_off_withdraws_its_memories_and_leaves_the_scopes_it_implied_on
 /// The second session is owed the global memories and must not be owed the first
 /// session's notes. The inherit call changes the calling context's scopes and
 /// nothing in the store, so its effect arrives at the next event on that
-/// context, which is the call's own `PostToolUse`. The notes are a knowledge
+/// context, which is the call's own `PostToolUse`. The notes are an unpinned
 /// memory, so they arrive as an index line and stop nothing.
 #[test]
 fn a_session_that_inherits_another_is_owed_that_sessions_own_memories() {
@@ -389,7 +389,7 @@ fn a_session_that_inherits_another_is_owed_that_sessions_own_memories() {
             );
             assert!(
                 answer.allowed(),
-                "a knowledge memory arriving never stops a call"
+                "an unpinned memory arriving never stops a call"
             );
             assert!(
                 !answer.delivers_full("bench-power"),
@@ -402,14 +402,14 @@ fn a_session_that_inherits_another_is_owed_that_sessions_own_memories() {
 /// against the wrong context size, and a stale delivery that stops the call.
 ///
 /// A threshold that fires early wastes the context it is trying to protect; one
-/// that fires late leaves a critical rule out of the model's reach; a stale
+/// that fires late leaves a pinned memory out of the model's reach; a stale
 /// delivery that stops a call would interrupt a session at a fixed interval for
 /// a rule nothing changed about.
 ///
 /// The session reports its size by hand, which is what the client reads from the
 /// transcript: everything is delivered at 40 000, one token short of the
 /// threshold nothing is owed, and exactly at it everything shown before is out
-/// of the model's reach and arrives again, each in the form its kind gets.
+/// of the model's reach and arrives again, each in the form it is delivered in.
 #[test]
 fn a_reminder_arrives_exactly_at_the_threshold_and_not_a_token_before() {
     let world = World::new()
@@ -438,12 +438,12 @@ fn a_reminder_arrives_exactly_at_the_threshold_and_not_a_token_before() {
         .assert(|answer| {
             assert!(
                 answer.delivers_full("bench-power"),
-                "a stale critical memory is sent whole again"
+                "a stale pinned memory is sent whole again"
             );
             assert!(
                 answer.delivers_index("reading-list")
                     && answer.delivers_index("sessions/alpha/session-1/notes"),
-                "a stale knowledge memory is sent as its index line again"
+                "a stale unpinned memory is sent as its index line again"
             );
             assert!(
                 answer.allowed(),
@@ -457,7 +457,7 @@ fn a_reminder_arrives_exactly_at_the_threshold_and_not_a_token_before() {
 /// children were told.
 ///
 /// The first would hide from the subagent the memories of the work it was
-/// spawned for; the second would let it act on a critical rule it was never
+/// spawned for; the second would let it act on a pinned memory it was never
 /// shown; the third would stop the parent's calls for deliveries that went
 /// somewhere else. The child is created with a copy of the parent's active
 /// scopes and an empty record, so everything due to the parent is due to it and
@@ -480,20 +480,20 @@ fn a_subagent_starts_with_its_parents_scopes_and_a_record_of_its_own() {
         "Survey the crate and list its public functions",
     );
 
-    for critical in ["bench-power", "widget-naming"] {
+    for pinned in ["bench-power", "widget-naming"] {
         assert!(
-            child.model_saw_full(critical),
-            "{critical} is due to the parent, so it is due to the child that copied its scopes"
+            child.model_saw_full(pinned),
+            "{pinned} is due to the parent, so it is due to the child that copied its scopes"
         );
     }
-    for knowledge in [
+    for unpinned in [
         "reading-list",
         "rocket-stages",
         "sessions/alpha/session-1/notes",
     ] {
         assert!(
-            child.model_saw_index(knowledge),
-            "{knowledge} must reach the child as its index line"
+            child.model_saw_index(unpinned),
+            "{unpinned} must reach the child as its index line"
         );
     }
 

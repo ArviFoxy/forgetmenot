@@ -14,25 +14,25 @@ use serde::Deserialize;
 
 use crate::context::ContextKey;
 use crate::stats::activations::Order;
-use crate::store::memory::{MemoryKind, MemorySource};
+use crate::store::memory::MemorySource;
 use crate::store::scope::{Forget, Trigger, TriggerField};
 
-/// Which kind a memory is delivered as.
-#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+/// The `kind` field a client of an earlier version sends in place of `pinned`.
+///
+/// Accepted for one release so that a session started before the change, which
+/// still holds the earlier tool schema, keeps working. It is in no schema, and
+/// `pinned` wins wherever a call carries both.
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RequestedKind {
-    /// Delivered in full whenever it becomes due.
+pub enum LegacyKind {
     Critical,
-    /// Delivered as one index line the model can fetch the body by.
     Knowledge,
 }
 
-impl From<RequestedKind> for MemoryKind {
-    fn from(kind: RequestedKind) -> Self {
-        match kind {
-            RequestedKind::Critical => MemoryKind::Critical,
-            RequestedKind::Knowledge => MemoryKind::Knowledge,
-        }
+impl LegacyKind {
+    /// What the earlier field says about `pinned`.
+    pub fn pinned(self) -> bool {
+        matches!(self, LegacyKind::Critical)
     }
 }
 
@@ -61,9 +61,13 @@ pub struct MemoryIndexParams {
     /// Only memories in this scope; every memory when this is absent.
     #[serde(default)]
     pub scope: Option<String>,
-    /// Only memories of this kind; both kinds when this is absent.
+    /// True lists only pinned memories and false only the others; every memory
+    /// when this is absent.
     #[serde(default)]
-    pub kind: Option<RequestedKind>,
+    pub pinned: Option<bool>,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub kind: Option<LegacyKind>,
 }
 
 /// Which memory to read, and for whom.
@@ -97,7 +101,14 @@ pub struct MemoryPutParams {
     pub id: String,
     /// The one-line description that is this memory's index entry.
     pub description: String,
-    pub kind: RequestedKind,
+    /// True pins the memory: its whole text is shown in every session while its
+    /// scope is active. False, or absent, shows its description, and the text
+    /// is read with memory_get.
+    #[serde(default)]
+    pub pinned: Option<bool>,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub kind: Option<LegacyKind>,
     /// The one scope id this memory is delivered in. A memory under
     /// `sessions/<machine>/<session-id>/` takes its own session scope.
     pub scope: String,
@@ -200,8 +211,13 @@ pub struct MemorySetFieldsParams {
     /// The one-line description that is this memory's index entry.
     #[serde(default)]
     pub description: Option<String>,
+    /// True pins the memory, so that its whole text is shown while its scope
+    /// is active; false unpins it, so that its description is shown.
     #[serde(default)]
-    pub kind: Option<RequestedKind>,
+    pub pinned: Option<bool>,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub kind: Option<LegacyKind>,
     /// The one scope id this memory is delivered in, replacing the one it has.
     #[serde(default)]
     pub scope: Option<String>,
@@ -377,7 +393,7 @@ pub struct ScopePutParams {
     /// for a scope only the agent turns on.
     pub triggers: Vec<RequestedTrigger>,
     /// The scope's own message: a short text delivered in full whenever the
-    /// scope becomes active, like a critical memory of the scope, so that a
+    /// scope becomes active, like a pinned memory of the scope, so that a
     /// scope with one short note needs no memory file for it. Leave it out for a
     /// scope that delivers nothing of its own.
     #[serde(default)]

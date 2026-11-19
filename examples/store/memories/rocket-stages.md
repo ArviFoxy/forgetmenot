@@ -2,7 +2,6 @@
 name: rocket-stages
 description: Stage one lights on the pad and later stages count upwards in firing order
 metadata:
-  kind: knowledge
   scope: rocketry
   source: assistant
   created: 2026-01-06T08:15:00Z

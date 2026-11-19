@@ -15,6 +15,7 @@ pub mod catalog;
 pub mod frontmatter;
 pub mod git;
 pub mod memory;
+pub mod migrate;
 pub mod scope;
 pub mod settings;
 pub mod validate;
@@ -308,7 +309,7 @@ mod tests {
     /// renderer prints a message without its memory id and would then print a
     /// file memory that way too.
     ///
-    /// Source: issue #7, where a scope's message is delivered as a critical
+    /// Source: issue #7, where a scope's message is delivered as a pinned
     /// memory of the scope whose id no memory file can have.
     #[test]
     fn a_scope_message_id_names_its_scope_and_nothing_else_does() {

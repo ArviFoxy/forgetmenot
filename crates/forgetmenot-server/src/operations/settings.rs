@@ -124,6 +124,13 @@ pub async fn settings_set(
     };
 
     let mut entries = catalog.settings_entries().clone();
+    // A file from before a key was renamed carries the earlier name, which the
+    // write replaces: left in, the file would set one key twice.
+    for (legacy, renamed) in settings::LEGACY_NAMES {
+        if renamed == key {
+            entries.shift_remove(legacy);
+        }
+    }
     entries.insert(
         yaml_serde::Value::String(key.as_str().to_string()),
         settings::yaml_of_json(&request.value),

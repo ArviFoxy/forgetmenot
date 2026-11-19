@@ -244,14 +244,14 @@ fn a_session_scope_list_call_changes_nothing_and_answers_the_scopes() {
         });
 }
 
-/// How many long critical rules the store carries beyond the example store's
+/// How many long pinned memories the store carries beyond the example store's
 /// own, and how many lines each one has. Five of this size put the session
 /// start past the 10 000 characters Claude Code shows in full, so the answer is
 /// saved to a file.
 const LONG_RULES: usize = 5;
 const LONG_LINES: usize = 34;
 
-/// The example store with five long critical rules in `global`, each naming a
+/// The example store with five long pinned memories in `global`, each naming a
 /// rocket.
 ///
 /// `rocketry`'s trigger has no field, so it fires on any text: the bodies name
@@ -272,7 +272,7 @@ fn store_with_long_rocket_rules() -> scenario::StoreBuilder {
             .join("\n");
         store = store.memory(&id, |memory| {
             memory
-                .critical()
+                .pinned()
                 .scope("global")
                 .description("A long launch rule")
                 .body(&body);
@@ -302,7 +302,7 @@ fn without_the_marker(text: &str) -> String {
 /// Detects the server's own answer turning scopes on when it comes back through
 /// a tool. A session start past 10 000 characters is saved to a file, and the
 /// notice at the top tells the model to read that file; the whole answer then
-/// arrives as the result of a `Read`, every critical body it delivered, and
+/// arrives as the result of a `Read`, every pinned body it delivered, and
 /// matching it against the tool-result triggers activates every scope those
 /// bodies name at once, from the store's own traffic rather than from the work.
 /// Same class as issue 17.

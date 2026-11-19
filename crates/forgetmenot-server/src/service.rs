@@ -22,6 +22,7 @@ use crate::store::git::{
     LandAttempt,
 };
 use crate::store::memory::MemoryDocument;
+use crate::store::migrate;
 use crate::store::scope::ScopeDocument;
 use crate::store::settings::SETTINGS_PATH;
 use crate::store::validate::{self, ValidationError};
@@ -117,6 +118,22 @@ impl Store {
         let path = path.to_path_buf();
         let (repository, catalog) = tokio::task::spawn_blocking(move || {
             let repository = GitRepo::open_or_init(&path)?;
+            // A store from an earlier version is rewritten before it is read.
+            // The reader takes the earlier shape as well, so a rewrite that
+            // fails, over a file edited by hand for one, costs nothing but the
+            // rewrite: the store is served as it is and the next start tries
+            // again.
+            match migrate::to_current(&repository) {
+                Ok(Some(commit)) => {
+                    tracing::info!("the store was rewritten to the current shape in {commit}");
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        "the store could not be rewritten to the current shape: {error}"
+                    );
+                }
+            }
             let catalog = Catalog::load(&repository)?;
             Ok::<_, StoreError>((repository, catalog))
         })

@@ -12,7 +12,7 @@ use git2::Oid;
 
 use super::frontmatter::FrontmatterError;
 use super::git::{GitError, GitRepo};
-use super::memory::{MemoryDocument, MemoryFrontmatter, MemoryKind, MemoryMetadata};
+use super::memory::{MemoryDocument, MemoryFrontmatter, MemoryMetadata};
 use super::scope::{Forget, ScopeDocument};
 use super::settings::{SETTINGS_PATH, SettingProblem, Settings, SettingsFile};
 use super::validate::{ValidationError, ValidationWarning};
@@ -43,8 +43,9 @@ pub struct MemoryEntry {
 }
 
 impl MemoryEntry {
-    pub fn kind(&self) -> MemoryKind {
-        self.document.kind()
+    /// Whether the memory is shown in full while its scope is active.
+    pub fn pinned(&self) -> bool {
+        self.document.pinned()
     }
 
     /// The one scope this memory is delivered in.
@@ -74,7 +75,7 @@ pub struct Catalog {
     settings_version: Option<Oid>,
     scopes: BTreeMap<ScopeId, ScopeEntry>,
     memories: BTreeMap<MemoryId, MemoryEntry>,
-    /// The message of each scope that carries one, as the critical memory it is
+    /// The message of each scope that carries one, as the pinned memory it is
     /// delivered as. Kept apart from the file memories so that everything that
     /// reads the store's files reads those alone.
     scope_messages: BTreeMap<MemoryId, MemoryEntry>,
@@ -281,7 +282,7 @@ impl Catalog {
 
     /// The memories due in a context whose active scopes are `active`.
     ///
-    /// Critical memories come first because they are delivered in full and a
+    /// Pinned memories come first because they are delivered in full and a
     /// reader should meet them before the index lines; within a kind the order
     /// is by id so that the rendered context is stable between events.
     pub fn due(&self, active: &BTreeSet<ScopeId>) -> Vec<&MemoryEntry> {
@@ -291,7 +292,12 @@ impl Catalog {
             .chain(self.scope_messages.values())
             .filter(|memory| active.contains(memory.scope()))
             .collect();
-        due.sort_by(|left, right| left.kind().cmp(&right.kind()).then(left.id.cmp(&right.id)));
+        due.sort_by(|left, right| {
+            right
+                .pinned()
+                .cmp(&left.pinned())
+                .then(left.id.cmp(&right.id))
+        });
         due
     }
 
@@ -331,7 +337,7 @@ fn settings_error(path: &str, problem: &SettingProblem) -> ValidationError {
     }
 }
 
-/// The message of each scope that carries one, as the critical memory it is
+/// The message of each scope that carries one, as the pinned memory it is
 /// delivered as: its scope alone, its first line as the description a reader
 /// sees in the index, and the scope file's blob as the version that says the
 /// message changed.
@@ -372,7 +378,7 @@ fn scope_message_entries(
     messages
 }
 
-/// The memory one scope's `message` is delivered as: a critical memory of that
+/// The memory one scope's `message` is delivered as: a pinned memory of that
 /// scope alone, whose body is the message itself and whose description is the
 /// message's first line, the one a reader sees in the index.
 ///
@@ -387,7 +393,7 @@ pub fn scope_message_document(scope: &ScopeId, message: &str) -> MemoryDocument 
             modified: None,
             extra: yaml_serde::Mapping::new(),
             metadata: MemoryMetadata {
-                kind: Some(MemoryKind::Critical),
+                pinned: true,
                 scope: Some(scope.clone()),
                 ..MemoryMetadata::default()
             },

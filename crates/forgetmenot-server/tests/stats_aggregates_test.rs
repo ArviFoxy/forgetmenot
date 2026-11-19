@@ -33,14 +33,14 @@ const SESSION: &str = "session-1";
 const TOKENS: Option<u64> = Some(10_000);
 
 /// `reading-list` as the example store holds it, with one change: it is a
-/// critical memory, so it is delivered in full rather than as an index line.
-const READING_LIST_AS_CRITICAL: &str = "\
+/// pinned memory, so it is delivered in full rather than as an index line.
+const READING_LIST_PINNED: &str = "\
 ---
 name: reading-list
 description: The workshop references are all on paper in the binder, nothing online
 metadata:
   type: reference
-  kind: critical
+  pinned: true
 ---
 # Where the workshop references live
 
@@ -64,11 +64,11 @@ Stage numbering is written up separately in [[rocket-stages]]. A link written as
 ///    `user_message` fires and turns the scope on for the first time, which
 ///    implies `rocketry`: `widget-naming` in full (new) and `rocket-stages` as an
 ///    index line (new).
-/// 3. **A commit behind the server's back** makes `reading-list` critical, the
+/// 3. **A commit behind the server's back** makes `reading-list` pinned, the
 ///    way a person with a shell would. No event, so nothing is delivered.
 /// 4. **PreToolUse** whose input names widgets. The `widgets` pattern on
 ///    `tool_input` fires for a scope that is already on. `reading-list` is now
-///    critical and its version differs from what was delivered, so the call is
+///    pinned and its version differs from what was delivered, so the call is
 ///    stopped and it is delivered in full (changed).
 /// 5. **The same PreToolUse again.** The pattern fires again; nothing is owed,
 ///    so the call is allowed and nothing is delivered.
@@ -109,10 +109,10 @@ fn run_sequence() -> TestServer {
     );
 
     server.commit(
-        "reading-list becomes a critical memory",
+        "reading-list becomes a pinned memory",
         vec![(
             "memories/reading-list.md".to_string(),
-            Some(READING_LIST_AS_CRITICAL.as_bytes().to_vec()),
+            Some(READING_LIST_PINNED.as_bytes().to_vec()),
         )],
     );
 
@@ -148,8 +148,8 @@ fn run_sequence() -> TestServer {
 }
 
 /// Detects index lines and full bodies counted as the same thing. `reading-list`
-/// was named in one index line while it was a knowledge memory and delivered in
-/// full once after it became critical, so it must report one of each and two of
+/// was named in one index line while it was an unpinned memory and delivered in
+/// full once after it became pinned, so it must report one of each and two of
 /// nothing.
 #[test]
 fn a_memory_shown_as_an_index_line_and_later_in_full_reports_one_of_each() {
@@ -190,36 +190,36 @@ fn a_memory_shown_as_an_index_line_and_later_in_full_reports_one_of_each() {
 }
 
 /// Detects a report that adds the two forms together, or crosses them over: a
-/// critical memory is only ever delivered in full and a knowledge memory only
+/// pinned memory is only ever delivered in full and an unpinned memory only
 /// ever as an index line, so each must leave the other's columns at zero.
 #[test]
 fn full_deliveries_and_index_lines_are_never_added_into_one_count() {
     let server = run_sequence();
     let rows = get(&server, "/api/stats/memories");
 
-    let critical = row_with(&rows, "memory", "bench-power");
+    let pinned = row_with(&rows, "memory", "bench-power");
     assert_eq!(
-        critical["shown_full_new"],
+        pinned["shown_full_new"],
         json!(2),
-        "delivered in full in step 1 and again in step 6: {critical}"
+        "delivered in full in step 1 and again in step 6: {pinned}"
     );
     assert_eq!(
-        critical["shown_index"],
+        pinned["shown_index"],
         json!(0),
-        "a critical memory is never reduced to an index line: {critical}"
+        "a pinned memory is never reduced to an index line: {pinned}"
     );
 
-    let knowledge = row_with(&rows, "memory", "rocket-stages");
+    let unpinned = row_with(&rows, "memory", "rocket-stages");
     assert_eq!(
-        knowledge["shown_index"],
+        unpinned["shown_index"],
         json!(2),
-        "named in an index line in step 2 and again in step 6: {knowledge}"
+        "named in an index line in step 2 and again in step 6: {unpinned}"
     );
     for column in ["shown_full_new", "shown_full_changed", "shown_full_stale"] {
         assert_eq!(
-            knowledge[column],
+            unpinned[column],
             json!(0),
-            "a knowledge memory's body is never delivered: {column} of {knowledge}"
+            "an unpinned memory's body is never delivered: {column} of {unpinned}"
         );
     }
 }

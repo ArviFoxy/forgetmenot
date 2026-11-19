@@ -58,7 +58,7 @@ pub enum StatsError {
 /// The decision an event was answered with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
-    /// A tool call was stopped so a critical memory could be read first.
+    /// A tool call was stopped so a pinned memory could be read first.
     Deny,
     /// Context was attached to the answer.
     Context,
@@ -101,7 +101,6 @@ pub struct ForgottenScope {
 #[derive(Clone, Debug)]
 pub struct Delivery {
     pub memory: String,
-    pub kind: String,
     /// `full` or `index`; for a retraction, the form it had been delivered in is
     /// not what matters, so `index` and `full` are both written as `none`.
     pub form: String,
@@ -336,7 +335,8 @@ impl StatsReader {
 pub const RETRACTED_PREFIX: &str = "retracted:";
 
 /// The `reason` of a delivery row for a memory whose new version only removed
-/// lines from what the context had already been given, so nothing was sent.
+/// lines from what the context had already been given, or is a pinned memory
+/// with the same text, so nothing was sent.
 pub const SHRUNK_REASON: &str = "shrunk";
 
 /// The tool whose calls count as a memory fetched in full by the model.
@@ -455,7 +455,6 @@ pub struct MemoryDeliveryRow {
     pub session_key: String,
     /// The hook event this delivery was made at.
     pub event: String,
-    pub kind: String,
     /// `full` or `index`, and `none` for a withdrawal.
     pub form: String,
     /// `new`, `changed`, `stale`, [`SHRUNK_REASON`], or [`RETRACTED_PREFIX`]
@@ -574,7 +573,7 @@ impl StatsReader {
         self.rows(
             "SELECT hook_events.ts, hook_events.machine, hook_events.session_id,
                     hook_events.agent, hook_events.event,
-                    deliveries.kind, deliveries.form, deliveries.reason,
+                    deliveries.form, deliveries.reason,
                     deliveries.scope, coalesce(deliveries.chars, 0), deliveries.bytes
              FROM deliveries JOIN hook_events ON hook_events.id = deliveries.event_id
              WHERE deliveries.memory = ?
@@ -592,12 +591,11 @@ impl StatsReader {
                     )
                     .to_string(),
                     event: row.get(4)?,
-                    kind: row.get(5)?,
-                    form: row.get(6)?,
-                    reason: row.get(7)?,
-                    scope: row.get(8)?,
-                    chars: row.get::<_, i64>(9)?.max(0) as u64,
-                    bytes: row.get::<_, i64>(10)?.max(0) as u64,
+                    form: row.get(5)?,
+                    reason: row.get(6)?,
+                    scope: row.get(7)?,
+                    chars: row.get::<_, i64>(8)?.max(0) as u64,
+                    bytes: row.get::<_, i64>(9)?.max(0) as u64,
                 })
             },
         )
@@ -1029,6 +1027,9 @@ impl Table {
 /// scope that came on in a context, and `activation_messages`, the texts the
 /// trigger rows among them were found in. What is particular to one kind of
 /// trigger is JSON in `trigger` and `evidence`; see [`activations`].
+///
+/// Version 3 drops `deliveries.kind`, which repeated what `form` already says:
+/// whether the memory was delivered in full or as its index line.
 const SCHEMA: &[M<'static>] = &[
     M::up(
         "CREATE TABLE hook_events (
@@ -1110,6 +1111,7 @@ const SCHEMA: &[M<'static>] = &[
      CREATE INDEX scope_activations_scope ON scope_activations (scope_id, ts);
      CREATE INDEX scope_activations_message ON scope_activations (message_id);",
     ),
+    M::up("ALTER TABLE deliveries DROP COLUMN kind;"),
 ];
 
 /// [`SCHEMA`] as the connection applies it.
@@ -1268,12 +1270,11 @@ fn insert_hook_event(
     }
     for delivery in &record.deliveries {
         transaction.execute(
-            "INSERT INTO deliveries (event_id, memory, kind, form, reason, bytes, scope, chars)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO deliveries (event_id, memory, form, reason, bytes, scope, chars)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 event_id,
                 delivery.memory,
-                delivery.kind,
                 delivery.form,
                 delivery.reason,
                 delivery.bytes as i64,
@@ -1347,7 +1348,6 @@ mod tests {
                     .into_iter()
                     .map(|(memory, reason)| Delivery {
                         memory: memory.to_string(),
-                        kind: "critical".to_string(),
                         form: "full".to_string(),
                         reason: reason.to_string(),
                         scope: "global".to_string(),
@@ -1387,7 +1387,6 @@ mod tests {
                     .into_iter()
                     .map(|(memory, scope, chars)| Delivery {
                         memory: memory.to_string(),
-                        kind: "critical".to_string(),
                         form: "full".to_string(),
                         reason: "new".to_string(),
                         scope: scope.to_string(),

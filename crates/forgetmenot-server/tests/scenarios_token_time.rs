@@ -36,7 +36,7 @@ const START: u64 = 10_000;
 /// when it means to.
 const PASSING: &str = "passing";
 
-/// The critical memory in [`PASSING`], and a line of its body, so that a test
+/// The pinned memory in [`PASSING`], and a line of its body, so that a test
 /// can ask whether the body arrived without repeating the whole of it.
 const PASSING_RULE: &str = "passing-rule";
 const PASSING_RULE_BODY: &str = "# Label a passing measurement\n\n\
@@ -56,7 +56,7 @@ const SHRUNK_BENCH_POWER: &str = "# Cut bench power before rewiring\n\n\
      with the meter that the rail reads zero.\n";
 
 /// The example store with a scope that turns itself off [`THRESHOLD`] tokens
-/// after the last text that fired it, holding one critical memory.
+/// after the last text that fired it, holding one pinned memory.
 ///
 /// The trigger is on the user's messages alone, so nothing the memory system's
 /// own traffic carries can fire it: a scenario that names the scope in a tool
@@ -70,7 +70,7 @@ fn forgetting_store() -> StoreBuilder {
         })
         .memory(PASSING_RULE, |memory| {
             memory
-                .critical()
+                .pinned()
                 .scope(PASSING)
                 .description("A measurement taken while the bench settles is labelled as such")
                 .body(PASSING_RULE_BODY);
@@ -85,8 +85,8 @@ fn forgetting_store() -> StoreBuilder {
 /// delivery to count from. The session is delivered everything at 10 000. At
 /// 10 999 the growth since is 999, one short of the threshold, so nothing is
 /// owed. At 11 000 it is exactly the threshold: what was shown that long ago is
-/// out of the model's reach and arrives again, the critical rule whole and the
-/// knowledge memory as its index line.
+/// out of the model's reach and arrives again, the pinned memory whole and the
+/// unpinned memory as its index line.
 ///
 /// The third prompt is at 11 999, which is 1 999 past the first delivery and 999
 /// past the second. It is owed nothing only if the reminder moved the count to
@@ -122,7 +122,7 @@ fn a_reminder_arrives_at_the_threshold_and_not_a_token_before() {
         );
         assert!(
             answer.delivers_index("reading-list"),
-            "a stale knowledge memory arrives as its index line"
+            "a stale unpinned memory arrives as its index line"
         );
     });
 

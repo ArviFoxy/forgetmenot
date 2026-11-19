@@ -43,7 +43,7 @@ fn implicit_scopes(machine: &str, session_id: &str) -> std::collections::BTreeSe
 /// same memories are due to it; and it holds nothing yet, so everything due
 /// arrives at its start, `bench-power` included, which the parent was given long
 /// before the child existed. A child that copied the record would be sent none
-/// of it and would act on a critical rule it was never shown.
+/// of it and would act on a pinned memory it was never shown.
 ///
 /// The scopes are read back from the server rather than inferred from the
 /// deliveries: a child could be given the right texts once by matching the
@@ -247,7 +247,7 @@ fn a_subagents_task_activates_scopes_at_its_start() {
 ///
 /// The child writes `bench-power`, so the child is the context that holds it and
 /// its next event carries nothing. Every other context meets the new version at
-/// its next event: the parent as a change to a critical memory it holds, at a
+/// its next event: the parent as a change to a pinned memory it holds, at a
 /// prompt, which carries text but stops nothing because only a `PreToolUse` can;
 /// and a session that has nothing to do with either of them, the same way.
 #[test]
@@ -268,7 +268,7 @@ fn a_subagents_write_reaches_its_parent_and_another_session_but_not_itself() {
     child
         .mcp()
         .memory_put("bench-power", |memory| {
-            memory.critical();
+            memory.pinned();
             memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
@@ -323,7 +323,7 @@ fn a_subagents_write_reaches_its_parent_and_another_session_but_not_itself() {
 /// The store changes between the two starts. The second child is created after
 /// it, so the version it is given at its start is the one the store now holds.
 /// The first child was given the old one, and meets the change at its own next
-/// event; it is a `PreToolUse` and the memory is critical, so the call is
+/// event; it is a `PreToolUse` and the memory is pinned, so the call is
 /// stopped and carries the new body. The parent, which was given the old version
 /// at its start, meets it once in the same way, and the call it issues again
 /// goes ahead with nothing.
@@ -402,7 +402,7 @@ const CHILD_START: u64 = 10_000;
 /// report 10 000 upwards. The child's count therefore starts at its own first
 /// event: at 10 999 the growth is 999, one short of the threshold, and at 11 000
 /// it is exactly the threshold, so everything the child was given at its start
-/// arrives again, the critical rule whole and the knowledge memories as index
+/// arrives again, the pinned memory whole and the unpinned memories as index
 /// lines. A count from the parent's 50 000 would deliver nothing at any of them.
 #[test]
 fn a_reminder_in_a_subagent_counts_from_the_subagents_own_size() {
@@ -423,7 +423,7 @@ fn a_reminder_in_a_subagent_counts_from_the_subagents_own_size() {
     );
     assert!(
         child.start_answer().delivers_index("reading-list"),
-        "a knowledge memory arrives at the child's start as its index line"
+        "an unpinned memory arrives at the child's start as its index line"
     );
 
     child.at_tokens(CHILD_START);
@@ -450,7 +450,7 @@ fn a_reminder_in_a_subagent_counts_from_the_subagents_own_size() {
         );
         assert!(
             answer.delivers_index("reading-list"),
-            "a stale knowledge memory arrives again as its index line"
+            "a stale unpinned memory arrives again as its index line"
         );
     });
 }

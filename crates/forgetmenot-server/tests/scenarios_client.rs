@@ -67,7 +67,7 @@ const BODY_LINES: usize = 36;
 /// showing an answer and saves it to a file, and past any single pipe buffer.
 const LONG_ANSWER_CHARACTERS: usize = 34_000;
 
-/// One long critical memory's body: a heading and [`BODY_LINES`] lines that name
+/// One long pinned memory's body: a heading and [`BODY_LINES`] lines that name
 /// the memory, so that a line of one body cannot be mistaken for a line of
 /// another and a truncated answer cannot pass by accident.
 fn long_body(name: &str) -> String {
@@ -81,14 +81,14 @@ fn long_body(name: &str) -> String {
     text
 }
 
-/// The example store with [`LONG_MEMORIES`] added, every one of them critical
+/// The example store with [`LONG_MEMORIES`] added, every one of them pinned
 /// and global, so all of them are due at any session's first event.
 fn long_store() -> StoreBuilder {
     let mut store = Store::example();
     for name in LONG_MEMORIES {
         store = store.memory(name, |memory| {
             memory
-                .critical()
+                .pinned()
                 .description("Bench rules recorded for the workshop")
                 .body(&long_body(name));
         });
@@ -212,11 +212,11 @@ fn a_subagents_task_comes_from_its_meta_file() {
 /// Detects an answer cut short between the server and the model: a read of one
 /// pipe buffer, a line-oriented copy, or a write that is not waited for. An
 /// answer this long is the one case where that is possible at all, and it is the
-/// case that matters, because a cut answer loses the critical memories at the
+/// case that matters, because a cut answer loses the pinned memories at the
 /// end of it, silently.
 ///
 /// The store is built so that the start answer is over 34 000 characters, made
-/// of eight critical memories whose lines name themselves. Each body arriving
+/// of eight pinned memories whose lines name themselves. Each body arriving
 /// whole is the check: the expectation comes from the store the test wrote, not
 /// from the answer, so an answer cut anywhere past the first memory fails. The
 /// answer is also past the 10 000 characters at which Claude Code saves an

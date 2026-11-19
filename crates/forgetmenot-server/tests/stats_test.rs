@@ -72,7 +72,7 @@ const TABLE_COLUMNS: [(&str, &[&str]); 7] = [
     (
         "deliveries",
         &[
-            "event_id", "memory", "kind", "form", "reason", "bytes", "scope", "chars",
+            "event_id", "memory", "form", "reason", "bytes", "scope", "chars",
         ],
     ),
     (
@@ -365,12 +365,12 @@ fn each_delivery_is_logged_with_the_form_and_the_reason_it_was_delivered_for() {
     assert_eq!(
         stats.count_deliveries("full", "new"),
         2,
-        "the two critical memories must be logged as shown in full because they were new"
+        "the two pinned memories must be logged as shown in full because they were new"
     );
     assert_eq!(
         stats.count_deliveries("index", "new"),
         3,
-        "the three knowledge memories must be logged as index lines because they were new"
+        "the three unpinned memories must be logged as index lines because they were new"
     );
 }
 

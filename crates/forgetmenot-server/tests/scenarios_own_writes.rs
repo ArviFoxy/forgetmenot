@@ -66,7 +66,7 @@ fn rewrite_bench_power(writer: &Session<'_>) {
     writer
         .mcp()
         .memory_put("bench-power", |memory| {
-            memory.critical();
+            memory.pinned();
             memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
@@ -147,10 +147,10 @@ fn memory_replace_text_by_a_session_is_delivered_to_others_and_not_back() {
 }
 
 /// Detects an own-write record kept only for the writes that touch a body: a
-/// description is what a knowledge memory is delivered as, so changing one is a
+/// description is what an unpinned memory is delivered as, so changing one is a
 /// delivery to every other session and must not be one here.
 ///
-/// `reading-list` is a knowledge memory, so what every session was given is its
+/// `reading-list` is an unpinned memory, so what every session was given is its
 /// index line. The new description makes that line different text, which the
 /// other session is owed and the writer is not.
 #[test]
@@ -181,7 +181,7 @@ fn memory_set_fields_changing_the_description_is_delivered_to_others_and_not_bac
     other.prompt("what next").assert(|answer| {
         assert!(
             answer.delivers_index("reading-list"),
-            "the index line is what a knowledge memory is delivered as, and it changed"
+            "the index line is what an unpinned memory is delivered as, and it changed"
         );
     });
 }
@@ -275,7 +275,7 @@ fn memory_delete_by_a_session_is_retracted_for_others_and_silently_for_the_write
 /// Nothing on a branch is in any context's store, so the other session's event
 /// between the writes and the land carries nothing. The land is one commit
 /// carrying both memories, so both arrive at the other session's next event,
-/// each in the form its kind gets. The session that landed the branch is
+/// each in the form it is delivered in. The session that landed the branch is
 /// recorded as holding everything the land carried, so its own next event is
 /// empty — which is the only place a branch's writes are ever noted for it, since
 /// a write on a branch notes nothing.
@@ -288,7 +288,7 @@ fn a_landed_branch_is_delivered_to_others_and_not_to_the_session_that_landed_it(
     let branch = mcp.branch();
     branch
         .memory_put("bench-power", |memory| {
-            memory.critical();
+            memory.pinned();
             memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
@@ -297,7 +297,7 @@ fn a_landed_branch_is_delivered_to_others_and_not_to_the_session_that_landed_it(
         .expect_ok();
     branch
         .memory_put("reading-list", |memory| {
-            memory.knowledge();
+            memory.unpinned();
             memory.scope("global");
             memory.source("assistant");
             memory.description("The workshop references are in the binder on the bench");
@@ -325,11 +325,11 @@ fn a_landed_branch_is_delivered_to_others_and_not_to_the_session_that_landed_it(
     other.prompt("anything new now").assert(|answer| {
         assert!(
             answer.delivers_full("bench-power"),
-            "the land is one commit, and the critical memory it carried is due in full"
+            "the land is one commit, and the pinned memory it carried is due in full"
         );
         assert!(
             answer.delivers_index("reading-list"),
-            "the knowledge memory it carried is due as its index line"
+            "the unpinned memory it carried is due as its index line"
         );
     });
     writer.prompt("what next").assert(|answer| {
@@ -357,7 +357,7 @@ fn an_abandoned_branch_delivers_nothing_to_anyone() {
     let branch = mcp.branch();
     branch
         .memory_put("bench-power", |memory| {
-            memory.critical();
+            memory.pinned();
             memory.scope("global");
             memory.source("user");
             memory.description("Cut bench power at the wall and confirm the rail with the meter");
@@ -394,7 +394,7 @@ fn an_abandoned_branch_delivers_nothing_to_anyone() {
 /// empty record, so the memory is due to it at its start and arrives in the
 /// version the store now holds. A child created before the write was given the
 /// old version, so it meets the change at its own next event; that event is a
-/// `PreToolUse` and the memory is critical, so the call is stopped and carries
+/// `PreToolUse` and the memory is pinned, so the call is stopped and carries
 /// the new body.
 #[test]
 fn a_write_by_the_session_still_reaches_its_own_subagent() {
@@ -432,7 +432,7 @@ fn a_write_by_the_session_still_reaches_its_own_subagent() {
 ///
 /// The writer is recorded as holding what it wrote, and nothing else. An edit
 /// committed behind the server is nobody's write, so the writer meets it at its
-/// next event like any other context, as the changed index line of a knowledge
+/// next event like any other context, as the changed index line of an unpinned
 /// memory, while the memory it wrote itself stays quiet.
 #[test]
 fn an_edit_outside_the_server_still_reaches_the_writer() {

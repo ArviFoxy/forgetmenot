@@ -3,7 +3,7 @@
 //!
 //! The example store's `widgets` comes on when the user names a widget or a tool
 //! is called on widgets, and it implies `rocketry`. Its rule `widget-naming` is
-//! critical, so whether it is delivered shows whether the scope is on.
+//! pinned, so whether it is delivered shows whether the scope is on.
 
 mod common;
 mod scenario;

@@ -27,7 +27,7 @@ const QUIET: &str = "/home/dev/parts";
 fn store_with_a_workshop_rule() -> StoreBuilder {
     Store::example().memory("workshop-bench", |memory| {
         memory
-            .critical()
+            .pinned()
             .scope("workshop")
             .description("The bench is cleared and wiped before a new job starts")
             .body(
@@ -69,7 +69,7 @@ fn a_manual_compaction_delivers_once_and_keeps_a_scope_turned_on_by_mcp() {
         assert!(
             answer.delivers_index("reading-list")
                 && answer.delivers_index("sessions/alpha/session-1/notes"),
-            "every knowledge memory due arrives again as its index line"
+            "every unpinned memory due arrives again as its index line"
         );
     });
     compaction.post.assert(|answer| {
@@ -95,9 +95,9 @@ fn a_manual_compaction_delivers_once_and_keeps_a_scope_turned_on_by_mcp() {
     );
 }
 
-/// Detects a compaction that leaves the next tool call holding a critical
+/// Detects a compaction that leaves the next tool call holding a pinned
 /// arrival: Claude Code compacts in the middle of a run of tool calls, and the
-/// rebuilt start has just delivered every critical memory due. A call stopped
+/// rebuilt start has just delivered every pinned memory due. A call stopped
 /// straight after would stop the work for a rule the model was given one event
 /// ago, which is the interrupt firing on the compaction rather than on anything
 /// the session did.

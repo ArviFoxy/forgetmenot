@@ -26,7 +26,7 @@ const OPEN_SESSION: &str = "session-1";
 const OTHER_SESSION: &str = "session-2";
 
 /// The memory written on the branch that is open across the restart: global and
-/// critical, so that another session is owed it in full at its next event, and
+/// pinned, so that another session is owed it in full at its next event, and
 /// named after nothing in the example store.
 const BRANCH_MEMORY: &str = "bench-lighting";
 const BRANCH_MEMORY_BODY: &str = "# Light the bench before wiring\n\n\
@@ -39,7 +39,7 @@ const SESSION_TITLE: &str = "Bracket rework, second pass";
 
 /// Detects a delivery record that lives only in memory: after a restart the
 /// session would be given every rule it already holds, at every event, and a
-/// critical memory arriving again would stop its next tool call.
+/// pinned memory arriving again would stop its next tool call.
 ///
 /// The session is delivered `bench-power` at its start and `widget-naming` at
 /// its prompt, and goes on working in `widgets` and the `rocketry` it implies.
@@ -81,7 +81,7 @@ fn a_session_continues_across_a_server_restart_without_re_delivery() {
     session.tool("Bash", bash("cargo build")).assert(|answer| {
         assert!(
             answer.allowed(),
-            "nothing is new, so no critical memory stops the call"
+            "nothing is new, so no pinned memory stops the call"
         );
     });
 }
@@ -156,7 +156,7 @@ fn a_branch_open_before_a_restart_lands_after_it() {
         branch
             .memory_put(BRANCH_MEMORY, |memory| {
                 memory
-                    .critical()
+                    .pinned()
                     .description("The wall switch in the corner lights the bench")
                     .body(BRANCH_MEMORY_BODY);
             })

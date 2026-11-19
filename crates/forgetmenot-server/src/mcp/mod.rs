@@ -49,8 +49,8 @@ use crate::store::branch::BranchName;
 use crate::store::validate::WriteMode;
 use crate::store::{MemoryId, ScopeId};
 use params::{
-    BranchCreateParams, BranchLandParams, BranchParams, MemoryDeleteParams, MemoryGetParams,
-    MemoryIdParams, MemoryIndexParams, MemoryPutParams, MemoryRenameParams,
+    BranchCreateParams, BranchLandParams, BranchParams, LegacyKind, MemoryDeleteParams,
+    MemoryGetParams, MemoryIdParams, MemoryIndexParams, MemoryPutParams, MemoryRenameParams,
     MemoryReplaceTextParams, MemorySetFieldsParams, ScopeActivationGetParams,
     ScopeActivationsParams, ScopeDeleteParams, ScopeGetParams, ScopePutParams,
     SessionInheritParams, SessionParams, SessionScopeOffParams, SessionScopeParams,
@@ -163,8 +163,8 @@ impl ToolServer {
     #[tool(
         description = "Memory management family: the shared store of memories, where every write \
                        is one git commit and takes effect in every session the memory's scope \
-                       covers. This call only reads. Lists each memory's id, description, kind, \
-                       scope and version as JSON, which is what memory_get takes."
+                       covers. This call only reads. Lists each memory's id, description, pinned \
+                       flag, scope and version as JSON, which is what memory_get takes."
     )]
     async fn memory_index(
         &self,
@@ -176,7 +176,7 @@ impl ToolServer {
         };
         let filter = MemoryFilter {
             scope: params.scope.map(ScopeId::new),
-            kind: params.kind.map(Into::into),
+            pinned: params.pinned.or(params.kind.map(LegacyKind::pinned)),
         };
         json_text(&operations::memory_index(&catalog, &filter))
     }
@@ -185,7 +185,7 @@ impl ToolServer {
         description = "Memory management family: the shared store of memories, where every write \
                        is one git commit and takes effect in every session the memory's scope \
                        covers. This call only reads. Returns the whole memory as JSON: body, \
-                       description, kind, scope, version, links and backlinks. With session_key \
+                       description, pinned flag, scope, version, links and backlinks. With session_key \
                        the body counts as delivered to that session, so the next hook event does \
                        not repeat it until it changes."
     )]
@@ -295,7 +295,10 @@ impl ToolServer {
         };
         let request = MemoryWriteRequest {
             description: params.description,
-            kind: params.kind.into(),
+            pinned: params
+                .pinned
+                .or(params.kind.map(LegacyKind::pinned))
+                .unwrap_or(false),
             scope: ScopeId::new(params.scope),
             source: params.source.into(),
             metadata: params.metadata,
@@ -367,7 +370,7 @@ impl ToolServer {
     #[tool(
         description = "Memory management family: replace one exact snippet of one memory's body \
                        in the shared store, as one git commit authored by session_key. Everything \
-                       else about the memory, its description, kind and scope, is left alone. \
+                       else about the memory, its description, pinned flag and scope, is left alone. \
                        old_string is matched literally and must appear exactly once unless \
                        replace_all is set; a snippet that is not there is refused, so read the \
                        body with memory_get and copy from it."
@@ -404,7 +407,7 @@ impl ToolServer {
         description = "Memory management family: set some of one memory's fields in the shared \
                        store, as one git commit authored by session_key. The body is not touched \
                        at all, and a field that is not sent keeps the value it has, so this is \
-                       how a memory changes scope or kind without its text being sent back. A \
+                       how a memory changes scope, or is pinned or unpinned, without its text being sent back. A \
                        memory has one scope, the subject it is about; a memory two subjects need \
                        gets a scope of its own that both of them imply. metadata carries the \
                        other frontmatter keys of the memory's file, Claude Code's own type and \
@@ -421,7 +424,7 @@ impl ToolServer {
         };
         let request = SetFieldsRequest {
             description: params.description,
-            kind: params.kind.map(Into::into),
+            pinned: params.pinned.or(params.kind.map(LegacyKind::pinned)),
             scope: params.scope.map(ScopeId::new),
             source: params.source.map(Into::into),
             metadata: params.metadata,
@@ -787,7 +790,7 @@ impl ToolServer {
 
     #[tool(
         description = "Settings management family: the shared store's behaviour settings, which \
-                       say when a critical memory is repeated, when a tool call is held, what a \
+                       say when a pinned memory is repeated, when a tool call is held, what a \
                        subagent starts with and what is delivered. They are part of the store, so \
                        a change is one git commit and is in force for every session. This call \
                        only reads. Reports every setting with the value in force, the version to \

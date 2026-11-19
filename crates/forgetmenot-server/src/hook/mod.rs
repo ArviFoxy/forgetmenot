@@ -1,6 +1,6 @@
 //! `POST /hook`: the endpoint every Claude Code hook event reaches.
 //!
-//! One event is one pass: take a catalog snapshot, enter the context's critical
+//! One event is one pass: take a catalog snapshot, enter the context's pinned
 //! section, turn on the scopes its triggers fire, work out what the context is
 //! owed, decide whether to stop the tool call, and record what was delivered.
 //! Everything that touches the store happens before the context lock is taken
@@ -29,7 +29,6 @@ use crate::stats::{
     Activations, Decision, ForgottenScope, HookEventRecord, SHRUNK_REASON, TriggerFire,
 };
 use crate::store::catalog::Catalog;
-use crate::store::memory::MemoryKind;
 use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 use crate::store::{MemoryId, ScopeId};
@@ -38,7 +37,7 @@ use events::EventPlan;
 
 /// Why a tool call was stopped. Fixed text: the model has to be able to tell
 /// this apart from a human refusing the call.
-pub const DENY_REASON: &str = "This tool call was not executed. Its input matched a memory trigger and a critical memory is new or changed for this context. This is an automatic keyword match, not a review, approval or denial of the call. Read the memory in the additional context. Issue the call again if it is still what you intend.";
+pub const DENY_REASON: &str = "This tool call was not executed. Its input matched a memory trigger and a pinned memory is new or changed for this context. This is an automatic keyword match, not a review, approval or denial of the call. Read the memory in the additional context. Issue the call again if it is still what you intend.";
 
 /// Answer one hook event.
 pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
@@ -113,7 +112,7 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
 
     let deny = plan.may_deny
         && settings.interrupts(plan.tool_name.as_deref())
-        && outcome.needs.has_critical_arrival(&catalog);
+        && outcome.needs.has_pinned_arrival(&catalog);
     let delivery = Delivery {
         key: &plan.key,
         catalog: &catalog,
@@ -224,9 +223,9 @@ pub async fn previous_texts(
     context: &ContextState,
     catalog: &Catalog,
 ) -> PreviousTexts {
-    let outdated: Vec<(MemoryId, Oid, MemoryKind)> = outdated_versions(context, catalog);
+    let outdated: Vec<(MemoryId, Oid, bool)> = outdated_versions(context, catalog);
     let mut previous = PreviousTexts::new();
-    for (id, version, kind) in outdated {
+    for (id, version, pinned) in outdated {
         let document = match store.memory_at_version(&id, version).await {
             Ok(Some(document)) => document,
             Ok(None) => continue,
@@ -235,9 +234,10 @@ pub async fn previous_texts(
                 continue;
             }
         };
-        // A memory whose kind changed is delivered in another form, so its two
-        // texts are of different things and neither one holds the other's lines.
-        if document.kind() != kind {
+        // A memory that was pinned or unpinned since is delivered in another
+        // form, so its two texts are of different things and neither one holds
+        // the other's lines.
+        if document.pinned() != pinned {
             continue;
         }
         previous.insert(id, document.delivered_text().to_string());
@@ -246,11 +246,8 @@ pub async fn previous_texts(
 }
 
 /// Every memory this context holds at a version the catalog no longer has, with
-/// the version it holds and the kind the catalog gives it now.
-fn outdated_versions(
-    context: &ContextState,
-    catalog: &Catalog,
-) -> Vec<(MemoryId, Oid, MemoryKind)> {
+/// the version it holds and whether the catalog has it pinned now.
+fn outdated_versions(context: &ContextState, catalog: &Catalog) -> Vec<(MemoryId, Oid, bool)> {
     context
         .delivered
         .iter()
@@ -260,7 +257,7 @@ fn outdated_versions(
                 return None;
             }
             let version = Oid::from_str(&shown.version).ok()?;
-            Some((id.clone(), version, current.kind()))
+            Some((id.clone(), version, current.pinned()))
         })
         .collect()
 }
@@ -627,18 +624,16 @@ fn deliveries_of(
         (&needs.shrunk, SHRUNK_REASON),
     ] {
         for id in ids {
-            let kind = catalog
-                .memory(id)
-                .map(|memory| memory.kind())
-                .unwrap_or(MemoryKind::Knowledge);
+            let pinned = catalog.memory(id).is_some_and(|memory| memory.pinned());
             let (scope, chars, bytes) = match printed.get(id) {
                 Some((scope, chars, bytes)) => (scope.to_string(), *chars, *bytes),
                 None => (String::new(), 0, 0),
             };
             deliveries.push(crate::stats::Delivery {
                 memory: id.to_string(),
-                kind: kind_name(kind).to_string(),
-                form: crate::context::Form::for_kind(kind).as_str().to_string(),
+                form: crate::context::Form::for_pinned(pinned)
+                    .as_str()
+                    .to_string(),
                 reason: reason.to_string(),
                 scope,
                 chars,
@@ -647,13 +642,8 @@ fn deliveries_of(
         }
     }
     for (id, why) in &needs.retracted {
-        let kind = catalog
-            .memory(id)
-            .map(|memory| memory.kind())
-            .unwrap_or(MemoryKind::Knowledge);
         deliveries.push(crate::stats::Delivery {
             memory: id.to_string(),
-            kind: kind_name(kind).to_string(),
             // A withdrawal carries no content, so it has no form, no section and
             // no size.
             form: "none".to_string(),
@@ -664,13 +654,6 @@ fn deliveries_of(
         });
     }
     deliveries
-}
-
-fn kind_name(kind: MemoryKind) -> &'static str {
-    match kind {
-        MemoryKind::Critical => "critical",
-        MemoryKind::Knowledge => "knowledge",
-    }
 }
 
 #[cfg(test)]
@@ -701,7 +684,7 @@ mod tests {
     /// fire, which is the only way a test here activates a scope.
     const RAIL: &str = "the rail";
 
-    /// A store with one critical memory in `global`, one scope that a passing
+    /// A store with one pinned memory in `global`, one scope that a passing
     /// remark turns on and that turns itself off [`THRESHOLD`] tokens after its
     /// last activation, and reminders at the same threshold.
     fn store_files() -> Vec<(String, Option<Vec<u8>>)> {
@@ -716,7 +699,7 @@ mod tests {
             ),
             memory_file(
                 "bench-power",
-                "critical",
+                true,
                 "global",
                 "Cut bench power at the wall",
                 "# Cut bench power before rewiring\n\nSwitch the supply off at the wall.\n",

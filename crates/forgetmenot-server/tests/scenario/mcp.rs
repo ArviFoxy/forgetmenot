@@ -247,7 +247,7 @@ impl<'s, 'w> Mcp<'s, 'w> {
         let mut params = json!({
             "id": id,
             "description": memory.description_text(),
-            "kind": kind_name(&memory),
+            "pinned": memory.is_pinned(),
             "scope": memory.scope_id().as_str(),
             "source": memory.source_text(),
             "body": memory.body_text(),
@@ -460,14 +460,4 @@ fn as_object(value: Value) -> Map<String, Value> {
 
 fn ids<Id: AsRef<str>>(values: impl IntoIterator<Item = Id>) -> Value {
     Value::Array(values.into_iter().map(|id| json!(id.as_ref())).collect())
-}
-
-/// The name the tools take for a memory's kind, which is how the kind is
-/// written in a memory's file.
-fn kind_name(memory: &MemoryBuilder) -> String {
-    serde_json::to_value(memory.kind())
-        .expect("a memory kind serialises")
-        .as_str()
-        .expect("a memory kind is a string")
-        .to_string()
 }

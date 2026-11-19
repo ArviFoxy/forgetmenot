@@ -167,7 +167,7 @@ fn issue_11_a_write_is_not_delivered_back_to_its_writer() {
         .mcp()
         .memory_put("bench-power", |memory| {
             memory
-                .critical()
+                .pinned()
                 .scope("global")
                 .description(
                     "Cut bench power at the wall before rewiring and confirm with the meter",
@@ -262,7 +262,7 @@ fn issue_14_a_memory_that_only_shrank_is_not_delivered_again() {
 fn store_with_three_rules() -> StoreBuilder {
     Store::example().memory("bench-power", |memory| {
         memory
-            .critical()
+            .pinned()
             .scope("global")
             .description("Cut bench power at the wall before rewiring and confirm with the meter")
             .body(THREE_RULES);

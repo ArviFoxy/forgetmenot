@@ -21,7 +21,7 @@ pub struct EventPlan {
     pub event_name: &'static str,
     /// The texts to match triggers against, in the order they are matched.
     pub texts: Vec<(TriggerField, String)>,
-    /// Whether a critical arrival may stop the call, which only `PreToolUse`
+    /// Whether a pinned arrival may stop the call, which only `PreToolUse`
     /// can do. Whether it does is the store's to say: see
     /// [`Settings::interrupts`].
     pub may_deny: bool,
@@ -207,7 +207,7 @@ pub fn plan(
 /// which shows the model a preview and the path; the notice at the top of such
 /// an answer tells the model to read that file, so the whole answer comes back
 /// as the result of a `Read` — every scope id of the available list and the
-/// text of every critical memory delivered. Matched against the tool-result
+/// text of every pinned memory delivered. Matched against the tool-result
 /// triggers, that one result activates every scope the answer names, which is
 /// the store's own traffic and not the session's work.
 ///
@@ -512,7 +512,7 @@ mod tests {
 
     /// Detects the server's own answer, read back out of the file Claude Code
     /// saved it to, being matched against the tool-result triggers: the answer
-    /// lists every scope on offer and prints every critical memory delivered,
+    /// lists every scope on offer and prints every pinned memory delivered,
     /// so one such result activates every scope the store has at once. Detects
     /// too a check that fires on any mention of this server, which would silence
     /// the work's own results whenever a log line said `forgetmenot`.
@@ -523,7 +523,7 @@ mod tests {
     fn the_answer_read_back_through_a_tool_contributes_no_text_while_other_results_still_do() {
         let answer = "     1\t[forgetmenot] READ THE FILE FIRST. This hook answer is long.\n     \
                       2\t\n     3\t[forgetmenot] context alpha/session-1\n     4\t== scope: \
-                      rocketry ==\n     5\t-- critical: rocket-stages --\n";
+                      rocketry ==\n     5\t-- rocket-stages --\n";
         let read_back =
             plan_of(&tool_result("Read", answer), "alpha").expect("PostToolUse is known");
         assert!(

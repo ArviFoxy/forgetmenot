@@ -2,7 +2,7 @@
 name: widget-naming
 description: A widget part number is never reused or renumbered once it has shipped
 metadata:
-  kind: critical
+  pinned: true
   scope: widgets
   source: user
   created: 2026-01-05T11:30:00Z
