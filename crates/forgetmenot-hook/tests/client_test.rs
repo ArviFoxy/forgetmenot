@@ -1466,3 +1466,69 @@ fn client_sends_the_opening_of_a_first_prompt_larger_than_one_read() {
         "the prompt must be the first 200 characters of the line, however long the line is"
     );
 }
+
+// Detects the Antigravity example drifting from the code: a hook that does not
+// name the harness is read as Claude Code's and every event is refused, and an
+// event listed there that the server does nothing at costs a process per model
+// call or tool call for no effect. Read by event name rather than by position,
+// because the two tool events nest their handlers under a matcher.
+#[test]
+fn the_antigravity_example_runs_the_client_for_antigravity_on_the_events_it_acts_on() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/antigravity/hooks.json");
+    let text = std::fs::read_to_string(&path).expect("the example exists");
+    let example: serde_json::Value = serde_json::from_str(&text).expect("the example is JSON");
+    let hook = example["forgetmenot"]
+        .as_object()
+        .expect("one hook named forgetmenot");
+
+    let mut events: Vec<&str> = hook.keys().map(String::as_str).collect();
+    events.sort_unstable();
+    assert_eq!(
+        events,
+        ["PreInvocation", "PreToolUse", "SessionStart", "Stop"]
+    );
+
+    for (event, entries) in hook {
+        let entry = &entries[0];
+        // A tool event holds its handlers in a matcher group.
+        let handler = match entry.get("hooks") {
+            Some(handlers) => &handlers[0],
+            None => entry,
+        };
+        let command = handler["command"].as_str().expect("a command");
+        let arguments: Vec<String> = command
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect();
+        let parsed = forgetmenot_hook::parse_arguments(&arguments)
+            .unwrap_or_else(|problem| panic!("{event}: {problem}"));
+        assert_eq!(
+            parsed.harness,
+            forgetmenot_types::hook::Harness::Antigravity,
+            "{event}"
+        );
+    }
+}
+
+// Detects a harness name the client accepts and the server would not know, and
+// a hook configured before the flag existed changing what it does: it must
+// keep running as Claude Code's.
+#[test]
+fn the_harness_flag_names_one_of_the_two_and_defaults_to_claude_code() {
+    let arguments = |extra: &[&str]| -> Vec<String> {
+        ["--server", "http://memory.example", "--machine", "alpha"]
+            .iter()
+            .chain(extra)
+            .map(|argument| argument.to_string())
+            .collect()
+    };
+
+    let default = forgetmenot_hook::parse_arguments(&arguments(&[])).expect("parses");
+    assert_eq!(
+        default.harness,
+        forgetmenot_types::hook::Harness::ClaudeCode
+    );
+
+    assert!(forgetmenot_hook::parse_arguments(&arguments(&["--harness", "some-other"])).is_err());
+}

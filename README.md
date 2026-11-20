@@ -2,7 +2,7 @@
 
 Trigger-based, scoped LLM memory.
 
-forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code today.
+forgetmenot is a memory server for LLM coding agents, for people who work on many projects across several machines. It works with Claude Code and with Antigravity, Google's command-line agent.
 
 - **Scopes.** Every memory belongs to one scope, such as a project/topic, the global scope (always active), or a scope bound to a specific machine or conversation session. The agent is shown only the memories in currently active scopes to reduce context bloat.
 - **Triggers.** Regular expressions matched against messages and tool calls activate scopes automatically, so the agent does not have to remember to. The agent can also turn scopes on and off itself.
@@ -21,7 +21,7 @@ One server serves every machine on a network, and a subagent receives the same m
 | Component | What it is |
 |---|---|
 | `forgetmenot` | The server: hook endpoint, MCP server, JSON API, static frontend |
-| `forgetmenot-hook` | A small client that Claude Code runs on each hook event; it forwards the event to the server and prints the answer |
+| `forgetmenot-hook` | A small client that Claude Code or Antigravity runs on each hook event; it forwards the event to the server and prints the answer |
 | `web/` | The frontend: browse and edit memories and scopes, watch live contexts and statistics, read the text a context would be given next |
 | store | A git repository of scope and memory files, the source of truth |
 
@@ -33,11 +33,38 @@ One server serves every machine on a network, and a subagent receives the same m
 
 **Trigger.** A condition that automatically activates a scope. Today a trigger is a regular expression, optionally limited to one machine. By default it is matched against everything that flows through a session: the user's messages, the agent's replies, the tool calls it makes and their results, and its directories; a trigger that names one of those with `on` is matched against that text alone. When a trigger matches, its scope becomes active for the rest of the session and the scope's memories are delivered. The inputs and results of the store's own MCP tools, and of any tool named in `trigger_exempt_tools`, are not matched, because they carry the memory system's own scope ids, memory ids and bodies rather than anything about the work. Triggers only turn scopes on; the agent can turn a scope off with a tool call, and a scope with a `forget` rule turns itself off once the declared number of context tokens has passed since its last match.
 
-**Session and context.** A session is one Claude Code conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A session start begins that record afresh and keeps the scopes the session is working in; a session id seen for the first time starts with the three implicit scopes. A subagent starts with the scopes its parent had active, its parent being the context that spawned it: the session, or the subagent that spawned it, which the client reads from the subagent's metadata file and sends beside the event. A subagent's reminders and forgetting count from its own context size, starting at its first own event: the size the event that opens it reports is the parent's, read from the parent's transcript.
+**Session and context.** A session is one Claude Code or Antigravity conversation. A context is either the session itself or one subagent inside it; each context keeps its own record of what it has been shown. A session start begins that record afresh and keeps the scopes the session is working in; a session id seen for the first time starts with the three implicit scopes. A subagent starts with the scopes its parent had active, its parent being the context that spawned it: the session, or the subagent that spawned it, which the client reads from the subagent's metadata file and sends beside the event. A subagent's reminders and forgetting count from its own context size, starting at its first own event: the size the event that opens it reports is the parent's, read from the parent's transcript.
 
 **Delivery.** At every hook event the server compares what is due, the memories of the active scopes, with what the context has already seen, and sends the difference: memories never shown, memories changed since they were shown, memories shown more than a configurable number of context tokens ago, and notices for memories that were deleted or whose scope was turned off. A new version whose delivered text is the old one with lines removed and nothing added is not sent again: the context has already been given every line of it, so the new version is recorded as seen and the statistics record the skip as its own outcome. The same holds for a new version of a pinned memory whose text did not change. If a tool call is about to run while a pinned memory is due that the context has not seen, the call is held, the memory is delivered, and the agent reissues the call. After a compaction or a resume, everything due arrives once, at that session start. The answer is built one section per scope, each holding that scope's pinned memories in full and then its index lines, and a memory is printed in the section of the one scope it belongs to; the length of each section and of each memory inside it is recorded as the answer is sent, so what a scope or a memory costs is the text the model was given for it and never a figure derived afterwards.
 
 **Branch.** Several changes to the store can be made on a git branch and landed as one commit. Nothing on a branch is delivered until it lands. See [Branches](#branches).
+
+## Harnesses
+
+A harness is the program that runs the model, calls its tools and runs the hooks. forgetmenot supports two, and each is read in its own terms: the server has one module per harness that reads that harness's events and writes that harness's answers, and nothing of one is expressed in the other's format. The client is told which one runs it with `--harness claude-code` (the default) or `--harness antigravity`.
+
+The two differ in what their events say and in where text can reach the model:
+
+| | Claude Code | Antigravity |
+|---|---|---|
+| A session begins | `SessionStart` | `SessionStart` |
+| The user sends a prompt | `UserPromptSubmit` | `PreInvocation` numbered 0. `PreInvocation` fires before every model call and numbers the calls of a turn from 0; there is no event for a prompt |
+| A tool is about to run | `PreToolUse` | `PreToolUse` |
+| A tool returned | `PostToolUse`, with the result | no event carries the result |
+| A turn ends | `Stop`, with the model's last message | `Stop`; the client reads the last message from the transcript |
+| The directory changes | `CwdChanged` | no event; every event names the conversation's workspace directories, and each is matched |
+| A subagent starts | `SubagentStart`, a context of its own | no event; a conversation is one context |
+| Text reaches the model | in the answer to every event | in the answer to `SessionStart` and `PreInvocation`, as a system message |
+| A call held for a pinned memory | is denied, with the memory in the same answer | is denied with a reason, and the memory arrives at the model call that follows |
+| The client cannot reach the server | prints nothing and exits 1, which Claude Code treats as a hook that said nothing | prints the answer that lets the event run its course, because Antigravity requires a decision for every tool call |
+
+What an Antigravity tool call or the end of a turn makes due is therefore not sent at that event. It stays owed, and the next model call carries it, which follows a tool call at once.
+
+Tools go by each harness's own names: `Bash` and `Read` in Claude Code, `run_command` and `read_file` in Antigravity, where every call of an MCP tool arrives as `call_mcp_tool`. The settings that name tools, `interrupt_exempt_tools` and `trigger_exempt_tools`, match those names exactly, so a store used from both harnesses lists a tool under each name. A trigger on `tool_input` matches the strings of the call's arguments whatever the tool is called.
+
+`answer_file_threshold` and the notice it sends concern Claude Code alone, which is the harness that saves a long answer to a file.
+
+A frontend may wrap the user's prompt before Antigravity sees it. T3 Code puts its own instructions in front of the first prompt of a thread and the user's text in `<user_request>` tags; the triggers are matched against that text alone.
 
 ## Store layout
 
@@ -110,7 +137,7 @@ An unknown key, or a value of the wrong type, is a validation error: `forgetmeno
 
 ## Interfaces
 
-- `POST /hook`: the hook endpoint, called by `forgetmenot-hook` on every Claude Code hook event.
+- `POST /hook`: the hook endpoint, called by `forgetmenot-hook` on every hook event of either harness.
 
 Claude Code does not show the model a long hook answer. Past 10 000 characters (Claude Code 2.1.270; the length in UTF-16 code units) it writes the answer to a file under the session's `tool-results` directory and shows the model the file's path and the first 2000 characters, cut back to the last newline when that lies past the first 1000. An answer longer than `answer_file_threshold` therefore opens with a short notice telling the model to read the file in full before doing anything else; the notice sits inside the part of the preview that is never cut. The notice is a workaround: the server still records every memory in such an answer as delivered, and the fix, an answer budget with the rest carried to the next event, is [issue 19](https://github.com/ArviFoxy/forgetmenot/issues/19).
 - `/mcp`: MCP over streamable HTTP, for the agent.
@@ -121,7 +148,7 @@ Claude Code does not show the model a long hook answer. Past 10 000 characters (
 - `GET /api/stats/*`: what the log holds. `summary` reports delivered tokens, events, held calls and forgettings over the last five minutes, hour, day and week, with the contexts live now. `series?bucket=auto|minute|hour|day` reports delivered tokens per bucket, `auto` choosing the coarsest bucket that gives a readable number of points. `session/<key>/series` reports, per hook event of one context, the context size Claude Code measured and the tokens that event's answer carried. `memories`, `scopes`, `sessions` and `triggers` report per memory, scope, session and trigger pattern, `sessions` giving one row per main context. Every one of them takes `from` and `to` as RFC 3339 times and, where it applies, `session=<key>`, `scope=<id>` and `include_subagents=true|false`, which decides whether a session's subagents count towards it and is on by default; an unreadable time, bucket or flag is a 400 and a context the log has no event of is a 404. Every token figure is `chars / characters_per_token` rounded up, computed here so the frontend converts nothing.
 - `/`: the frontend, served from `web/dist`.
 
-Claude Code templates for the hooks block and the MCP registration are in `examples/claude-code/`. An example store is in `examples/store/`.
+Claude Code templates for the hooks block and the MCP registration are in `examples/claude-code/`, and Antigravity's two files are in `examples/antigravity/`. An example store is in `examples/store/`.
 
 ### MCP tools
 
@@ -210,6 +237,8 @@ The scope activation log is on by default. It stores, in the statistics database
 
 On each machine that runs Claude Code, put `forgetmenot-hook` on `PATH`, add the hooks block from `examples/claude-code/settings-hooks.json` to Claude Code's settings with the server address and a machine name filled in, and register the MCP server with `claude mcp add --transport http forgetmenot http://SERVER/mcp`.
 
+On each machine that runs Antigravity, put the same `forgetmenot-hook` on `PATH` and install the two files of `examples/antigravity/` with the server address and a machine name filled in. One machine can run both harnesses against one server; the machine name is the same for both.
+
 ## State the server holds
 
 *Persistence* says where the state lives and when it is written. *Durability* says what an unexpected stop, a crash or a power loss, can cost; a normal restart loses nothing in any row.
@@ -238,6 +267,7 @@ Paths below without a crate are under `crates/forgetmenot-server/`.
 | Interface contracts | One test per route and per tool: status codes, JSON shapes, parameter parsing, the tool list, the error texts the model reads | `tests/api_test.rs`, `tests/mcp_test.rs`, `tests/hook_test.rs` |
 | Hook client | Argument parsing, transcript and subagent-metadata reading, forwarding the answer unchanged, failure modes | `crates/forgetmenot-hook/tests` |
 | Scenarios | What emerges only when Claude Code drives the server over time: event order and harness semantics, cross-context effects, persistence across a restart, what the model was shown | `tests/scenario/`, `tests/scenarios_*.rs` |
+| Antigravity sessions | What emerges only when Antigravity's events follow each other: a memory that a tool call or the end of a turn makes due waiting for the next model call, and the client run the way Antigravity runs it | `tests/antigravity_test.rs` |
 | Limits | The runtime limits below | `tests/limits_test.rs` |
 | Frontend units | Model logic (the tree, the tag field, addresses, settings, the memory draft, units) and the rendering decisions that are not model logic | `web/tests` |
 | Frontend flows | The page and the server acting together: a write that has to land in the store, a refusal that names what refers to the item | `web/e2e/edit-flow.spec.ts` |

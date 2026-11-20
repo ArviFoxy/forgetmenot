@@ -26,6 +26,21 @@ const INITIAL_WINDOW_BYTES: u64 = 256 * 1024;
 /// unreadable file, a transcript with no assistant line, and a transcript
 /// whose assistant lines carry no usage record all give `None`.
 pub fn last_assistant_context_tokens(path: impl AsRef<Path>) -> Option<u64> {
+    last_line_with(path, assistant_context_tokens_in_line)
+}
+
+/// What `read` makes of the last line of the file at `path` that it makes
+/// anything of, or `None` if there is no such line.
+///
+/// The file is read backwards in windows, the first of
+/// [`INITIAL_WINDOW_BYTES`] and each next one twice the size, until a line
+/// answers or the whole file has been covered. A line `read` gives `None` for
+/// is skipped, which is also what skips the partial line a writer may have left
+/// at the end of the file.
+pub(crate) fn last_line_with<T>(
+    path: impl AsRef<Path>,
+    read: impl Fn(&[u8]) -> Option<T>,
+) -> Option<T> {
     let mut file = File::open(path.as_ref()).ok()?;
     let file_length = file.metadata().ok()?.len();
 
@@ -47,25 +62,19 @@ pub fn last_assistant_context_tokens(path: impl AsRef<Path>) -> Option<u64> {
             }
         };
 
-        if let Some(tokens) = last_assistant_context_tokens_in(complete) {
-            return Some(tokens);
+        if let Some(found) = complete
+            .split(|byte| *byte == b'\n')
+            .rev()
+            .filter_map(&read)
+            .next()
+        {
+            return Some(found);
         }
         if start == 0 {
             return None;
         }
         window = window.saturating_mul(2);
     }
-}
-
-/// The same sum, over a byte range that contains whole lines. A line that is
-/// not valid JSON is ignored, which is also what skips the partial line a
-/// writer may have left at the end of the file.
-fn last_assistant_context_tokens_in(lines: &[u8]) -> Option<u64> {
-    lines
-        .split(|byte| *byte == b'\n')
-        .rev()
-        .filter_map(assistant_context_tokens_in_line)
-        .next()
 }
 
 /// The sum for one transcript line, or `None` if the line is not an assistant

@@ -22,7 +22,7 @@ use crate::store::{MemoryId, ScopeId, ScopeKind};
 /// The line every answer opens with, before the context key: the one mark that
 /// says a text is this server's own answer.
 ///
-/// The renderer prints it and [`crate::hook::events::carries_own_answer`] looks
+/// The renderer prints it and [`crate::hook::plan::carries_own_answer`] looks
 /// for it, so a change here changes both at once.
 pub const ANSWER_MARKER: &str = "[forgetmenot] context ";
 

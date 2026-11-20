@@ -1,0 +1,8 @@
+{
+  "forgetmenot": {
+    "SessionStart": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE --harness antigravity", "timeout": 10 }],
+    "PreInvocation": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE --harness antigravity", "timeout": 10 }],
+    "PreToolUse": [{ "matcher": "", "hooks": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE --harness antigravity", "timeout": 10 }] }],
+    "Stop": [{ "type": "command", "command": "forgetmenot-hook --server SERVER_URL --machine MACHINE --harness antigravity", "timeout": 10 }]
+  }
+}

@@ -7,7 +7,7 @@
 //! exemption, turn scopes on from the question and from the answer to it — and
 //! would undo with the answer what the call itself had just done. None of that
 //! is visible in one event: it takes the call and the event after it. That the
-//! exemption keeps a tool's texts out of `EventPlan::texts` is `hook::events`'s
+//! exemption keeps a tool's texts out of `EventPlan::texts` is `hook::claude_code`'s
 //! own unit test; what these assert is where the session ends up.
 
 mod common;

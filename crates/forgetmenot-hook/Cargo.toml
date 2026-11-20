@@ -1,6 +1,6 @@
 [package]
 name = "forgetmenot-hook"
-description = "Claude Code hook client for forgetmenot: forwards hook events to the server"
+description = "Hook client for forgetmenot: forwards Claude Code and Antigravity hook events to the server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

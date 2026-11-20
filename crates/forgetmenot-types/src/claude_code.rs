@@ -1,0 +1,553 @@
+//! Claude Code's hook events and the answers it reads.
+//!
+//! Claude Code runs a hook handler as a child process, writes one JSON object
+//! for the event to its stdin and reads one JSON object from its stdout. Two
+//! shapes live here:
+//!
+//! * [`ClaudeCodeEvent`] is the object Claude Code writes to stdin.
+//! * [`ClaudeCodeResponse`] is the object the handler writes to stdout.
+
+use serde::{Deserialize, Serialize};
+
+/// The fields every Claude Code hook event carries, whatever the event is.
+///
+/// `session_id` is present in all events. The rest are absent in some events
+/// and some Claude Code versions, so they are optional; a missing field is not
+/// an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeCodeCommon {
+    /// Identifier of the Claude Code session, stable for its whole life.
+    pub session_id: String,
+    /// Path of the session's transcript JSONL file.
+    pub transcript_path: Option<String>,
+    /// Working directory of the session at the time of the event.
+    pub cwd: Option<String>,
+    /// Present when the event comes from inside a subagent, absent in the main
+    /// session; this is what separates a subagent's context from its parent's.
+    pub agent_id: Option<String>,
+    /// Permission mode in force, for example `default` or `acceptEdits`.
+    pub permission_mode: Option<String>,
+}
+
+/// A Claude Code hook event, as written to a hook handler's stdin.
+///
+/// The enum is tagged by the event's own `hook_event_name` field. Fields
+/// Claude Code sends but this crate does not name are ignored, and an event
+/// name this crate does not know deserializes to [`ClaudeCodeEvent::Unknown`]
+/// instead of failing, so a new Claude Code event cannot break the client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "hook_event_name")]
+pub enum ClaudeCodeEvent {
+    /// A session started: `startup`, `resume`, `clear`, `compact` or `fork`,
+    /// reported in `source`.
+    #[serde(rename = "SessionStart")]
+    SessionStart {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// What started the session.
+        source: String,
+    },
+    /// The user submitted a prompt, before the model sees it.
+    #[serde(rename = "UserPromptSubmit")]
+    UserPromptSubmit {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// The submitted text.
+        prompt: String,
+    },
+    /// The model asked to run a tool and the call has not run yet. This is the
+    /// only event whose response may deny the call.
+    #[serde(rename = "PreToolUse")]
+    PreToolUse {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// Name of the tool, for example `Bash`.
+        tool_name: String,
+        /// The tool's arguments, shape defined by the tool.
+        tool_input: serde_json::Value,
+        /// Identifier shared with the matching `PostToolUse` event.
+        tool_use_id: Option<String>,
+    },
+    /// A tool call finished.
+    #[serde(rename = "PostToolUse")]
+    PostToolUse {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// Name of the tool that ran.
+        tool_name: String,
+        /// The arguments it ran with.
+        tool_input: serde_json::Value,
+        /// What the tool returned, shape defined by the tool. Claude Code
+        /// 2.1.257 names this field `tool_response` on the wire.
+        #[serde(alias = "tool_response")]
+        tool_output: serde_json::Value,
+    },
+    /// The assistant finished its turn.
+    #[serde(rename = "Stop")]
+    Stop {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// Text of the last assistant message of the turn.
+        last_assistant_message: Option<String>,
+    },
+    /// The session's working directory changed.
+    #[serde(rename = "CwdChanged")]
+    CwdChanged {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// The directory now in force.
+        cwd: String,
+        /// The directory left behind. Claude Code 2.1.257 names this field
+        /// `old_cwd` on the wire.
+        #[serde(alias = "old_cwd")]
+        previous_cwd: Option<String>,
+    },
+    /// A compaction finished. The rebuilt context holds none of what was
+    /// delivered before it, and Claude Code accepts no context in the answer
+    /// to this event: the conversation it rebuilds is the one a `SessionStart`
+    /// with source `compact` reports.
+    #[serde(rename = "PostCompact")]
+    PostCompact {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// What triggered the compaction, for example `manual` or `auto`.
+        trigger: Option<String>,
+    },
+    /// A subagent started. Its `agent_id` identifies the child context; the
+    /// event arrives on the parent session's `session_id`.
+    ///
+    /// The event says what kind of subagent started and nothing about what it
+    /// was asked to do: Claude Code 2.1.270 sends `agent_id` and `agent_type`
+    /// beside the common fields and no task at all, so the task reaches the
+    /// server through [`crate::hook::HookRequest::task`] instead.
+    #[serde(rename = "SubagentStart")]
+    SubagentStart {
+        #[serde(flatten)]
+        common: ClaudeCodeCommon,
+        /// Identifier of the new subagent context.
+        agent_id: String,
+        /// The subagent's type, for example `Explore`.
+        agent_type: Option<String>,
+    },
+    /// Any `hook_event_name` this crate does not know. The name itself is not
+    /// kept, which is why [`ClaudeCodeEvent::common`] has nothing to return for it.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ClaudeCodeEvent {
+    /// The Claude Code event name this event was tagged with, which is also
+    /// what belongs in a [`ClaudeCodeResponse`]'s `hookEventName`.
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            ClaudeCodeEvent::SessionStart { .. } => "SessionStart",
+            ClaudeCodeEvent::UserPromptSubmit { .. } => "UserPromptSubmit",
+            ClaudeCodeEvent::PreToolUse { .. } => "PreToolUse",
+            ClaudeCodeEvent::PostToolUse { .. } => "PostToolUse",
+            ClaudeCodeEvent::Stop { .. } => "Stop",
+            ClaudeCodeEvent::CwdChanged { .. } => "CwdChanged",
+            ClaudeCodeEvent::PostCompact { .. } => "PostCompact",
+            ClaudeCodeEvent::SubagentStart { .. } => "SubagentStart",
+            ClaudeCodeEvent::Unknown => "Unknown",
+        }
+    }
+
+    /// The fields shared by all known events, or `None` for an event name this
+    /// crate does not know.
+    pub fn common(&self) -> Option<&ClaudeCodeCommon> {
+        match self {
+            ClaudeCodeEvent::SessionStart { common, .. }
+            | ClaudeCodeEvent::UserPromptSubmit { common, .. }
+            | ClaudeCodeEvent::PreToolUse { common, .. }
+            | ClaudeCodeEvent::PostToolUse { common, .. }
+            | ClaudeCodeEvent::Stop { common, .. }
+            | ClaudeCodeEvent::CwdChanged { common, .. }
+            | ClaudeCodeEvent::PostCompact { common, .. }
+            | ClaudeCodeEvent::SubagentStart { common, .. } => Some(common),
+            ClaudeCodeEvent::Unknown => None,
+        }
+    }
+}
+
+/// What a hook handler writes to stdout for Claude Code to act on.
+///
+/// Claude Code reads `hookSpecificOutput` and ignores keys it does not know,
+/// so the camelCase spelling below is the whole contract: a misspelled key is
+/// silently dropped rather than reported.
+///
+/// Every top-level key is optional, so `{}` is a valid answer for every event
+/// and means "seen, nothing to do". It is the only valid answer for an event
+/// Claude Code accepts no `hookSpecificOutput` for: a `PostCompact` answered
+/// with `{"hookSpecificOutput": {"hookEventName": "PostCompact"}}` was rejected
+/// by Claude Code 2.1.x with `Hook JSON output validation failed —
+/// hookSpecificOutput.hookEventName: expected one of "PreToolUse" |
+/// "UserPromptSubmit" | …`, observed 2026-09-13. The full list of accepted
+/// names is not published, so `hookSpecificOutput` is sent only when there is
+/// something in it to send.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeCodeResponse {
+    /// The single field Claude Code reads, absent when nothing is asked of it.
+    #[serde(
+        rename = "hookSpecificOutput",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hook_specific_output: Option<ClaudeCodeSpecificOutput>,
+}
+
+/// The payload of a [`ClaudeCodeResponse`].
+///
+/// `additional_context` is injected into the session's context by Claude Code.
+/// `permission_decision` and its reason are read for `PreToolUse` only; a
+/// decision of `deny` stops the tool call and shows the reason to the model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeCodeSpecificOutput {
+    /// Name of the event being answered; Claude Code requires it to match.
+    pub hook_event_name: String,
+    /// Text to inject into the session's context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub additional_context: Option<String>,
+    /// `allow`, `deny` or `ask`, for `PreToolUse` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_decision: Option<String>,
+    /// Why the call was denied, shown to the model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_decision_reason: Option<String>,
+}
+
+impl ClaudeCodeResponse {
+    /// A response that asks Claude Code for nothing: the event was seen and
+    /// nothing is due. It carries no event name, because an answer with nothing
+    /// in it has no reason to name the event and Claude Code refuses the names
+    /// it takes no payload for.
+    pub fn empty() -> Self {
+        ClaudeCodeResponse {
+            hook_specific_output: None,
+        }
+    }
+
+    /// A response that injects `text` into the session's context.
+    pub fn with_context(event_name: impl Into<String>, text: impl Into<String>) -> Self {
+        ClaudeCodeResponse {
+            hook_specific_output: Some(ClaudeCodeSpecificOutput {
+                hook_event_name: event_name.into(),
+                additional_context: Some(text.into()),
+                permission_decision: None,
+                permission_decision_reason: None,
+            }),
+        }
+    }
+
+    /// A response that stops a `PreToolUse` call, tells the model why, and
+    /// injects `context` so the model can act on it before retrying.
+    pub fn deny(
+        event_name: impl Into<String>,
+        reason: impl Into<String>,
+        context: impl Into<String>,
+    ) -> Self {
+        ClaudeCodeResponse {
+            hook_specific_output: Some(ClaudeCodeSpecificOutput {
+                hook_event_name: event_name.into(),
+                additional_context: Some(context.into()),
+                permission_decision: Some("deny".to_string()),
+                permission_decision_reason: Some(reason.into()),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Detects a renamed or retyped field in PreToolUse, and a loss of
+    // tolerance for fields Claude Code sends that this crate does not model:
+    // either one makes every real PreToolUse event fail to parse.
+    // Expectation source: the Claude Code hook documentation shape, as in the
+    // plan's hook contract.
+    #[test]
+    fn pre_tool_use_event_parses_with_unmodelled_fields_and_keeps_tool_input() {
+        let payload = json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "transcript_path": "/tmp/forgetmenot-test/session-1.jsonl",
+            "cwd": "/tmp/forgetmenot-test/work",
+            "permission_mode": "default",
+            "prompt_id": "prompt-7",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+            "tool_input": { "command": "ls -l", "timeout": 120 }
+        });
+
+        let event: ClaudeCodeEvent =
+            serde_json::from_value(payload).expect("PreToolUse must parse");
+
+        let ClaudeCodeEvent::PreToolUse {
+            common,
+            tool_name,
+            tool_input,
+            tool_use_id,
+        } = event
+        else {
+            panic!("a PreToolUse payload must parse as the PreToolUse variant");
+        };
+        assert_eq!(tool_name, "Bash", "tool_name must come from the payload");
+        assert_eq!(
+            tool_use_id.as_deref(),
+            Some("toolu_1"),
+            "tool_use_id must come from the payload"
+        );
+        assert_eq!(
+            tool_input,
+            json!({ "command": "ls -l", "timeout": 120 }),
+            "tool_input must be preserved as the JSON the tool was called with"
+        );
+        assert_eq!(
+            common.session_id, "session-1",
+            "the flattened common fields must come from the same object"
+        );
+        assert_eq!(
+            common.permission_mode.as_deref(),
+            Some("default"),
+            "permission_mode must reach the server"
+        );
+    }
+
+    // Detects the client or server rejecting an event name added by a newer
+    // Claude Code: every hook call would then fail instead of being ignored.
+    #[test]
+    fn unrecognised_event_name_parses_as_unknown_instead_of_failing() {
+        let payload = json!({
+            "hook_event_name": "SomeEventAddedLater",
+            "session_id": "session-1",
+            "whatever": 3
+        });
+
+        let event: ClaudeCodeEvent =
+            serde_json::from_value(payload).expect("an unknown event name must not be an error");
+
+        assert_eq!(
+            event,
+            ClaudeCodeEvent::Unknown,
+            "an unmodelled event name must fall back to Unknown"
+        );
+        assert!(
+            event.common().is_none(),
+            "Unknown carries no common fields, so common() must say so"
+        );
+    }
+
+    // Detects a serde rename regression in the response: Claude Code ignores
+    // keys it does not know, so a snake_case key or a null-valued key would
+    // make a deny silently do nothing.
+    // Expectation source: the response shape in the plan's hook contract.
+    #[test]
+    fn deny_response_serialises_the_camel_case_keys_claude_code_reads() {
+        let response = ClaudeCodeResponse::deny("PreToolUse", "the reason", "the memory body");
+
+        let encoded = serde_json::to_value(&response).expect("a response must serialise");
+
+        assert_eq!(
+            encoded,
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": "the memory body",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "the reason"
+                }
+            }),
+            "deny must serialise to exactly the keys Claude Code reads"
+        );
+    }
+
+    // Detects an empty response that still carries a hookSpecificOutput:
+    // Claude Code validates the object and refuses an event name it takes no
+    // payload for, so every event that delivers nothing would report a failing
+    // hook.
+    // Expectation source: Claude Code 2.1.x refused
+    // `{"hookSpecificOutput": {"hookEventName": "PostCompact"}}` with
+    // `hookSpecificOutput.hookEventName: expected one of "PreToolUse" | …` and
+    // leaves every top-level key optional, so `{}` is valid for every event
+    // (observed in a session on 2026-09-13).
+    #[test]
+    fn empty_response_is_the_bare_object_claude_code_accepts_for_every_event() {
+        let encoded = serde_json::to_value(ClaudeCodeResponse::empty()).expect("must serialise");
+
+        assert_eq!(
+            encoded,
+            json!({}),
+            "a response with nothing to deliver must be the empty object"
+        );
+    }
+
+    // Detects a response that carries keys with null values: Claude Code
+    // treats a present permissionDecision as a decision, so a response that
+    // only injects context must not mention it at all.
+    #[test]
+    fn context_response_omits_the_decision_keys_rather_than_sending_null() {
+        let encoded =
+            serde_json::to_value(ClaudeCodeResponse::with_context("Stop", "the memory body"))
+                .expect("must serialise");
+
+        assert_eq!(
+            encoded,
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "Stop",
+                    "additionalContext": "the memory body"
+                }
+            }),
+            "a context response must name its event and carry no decision keys"
+        );
+    }
+
+    // Detects the three events whose wire field names this crate renames
+    // drifting from what Claude Code actually sends. Expectation source: the
+    // payload literals in the Claude Code 2.1.257 binary, read 2026-09-12
+    // (`tool_response`, `old_cwd`/`new_cwd`, `trigger`).
+    #[test]
+    fn events_parse_from_the_field_names_claude_code_2_1_257_sends() {
+        let post_tool_use: ClaudeCodeEvent = serde_json::from_value(json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": "session-1",
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls" },
+            "tool_response": { "stdout": "a\n" },
+            "tool_use_id": "toolu_1",
+            "duration_ms": 12
+        }))
+        .expect("PostToolUse must parse");
+        let ClaudeCodeEvent::PostToolUse { tool_output, .. } = post_tool_use else {
+            panic!("a PostToolUse payload must parse as the PostToolUse variant");
+        };
+        assert_eq!(
+            tool_output,
+            json!({ "stdout": "a\n" }),
+            "tool_output must be read from the wire field tool_response"
+        );
+
+        let cwd_changed: ClaudeCodeEvent = serde_json::from_value(json!({
+            "hook_event_name": "CwdChanged",
+            "session_id": "session-1",
+            "cwd": "/tmp/forgetmenot-test/after",
+            "old_cwd": "/tmp/forgetmenot-test/before",
+            "new_cwd": "/tmp/forgetmenot-test/after"
+        }))
+        .expect("CwdChanged must parse");
+        let ClaudeCodeEvent::CwdChanged {
+            cwd, previous_cwd, ..
+        } = cwd_changed
+        else {
+            panic!("a CwdChanged payload must parse as the CwdChanged variant");
+        };
+        assert_eq!(
+            cwd, "/tmp/forgetmenot-test/after",
+            "the directory now in force must be the event's new one"
+        );
+        assert_eq!(
+            previous_cwd.as_deref(),
+            Some("/tmp/forgetmenot-test/before"),
+            "previous_cwd must be read from the wire field old_cwd"
+        );
+
+        let post_compact: ClaudeCodeEvent = serde_json::from_value(json!({
+            "hook_event_name": "PostCompact",
+            "session_id": "session-1",
+            "trigger": "auto",
+            "compact_summary": "a summary"
+        }))
+        .expect("PostCompact must parse");
+        assert!(
+            matches!(post_compact, ClaudeCodeEvent::PostCompact { trigger: Some(ref t), .. } if t == "auto"),
+            "PostCompact must keep its trigger and ignore compact_summary"
+        );
+    }
+
+    // Detects a SubagentStart that loses the agent type, and one that fails to
+    // parse because it expects a field the event does not carry: the type is
+    // the only thing the event says about what the subagent is, and a payload
+    // this crate refuses stops every subagent from being seen at all.
+    // Expectation source: the payload Claude Code 2.1.270 delivered to a
+    // SubagentStart hook on this machine on 2026-09-13, with its identifiers
+    // replaced; it carries no task field of any name.
+    #[test]
+    fn subagent_start_parses_the_observed_payload_and_keeps_the_agent_type() {
+        let payload = json!({
+            "session_id": "session-1",
+            "transcript_path": "/tmp/forgetmenot-test/session-1.jsonl",
+            "cwd": "/tmp/forgetmenot-test/work",
+            "permission_mode": "default",
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-7f3a",
+            "agent_type": "general-purpose"
+        });
+
+        let event: ClaudeCodeEvent =
+            serde_json::from_value(payload).expect("SubagentStart must parse");
+
+        let ClaudeCodeEvent::SubagentStart {
+            common,
+            agent_id,
+            agent_type,
+        } = event
+        else {
+            panic!("a SubagentStart payload must parse as the SubagentStart variant");
+        };
+        assert_eq!(
+            agent_id, "agent-7f3a",
+            "the id of the subagent that started must come from the payload"
+        );
+        assert_eq!(
+            agent_type.as_deref(),
+            Some("general-purpose"),
+            "the agent type must be kept: it is all the event says about the subagent"
+        );
+        assert_eq!(
+            common.session_id, "session-1",
+            "the event arrives on the parent session, which must be readable"
+        );
+    }
+
+    // Detects event_name() drifting from the name the event was tagged with,
+    // which would make the server answer with a hookEventName Claude Code
+    // rejects.
+    #[test]
+    fn event_name_matches_the_tag_the_event_was_parsed_from() {
+        for name in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "CwdChanged",
+            "PostCompact",
+            "SubagentStart",
+        ] {
+            let payload = json!({
+                "hook_event_name": name,
+                "session_id": "session-1",
+                "source": "startup",
+                "prompt": "hello",
+                "tool_name": "Bash",
+                "tool_input": {},
+                "tool_output": {},
+                "cwd": "/tmp/forgetmenot-test/work",
+                "agent_id": "agent-1"
+            });
+            let event: ClaudeCodeEvent =
+                serde_json::from_value(payload).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(
+                event.event_name(),
+                name,
+                "event_name() must report the tag the event was parsed from"
+            );
+            assert!(
+                event.common().is_some(),
+                "{name}: a known event must expose its common fields"
+            );
+        }
+    }
+}

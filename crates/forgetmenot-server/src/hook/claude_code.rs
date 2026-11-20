@@ -1,71 +1,22 @@
-//! What one hook event means for a context: which context it belongs to, which
-//! texts its triggers are matched against, and what its answer may do.
+//! What one Claude Code hook event means for a context, and how the answer to
+//! it is written.
 //!
-//! This is the whole of the event-to-text mapping, kept apart from the HTTP
-//! handler so that a change to Claude Code's payloads is a change to one file.
+//! This is the whole of the mapping from Claude Code's events to a plan and
+//! from an answer to Claude Code's response, kept apart from the HTTP handler
+//! so that a change to Claude Code's payloads is a change to one file.
 
-use forgetmenot_types::hook::{HookCommon, HookEvent};
+use forgetmenot_types::claude_code::{ClaudeCodeCommon, ClaudeCodeEvent, ClaudeCodeResponse};
+use forgetmenot_types::hook::Harness;
 
+use super::plan::{Answer, EventPlan, carries_own_answer, listed_exempt, push_text, string_leaves};
 use crate::context::{ContextKey, MAIN_AGENT};
 use crate::mcp::FORGETMENOT_TOOL_NAMES;
-use crate::render::ANSWER_MARKER;
 use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 
-/// One event, reduced to what the state machine needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EventPlan {
-    /// The context this event acts on. For `SubagentStart` that is the child,
-    /// not the session the event arrived on.
-    pub key: ContextKey,
-    pub event_name: &'static str,
-    /// The texts to match triggers against, in the order they are matched.
-    pub texts: Vec<(TriggerField, String)>,
-    /// Whether a pinned arrival may stop the call, which only `PreToolUse`
-    /// can do. Whether it does is the store's to say: see
-    /// [`Settings::interrupts`].
-    pub may_deny: bool,
-    /// The tool about to run, for `PreToolUse` alone, which is what the store's
-    /// exemptions are matched against.
-    pub tool_name: Option<String>,
-    /// Whether the answer also tells the model which session key to pass to
-    /// the MCP tools.
-    pub session_start: bool,
-    /// The directory this event reports: the event's own `cwd`, except for
-    /// `CwdChanged`, where it is the directory the event puts in force. A
-    /// context that has not remembered a session directory yet takes this one
-    /// as its own.
-    pub cwd: Option<String>,
-    /// Whether this event matches the two directory fields. True for the
-    /// events that carry a directory worth matching: the session start, every
-    /// tool call, and a change of the shell's directory.
-    pub matches_directories: bool,
-    /// The task a subagent was given, as the client read it from the subagent's
-    /// metadata file; absent outside a subagent. At `SubagentStart` it is also
-    /// matched against the user-message triggers, because it is what the
-    /// subagent was told to do; this field is what names the context.
-    pub task: Option<String>,
-    /// The kind of subagent that started, for `SubagentStart` alone. It is what
-    /// names the context when nothing said what the task was.
-    pub agent_type: Option<String>,
-    /// The context that spawned the one this event acts on, for `SubagentStart`
-    /// alone: the spawning subagent when the request named one, else the
-    /// session the event arrived on. It is what the new context inherits its
-    /// scopes and its session directory from. Every other event acts on a
-    /// context that already exists, so it names no spawner.
-    pub parent: Option<ContextKey>,
-    /// Whether the context size this event reports is the parent's rather than
-    /// this plan's own context's, which is true of `SubagentStart` alone.
-    ///
-    /// The client reads the size from the transcript of the session the event
-    /// arrived on, and a `SubagentStart` arrives on the parent while it acts on
-    /// the child. The child's transcript begins empty, so its own events report
-    /// a size that starts near zero and has nothing to do with the number here.
-    /// Everything counted in tokens is therefore left unset by such an event and
-    /// counts from the first event of the child that carries the child's own
-    /// size; the statistics still record the size as it arrived.
-    pub tokens_are_the_parents: bool,
-}
+/// Why a tool call was stopped. Fixed text: the model has to be able to tell
+/// this apart from a human refusing the call.
+pub const DENY_REASON: &str = "This tool call was not executed. Its input matched a memory trigger and a pinned memory is new or changed for this context. This is an automatic keyword match, not a review, approval or denial of the call. Read the memory in the additional context. Issue the call again if it is still what you intend.";
 
 /// What to do about `event`, or `None` for an event name this server does not
 /// know, which is answered with an empty object.
@@ -78,7 +29,7 @@ pub struct EventPlan {
 /// `settings` are the store's, because how much of a tool result is matched
 /// against triggers is part of what the store says about its own behaviour.
 pub fn plan(
-    event: &HookEvent,
+    event: &ClaudeCodeEvent,
     machine: &str,
     task: Option<&str>,
     parent_agent_id: Option<&str>,
@@ -88,21 +39,25 @@ pub fn plan(
     let common = event.common()?;
     let mut plan = EventPlan {
         key: context_key(machine, common),
+        harness: Harness::ClaudeCode,
         event_name,
         texts: Vec::new(),
+        // Claude Code takes context in the answer to every event planned here.
+        delivers: true,
         may_deny: false,
         tool_name: None,
         session_start: false,
         cwd: common.cwd.clone(),
         matches_directories: false,
         task: task.filter(|task| !task.is_empty()).map(str::to_string),
+        first_prompt: None,
         agent_type: None,
         parent: None,
         tokens_are_the_parents: false,
     };
 
     match event {
-        HookEvent::SessionStart { .. } => {
+        ClaudeCodeEvent::SessionStart { .. } => {
             plan.session_start = true;
             plan.matches_directories = true;
             push_text(
@@ -111,14 +66,14 @@ pub fn plan(
                 common.cwd.as_deref(),
             );
         }
-        HookEvent::UserPromptSubmit { prompt, .. } => {
+        ClaudeCodeEvent::UserPromptSubmit { prompt, .. } => {
             let field = match is_agent_frames(prompt) {
                 true => TriggerField::AgentMessage,
                 false => TriggerField::UserMessage,
             };
             push_text(&mut plan, field, Some(prompt));
         }
-        HookEvent::PreToolUse {
+        ClaudeCodeEvent::PreToolUse {
             tool_name,
             tool_input,
             ..
@@ -137,7 +92,7 @@ pub fn plan(
                 common.cwd.as_deref(),
             );
         }
-        HookEvent::PostToolUse {
+        ClaudeCodeEvent::PostToolUse {
             tool_name,
             tool_output,
             ..
@@ -149,7 +104,7 @@ pub fn plan(
                 }
             }
         }
-        HookEvent::Stop {
+        ClaudeCodeEvent::Stop {
             last_assistant_message,
             ..
         } => {
@@ -159,7 +114,7 @@ pub fn plan(
                 last_assistant_message.as_deref(),
             );
         }
-        HookEvent::CwdChanged { cwd, .. } => {
+        ClaudeCodeEvent::CwdChanged { cwd, .. } => {
             // The directory now in force is the variant's own field; the
             // flattened `cwd` of a CwdChanged event is not read.
             plan.matches_directories = true;
@@ -170,8 +125,8 @@ pub fn plan(
         // sends a `SessionStart` with source `compact` for the conversation it
         // rebuilds, which is the event everything due is delivered at. So this
         // one is acknowledged and acted on no further.
-        HookEvent::PostCompact { .. } => return None,
-        HookEvent::SubagentStart {
+        ClaudeCodeEvent::PostCompact { .. } => return None,
+        ClaudeCodeEvent::SubagentStart {
             agent_id,
             agent_type,
             ..
@@ -196,32 +151,9 @@ pub fn plan(
             let task = plan.task.clone();
             push_text(&mut plan, TriggerField::AgentMessage, task.as_deref());
         }
-        HookEvent::Unknown => return None,
+        ClaudeCodeEvent::Unknown => return None,
     }
     Some(plan)
-}
-
-/// Whether `text` is this server's own answer handed back through a tool.
-///
-/// An answer past the store's threshold is written to a file by Claude Code,
-/// which shows the model a preview and the path; the notice at the top of such
-/// an answer tells the model to read that file, so the whole answer comes back
-/// as the result of a `Read` — every scope id of the available list and the
-/// text of every pinned memory delivered. Matched against the tool-result
-/// triggers, that one result activates every scope the answer names, which is
-/// the store's own traffic and not the session's work.
-///
-/// The mark is [`ANSWER_MARKER`], the line every answer opens with. It is
-/// looked for on any line, because the notice comes before it and a `Read`
-/// prints the file's lines numbered: the digits, the whitespace and the `\u{2192}`
-/// or tab Claude Code puts in front of a line are stripped before comparing.
-pub fn carries_own_answer(text: &str) -> bool {
-    text.lines().any(|line| {
-        line.trim_start_matches(|character: char| {
-            character.is_ascii_digit() || character.is_whitespace() || character == '\u{2192}'
-        })
-        .starts_with(ANSWER_MARKER)
-    })
 }
 
 /// Whether the name, the input and the result of `tool_name` are kept out of the
@@ -234,11 +166,7 @@ pub fn carries_own_answer(text: &str) -> bool {
 /// directories a tool call reports are matched either way, because a directory
 /// says where the session is working whatever tool named it.
 pub fn triggers_exempt(settings: &Settings, tool_name: &str) -> bool {
-    is_forgetmenot_tool(tool_name)
-        || settings
-            .trigger_exempt_tools
-            .iter()
-            .any(|exempt| exempt == tool_name)
+    is_forgetmenot_tool(tool_name) || listed_exempt(settings, tool_name)
 }
 
 /// Whether `tool_name` is one of this server's own MCP tools as a client names
@@ -259,7 +187,7 @@ fn is_forgetmenot_tool(tool_name: &str) -> bool {
 
 /// The context an event belongs to: the subagent's when the event carries an
 /// agent id, else the session's own.
-fn context_key(machine: &str, common: &HookCommon) -> ContextKey {
+fn context_key(machine: &str, common: &ClaudeCodeCommon) -> ContextKey {
     match common.agent_id.as_deref() {
         Some(agent_id) if agent_id != MAIN_AGENT => {
             ContextKey::subagent(machine, &common.session_id, agent_id)
@@ -297,54 +225,13 @@ pub fn is_agent_frames(prompt: &str) -> bool {
     true
 }
 
-fn push_text(plan: &mut EventPlan, field: TriggerField, text: Option<&str>) {
-    if let Some(text) = text.filter(|text| !text.is_empty()) {
-        plan.texts.push((field, text.to_string()));
-    }
-}
-
-/// Every string in a JSON value, in document order, joined by newlines and
-/// truncated to `cap` bytes on a character boundary.
-///
-/// Object keys are left out: a trigger matches what a tool was called with or
-/// what it returned, not the names of the fields carrying it.
-pub fn string_leaves(value: &serde_json::Value, cap: usize) -> String {
-    let mut text = String::new();
-    collect_strings(value, cap, &mut text);
-    text
-}
-
-fn collect_strings(value: &serde_json::Value, cap: usize, text: &mut String) {
-    if text.len() >= cap {
-        return;
-    }
-    match value {
-        serde_json::Value::String(leaf) => {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            let room = cap.saturating_sub(text.len());
-            if leaf.len() <= room {
-                text.push_str(leaf);
-            } else {
-                let mut end = room;
-                while end > 0 && !leaf.is_char_boundary(end) {
-                    end -= 1;
-                }
-                text.push_str(&leaf[..end]);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                collect_strings(item, cap, text);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            for field in fields.values() {
-                collect_strings(field, cap, text);
-            }
-        }
-        _ => {}
+/// The response Claude Code is sent for the event of `plan`: the answer's text
+/// as additional context, and the call stopped when the answer holds it.
+pub fn response(plan: &EventPlan, answer: Answer) -> ClaudeCodeResponse {
+    match answer.text {
+        Some(text) if answer.hold => ClaudeCodeResponse::deny(plan.event_name, DENY_REASON, text),
+        Some(text) => ClaudeCodeResponse::with_context(plan.event_name, text),
+        None => ClaudeCodeResponse::empty(),
     }
 }
 
@@ -353,13 +240,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn event(payload: serde_json::Value) -> HookEvent {
+    fn event(payload: serde_json::Value) -> ClaudeCodeEvent {
         serde_json::from_value(payload).expect("the payload parses as an event")
     }
 
     /// The plan for one event on `machine`, under a store that has said nothing
     /// about its behaviour and a request that read no task and no spawner.
-    fn plan_of(event: &HookEvent, machine: &str) -> Option<EventPlan> {
+    fn plan_of(event: &ClaudeCodeEvent, machine: &str) -> Option<EventPlan> {
         plan(event, machine, None, None, &Settings::default())
     }
 
@@ -408,7 +295,7 @@ mod tests {
     }
 
     /// A `PostToolUse` from `tool` whose result is `output`.
-    fn tool_result(tool: &str, output: &str) -> HookEvent {
+    fn tool_result(tool: &str, output: &str) -> ClaudeCodeEvent {
         event(json!({
             "hook_event_name": "PostToolUse",
             "session_id": "session-1",
@@ -692,7 +579,7 @@ mod tests {
         );
     }
 
-    fn prompt(text: &str) -> HookEvent {
+    fn prompt(text: &str) -> ClaudeCodeEvent {
         event(json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-1",

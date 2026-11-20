@@ -441,6 +441,26 @@ pub fn post_hook_named(
     post_hook_body(base_url, &body)
 }
 
+/// POST one Antigravity hook event to a running server, as the client run
+/// with `--harness antigravity` does. `last_assistant_message` is what that
+/// client reads from the transcript at a `Stop`.
+pub fn post_antigravity_hook(
+    base_url: &str,
+    machine: &str,
+    context_tokens: Option<u64>,
+    last_assistant_message: Option<&str>,
+    event: &Value,
+) -> (u16, Value) {
+    let body = json!({
+        "machine": machine,
+        "harness": "antigravity",
+        "context_tokens": context_tokens,
+        "last_assistant_message": last_assistant_message,
+        "hook": event,
+    });
+    post_hook_body(base_url, &body)
+}
+
 /// POST one `/hook` body verbatim and read the status and the answer.
 fn post_hook_body(base_url: &str, body: &Value) -> (u16, Value) {
     let agent = test_agent();
@@ -613,6 +633,23 @@ pub fn run_hook_client(server_url: &str, machine: &str, payload: &[u8]) -> Clien
     run_hook_client_binary(&hook_client_binary(), server_url, machine, payload)
 }
 
+/// Run the compiled client once with `payload` on stdin, as Antigravity does
+/// when its hooks name the harness.
+pub fn run_antigravity_hook_client(server_url: &str, machine: &str, payload: &[u8]) -> ClientRun {
+    run_hook_client_with(
+        &hook_client_binary(),
+        &[
+            "--server",
+            server_url,
+            "--machine",
+            machine,
+            "--harness",
+            "antigravity",
+        ],
+        payload,
+    )
+}
+
 /// The same, with the client binary named: the limits test times another build
 /// of the client when one is given.
 pub fn run_hook_client_binary(
@@ -621,8 +658,17 @@ pub fn run_hook_client_binary(
     machine: &str,
     payload: &[u8],
 ) -> ClientRun {
+    run_hook_client_with(
+        binary,
+        &["--server", server_url, "--machine", machine],
+        payload,
+    )
+}
+
+/// Run the client binary once with `arguments` and `payload` on stdin.
+fn run_hook_client_with(binary: &Path, arguments: &[&str], payload: &[u8]) -> ClientRun {
     let mut child = Command::new(binary)
-        .args(["--server", server_url, "--machine", machine])
+        .args(arguments)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

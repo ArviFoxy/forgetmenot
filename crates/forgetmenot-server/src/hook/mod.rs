@@ -1,12 +1,19 @@
-//! `POST /hook`: the endpoint every Claude Code hook event reaches.
+//! `POST /hook`: the endpoint every hook event reaches, from either harness.
 //!
-//! One event is one pass: take a catalog snapshot, enter the context's pinned
-//! section, turn on the scopes its triggers fire, work out what the context is
-//! owed, decide whether to stop the tool call, and record what was delivered.
-//! Everything that touches the store happens before the context lock is taken
-//! and the statistics are written after it is released.
+//! One event is one pass: read the event the way its harness writes it, take a
+//! catalog snapshot, enter the context's pinned section, turn on the scopes its
+//! triggers fire, work out what the context is owed, decide whether to stop the
+//! tool call, record what was delivered, and write the answer the way the
+//! harness reads it. Everything that touches the store happens before the
+//! context lock is taken and the statistics are written after it is released.
+//!
+//! The two ends are a harness's own: [`claude_code`] and [`antigravity`] each
+//! read their events into an [`EventPlan`] and write an [`Answer`] out. The
+//! pass between them is the same for both.
 
-pub mod events;
+pub mod antigravity;
+pub mod claude_code;
+pub mod plan;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -16,7 +23,9 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use forgetmenot_types::hook::{HookEvent, HookRequest, HookResponse};
+use forgetmenot_types::antigravity::AntigravityEvent;
+use forgetmenot_types::claude_code::ClaudeCodeEvent;
+use forgetmenot_types::hook::{Harness, HookRequest};
 use git2::Oid;
 
 use crate::app::AppState;
@@ -33,11 +42,7 @@ use crate::store::scope::TriggerField;
 use crate::store::settings::Settings;
 use crate::store::{MemoryId, ScopeId};
 use crate::triggers::{TriggerEvidence, TriggerHit};
-use events::EventPlan;
-
-/// Why a tool call was stopped. Fixed text: the model has to be able to tell
-/// this apart from a human refusing the call.
-pub const DENY_REASON: &str = "This tool call was not executed. Its input matched a memory trigger and a pinned memory is new or changed for this context. This is an automatic keyword match, not a review, approval or denial of the call. Read the memory in the additional context. Issue the call again if it is still what you intend.";
+use plan::{Answer, EventPlan};
 
 /// Answer one hook event.
 pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
@@ -46,9 +51,8 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     let Ok(request) = serde_json::from_slice::<HookRequest>(&body) else {
         return (StatusCode::BAD_REQUEST, "the body is not a hook request").into_response();
     };
-    let Ok(event) = serde_json::from_value::<HookEvent>(request.hook) else {
-        return (StatusCode::BAD_REQUEST, "the hook event could not be read").into_response();
-    };
+    let unreadable =
+        || (StatusCode::BAD_REQUEST, "the hook event could not be read").into_response();
 
     // The catalog is read before the event is planned, because the store's own
     // settings decide how the event is read and what it may do.
@@ -65,15 +69,35 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     };
     let settings = catalog.settings();
 
-    // An event name this server does not know is acknowledged with an object
-    // Claude Code reads as "nothing to do", not with an error.
-    let Some(plan) = events::plan(
-        &event,
-        &request.machine,
-        request.task.as_deref(),
-        request.parent_agent_id.as_deref(),
-        settings,
-    ) else {
+    // The event is read as the harness that sent it writes it. An event this
+    // server does nothing at is acknowledged with the empty object, which both
+    // harnesses read as "nothing to do", not with an error.
+    let planned = match request.harness {
+        Harness::ClaudeCode => {
+            let Ok(event) = serde_json::from_value::<ClaudeCodeEvent>(request.hook) else {
+                return unreadable();
+            };
+            claude_code::plan(
+                &event,
+                &request.machine,
+                request.task.as_deref(),
+                request.parent_agent_id.as_deref(),
+                settings,
+            )
+        }
+        Harness::Antigravity => {
+            let Ok(event) = serde_json::from_value::<AntigravityEvent>(request.hook) else {
+                return unreadable();
+            };
+            antigravity::plan(
+                &event,
+                &request.machine,
+                request.last_assistant_message.as_deref(),
+                settings,
+            )
+        }
+    };
+    let Some(plan) = planned else {
         return axum::Json(serde_json::json!({})).into_response();
     };
 
@@ -90,7 +114,12 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
     };
     let named = SessionName {
         title: request.session_title.as_deref(),
-        first_prompt: request.first_prompt.as_deref(),
+        // The client's read of the transcript where the harness keeps the
+        // prompt there, the event's own where it carries it.
+        first_prompt: request
+            .first_prompt
+            .as_deref()
+            .or(plan.first_prompt.as_deref()),
     };
     let previous = previous_texts_of_event(&state, &plan, &catalog, now).await;
     let log_activations = state.activations.is_on();
@@ -120,27 +149,33 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
         activated: &outcome.activated,
         announce_empty_scopes: settings.announce_empty_scopes,
         session_start: plan.session_start,
-        answer_file_threshold: settings.answer_file_threshold,
+        // The limit past which an answer is saved to a file is Claude Code's,
+        // and so is the notice that tells the model to read that file.
+        answer_file_threshold: match plan.harness {
+            Harness::ClaudeCode => settings.answer_file_threshold,
+            Harness::Antigravity => None,
+        },
     };
     // A scope named because it delivered nothing is text and nothing else, so it
     // is a reason to answer at all but not a delivery: nothing is recorded
-    // against the context and no call is held for it.
-    let answered = !outcome.needs.is_empty() || !delivery.announced_scopes().is_empty();
+    // against the context and no call is held for it. An event whose answer
+    // carries no text is not answered with any, whatever is due: the context
+    // still holds it as owed, and the next event that can deliver sends it.
+    let answered =
+        plan.delivers && (!outcome.needs.is_empty() || !delivery.announced_scopes().is_empty());
     // Rendered once: the text the model is sent and the accounting the
     // statistics record are the same pass, so what a scope is charged is the
     // text that was actually sent.
     let rendered = answered.then(|| render::render(&delivery));
-    let response = match &rendered {
-        Some(rendered) => {
-            let text = rendered.text.clone();
-            if deny {
-                HookResponse::deny(plan.event_name, DENY_REASON, text)
-            } else {
-                HookResponse::with_context(plan.event_name, text)
-            }
-        }
-        None => HookResponse::empty(),
+    let answer = Answer {
+        text: rendered.as_ref().map(|rendered| rendered.text.clone()),
+        hold: deny,
     };
+    let response = match plan.harness {
+        Harness::ClaudeCode => serde_json::to_value(claude_code::response(&plan, answer)),
+        Harness::Antigravity => serde_json::to_value(antigravity::reply(&plan, answer)),
+    }
+    .expect("an answer of strings always serialises");
 
     let decision = match (deny, answered) {
         (true, _) => Decision::Deny,
@@ -161,7 +196,12 @@ pub async fn handle(State(state): State<Arc<AppState>>, body: Bytes) -> Response
             decision,
             triggers: outcome.fires,
             forgotten: outcome.forgotten,
-            deliveries: deliveries_of(&outcome.needs, &catalog, rendered.as_ref()),
+            // What is owed at an event that cannot deliver was not delivered,
+            // so it is not counted here; the event that sends it counts it.
+            deliveries: match plan.delivers {
+                true => deliveries_of(&outcome.needs, &catalog, rendered.as_ref()),
+                false => Vec::new(),
+            },
             activations: outcome.activations,
         })
         .await;
@@ -363,10 +403,16 @@ fn apply(
     // context knows it; it joins them here for the events that match on a
     // directory at all.
     let mut texts = plan.texts.clone();
+    // A session that started in several directories at once, as an Antigravity
+    // conversation does, remembers them one per line, and each is matched as a
+    // directory of its own, so a pattern anchored at the start of a path holds
+    // for every one of them.
     if plan.matches_directories
         && let Some(started_in) = &context.session_directory
     {
-        texts.push((TriggerField::SessionDirectory, started_in.clone()));
+        for directory in started_in.lines() {
+            texts.push((TriggerField::SessionDirectory, directory.to_string()));
+        }
     }
 
     // The scopes this event finds the context in, against which the scopes it
@@ -421,8 +467,13 @@ fn apply(
         false => Activations::default(),
     };
 
+    // What the context is owed is worked out at every event, because a call
+    // may be held for it; it is recorded as delivered only where the answer
+    // carries it.
     let needs = compute_needs(catalog, context, tokens_now, previous);
-    record_delivery(context, &needs, catalog, tokens_now);
+    if plan.delivers {
+        record_delivery(context, &needs, catalog, tokens_now);
+    }
     context.last_seen = now;
 
     Outcome {
@@ -664,7 +715,7 @@ mod tests {
     use crate::context::{Form, Shown};
     use crate::store::catalog::Catalog;
     use crate::test_support::{TestStore, catalog_of, memory_file, scope_file, settings_file};
-    use forgetmenot_types::hook::HookEvent;
+    use forgetmenot_types::claude_code::ClaudeCodeEvent;
     use serde_json::json;
 
     /// The context growth after which a delivery is stale and after which the
@@ -715,13 +766,14 @@ mod tests {
 
     /// The plan of a prompt saying `text`, from the directory `cwd`.
     fn prompt_plan(catalog: &Catalog, text: &str) -> EventPlan {
-        let event: HookEvent = serde_json::from_value(json!({
+        let event: ClaudeCodeEvent = serde_json::from_value(json!({
             "hook_event_name": "UserPromptSubmit",
             "session_id": "session-1",
             "prompt": text
         }))
         .expect("the payload parses as an event");
-        events::plan(&event, "alpha", None, None, catalog.settings()).expect("the event is known")
+        claude_code::plan(&event, "alpha", None, None, catalog.settings())
+            .expect("the event is known")
     }
 
     /// The plan of an event that fires no trigger and stops nothing, so that
@@ -959,7 +1011,7 @@ mod tests {
             "the first event a context is seen at says where the session began"
         );
 
-        let call: HookEvent = serde_json::from_value(json!({
+        let call: ClaudeCodeEvent = serde_json::from_value(json!({
             "hook_event_name": "PreToolUse",
             "session_id": "session-1",
             "cwd": MOVED_TO,
@@ -968,7 +1020,7 @@ mod tests {
         }))
         .expect("the payload parses as an event");
         let call =
-            events::plan(&call, "alpha", None, None, catalog.settings()).expect("PreToolUse");
+            claude_code::plan(&call, "alpha", None, None, catalog.settings()).expect("PreToolUse");
         let moved = answer(&mut context, &catalog, &call, Some(START));
 
         assert!(

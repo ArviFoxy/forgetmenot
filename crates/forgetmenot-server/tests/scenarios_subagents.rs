@@ -6,7 +6,7 @@
 //! with its own record, its own events and its own writes. None of that is
 //! visible in one event, so all of it lives here. What one `SubagentStart`
 //! contributes — that it acts on the child's key and matches the task against
-//! the user-message triggers — is `hook::events`'s own unit test and is not
+//! the user-message triggers — is `hook::claude_code`'s own unit test and is not
 //! asserted again.
 
 mod common;
