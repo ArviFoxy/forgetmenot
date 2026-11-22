@@ -555,20 +555,19 @@ pub fn permission_decision_reason(answer: &Value) -> Option<&str> {
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// The directory of the test executable's profile, which is where cargo puts
-/// every binary of the workspace.
+/// The directory of the profile the tests were built in, which is where cargo
+/// puts every binary of the workspace.
 ///
 /// `env!("CARGO_BIN_EXE_...")` only names binaries of the crate the test
-/// belongs to, and the client is another crate, so the path is derived from the
-/// running test executable instead: `target/<profile>/deps/<test>` has the
-/// binaries in its parent's parent.
-fn target_profile_directory() -> PathBuf {
-    let test_executable = std::env::current_exe().expect("the test executable has a path");
-    test_executable
+/// belongs to, and the client is another crate. Cargo puts the client beside
+/// the server's binary, though, so the directory is the one that binary is in.
+/// The path of the running test executable does not lead there reliably: cargo
+/// 1.100 moved the test executables from `target/<profile>/deps/` to
+/// `target/<profile>/build/<package>/<hash>/out/`.
+fn target_profile_directory() -> &'static Path {
+    Path::new(binary_path())
         .parent()
-        .and_then(Path::parent)
-        .expect("the test executable is inside target/<profile>/deps")
-        .to_path_buf()
+        .expect("the server binary is inside target/<profile>")
 }
 
 /// The compiled `forgetmenot-hook` binary the whole-chain tests run.
