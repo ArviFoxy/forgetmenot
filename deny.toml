@@ -3,7 +3,12 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # No release of chrono fixes this: the advisory is that the crate has no
+    # maintainer. rmcp and schemars depend on chrono as well as the server, so
+    # it stays in the dependency tree until they have moved off it too.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; rmcp and schemars still depend on it" },
+]
 
 [licenses]
 version = 2
