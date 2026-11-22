@@ -1,7 +1,7 @@
 # The one environment the screenshots are recorded and compared in. The image tag
 # has to match the @playwright/test version in web/package.json, because the browsers
 # that ship in the image are the ones that version drives.
-FROM mcr.microsoft.com/playwright:v1.63.0-noble
+FROM mcr.microsoft.com/playwright:v1.65.0-noble
 
 # The tests start the real server, so the image can build it: a C toolchain for the
 # bundled sqlite and libgit2, and the Rust toolchain the workspace asks for.
