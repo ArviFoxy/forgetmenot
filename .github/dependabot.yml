@@ -14,6 +14,12 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+    ignore:
+      # typescript-eslint accepts TypeScript below 6.1 only, and npm refuses to
+      # install the two together. Remove this entry once a typescript-eslint
+      # release accepts TypeScript 7.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
